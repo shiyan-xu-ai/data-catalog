@@ -65,7 +65,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{MatchedPath, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -452,18 +452,11 @@ async fn ttl_dryrun(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<TtlDryRunResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let start = Instant::now();
     let cache = state.cache.read().await;
-    let table = cache.iter().find(|e| e.id == id).ok_or_else(|| {
-        metrics::record_http_request(
-            "/ext/v1/tables/:id/ttl/dryrun",
-            "GET",
-            "404",
-            "ttl",
-            start.elapsed(),
-        );
-        table_not_found(&id)
-    })?;
+    let table = cache
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| table_not_found(&id))?;
     let policy = table.ttl_policy.unwrap_or_default();
     let eligible =
         catalog_core::ttl_eligible_versions(&policy, &table.versions, chrono::Utc::now());
@@ -471,13 +464,6 @@ async fn ttl_dryrun(
     let candidates = eligible.into_iter().map(|v| v.version_id.clone()).collect();
     // Update gauge so dashboards show current reclaimable bytes without needing an apply.
     metrics::set_ttl_reclaimable_bytes(reclaimable_bytes);
-    metrics::record_http_request(
-        "/ext/v1/tables/:id/ttl/dryrun",
-        "GET",
-        "200",
-        "ttl",
-        start.elapsed(),
-    );
     Ok(Json(TtlDryRunResponse {
         table_id: id,
         candidates,
@@ -514,31 +500,15 @@ async fn ttl_apply(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<TtlApplyResponse>, axum::response::Response> {
-    let start = Instant::now();
-
     if !is_leader(&state.leader_state) {
-        metrics::record_http_request(
-            "/ext/v1/tables/:id/ttl/apply",
-            "POST",
-            "503",
-            "ttl",
-            start.elapsed(),
-        );
         return Err(not_leader().into_response_pair());
     }
 
     let _guard = state.write_lock.lock().await;
     let mut map = load_registry_map(&state.registry_path).await;
-    let entry = map.get_mut(&id).ok_or_else(|| {
-        metrics::record_http_request(
-            "/ext/v1/tables/:id/ttl/apply",
-            "POST",
-            "404",
-            "ttl",
-            start.elapsed(),
-        );
-        table_not_found(&id).into_response_pair()
-    })?;
+    let entry = map
+        .get_mut(&id)
+        .ok_or_else(|| table_not_found(&id).into_response_pair())?;
 
     let policy = entry.ttl_policy.unwrap_or_default();
     let now = chrono::Utc::now();
@@ -593,13 +563,6 @@ async fn ttl_apply(
 
     persist_and_refresh_cache(&state, map).await.map_err(|e| {
         metrics::record_ttl_apply(false);
-        metrics::record_http_request(
-            "/ext/v1/tables/:id/ttl/apply",
-            "POST",
-            "500",
-            "ttl",
-            start.elapsed(),
-        );
         internal_error(e).into_response_pair()
     })?;
 
@@ -608,26 +571,12 @@ async fn ttl_apply(
             .await
             .map_err(|e| {
                 metrics::record_ttl_apply(false);
-                metrics::record_http_request(
-                    "/ext/v1/tables/:id/ttl/apply",
-                    "POST",
-                    "500",
-                    "ttl",
-                    start.elapsed(),
-                );
                 internal_error(e).into_response_pair()
             })?;
     }
 
     if !delete_errors.is_empty() {
         metrics::record_ttl_apply(false);
-        metrics::record_http_request(
-            "/ext/v1/tables/:id/ttl/apply",
-            "POST",
-            "500",
-            "ttl",
-            start.elapsed(),
-        );
         return Err(internal_error(anyhow::anyhow!(
             "some versions failed to delete: {}",
             delete_errors.join("; ")
@@ -638,13 +587,6 @@ async fn ttl_apply(
     // Update the reclaimable-bytes gauge — post-apply, reclaimable drops by what we deleted.
     metrics::set_ttl_reclaimable_bytes(0);
     metrics::record_ttl_apply(true);
-    metrics::record_http_request(
-        "/ext/v1/tables/:id/ttl/apply",
-        "POST",
-        "200",
-        "ttl",
-        start.elapsed(),
-    );
 
     Ok(Json(TtlApplyResponse {
         table_id: id,
@@ -655,6 +597,66 @@ async fn ttl_apply(
 
 fn internal_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
     error(StatusCode::INTERNAL_SERVER_ERROR, 0, e.to_string())
+}
+
+/// Tower/axum middleware that records HTTP RED metrics (`catalog_http_requests_total` and
+/// `catalog_http_request_duration_seconds`) for every request passing through the API router.
+///
+/// `route` is taken from axum's `MatchedPath` (e.g. `/v1/table/:id`), not the concrete URI
+/// (e.g. `/v1/table/smoke_test`), keeping label cardinality bounded regardless of table IDs.
+/// `class` is derived from the route pattern via `metrics::route_class`.
+async fn red_middleware(
+    matched_path: Option<MatchedPath>,
+    method: axum::http::Method,
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let start = Instant::now();
+
+    // Leak the matched-path string to get a `'static` str for use as a metric label value.
+    // The set of distinct matched paths is small and fixed (one per registered route), so
+    // leaking is safe and does not grow memory unboundedly.
+    let route: &'static str = match matched_path {
+        Some(mp) => {
+            let boxed: Box<str> = mp.as_str().into();
+            Box::leak(boxed)
+        }
+        None => "unknown",
+    };
+
+    let method_str: &'static str = match method.as_str() {
+        "GET" => "GET",
+        "POST" => "POST",
+        "PUT" => "PUT",
+        "DELETE" => "DELETE",
+        "PATCH" => "PATCH",
+        "HEAD" => "HEAD",
+        "OPTIONS" => "OPTIONS",
+        _ => "OTHER",
+    };
+
+    let response = next.run(request).await;
+
+    let status_str: &'static str = match response.status().as_u16() {
+        200 => "200",
+        201 => "201",
+        204 => "204",
+        400 => "400",
+        401 => "401",
+        403 => "403",
+        404 => "404",
+        409 => "409",
+        422 => "422",
+        429 => "429",
+        500 => "500",
+        503 => "503",
+        _ => "other",
+    };
+
+    let class = metrics::route_class(route);
+    metrics::record_http_request(route, method_str, status_str, class, start.elapsed());
+
+    response
 }
 
 /// Small helper trait so handlers returning `Result<_, axum::response::Response>` can convert
@@ -672,11 +674,11 @@ impl<T: Serialize> IntoResponsePair for (StatusCode, Json<T>) {
 }
 
 /// Build the public `/v1` + `/ext/v1` router, fully wired to `state` (returns `Router<()>`,
-/// ready to `.merge()` into the top-level app router). HTTP RED metrics are recorded at the
-/// TTL handler call sites; the broader RED middleware approach is tracked as a future
-/// improvement — for now, ttl/dryrun and ttl/apply are explicitly instrumented since those
-/// are the operations with the most operational impact. The `/metrics` endpoint lives on the
-/// separate internal server (`crate::internal_server`).
+/// ready to `.merge()` into the top-level app router). Every request is instrumented by
+/// `red_middleware`, which records `catalog_http_requests_total` and
+/// `catalog_http_request_duration_seconds` using the matched route pattern as the `route` label
+/// (never the concrete URI path) so label cardinality stays bounded. The `/metrics` endpoint
+/// lives on the separate internal server (`crate::internal_server`).
 pub fn api_router(state: ApiState) -> Router {
     Router::new()
         .route("/v1/namespaces", get(list_namespaces))
@@ -696,5 +698,6 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/ext/v1/tables/:id/ttl/dryrun", get(ttl_dryrun))
         .route("/ext/v1/tables/:id/ttl/apply", post(ttl_apply))
+        .layer(axum::middleware::from_fn(red_middleware))
         .with_state(state)
 }

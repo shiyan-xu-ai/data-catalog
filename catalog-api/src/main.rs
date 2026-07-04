@@ -107,6 +107,30 @@ fn spawn_hydration_gauge_updater(cache: RegistryCache) -> tokio::task::JoinHandl
     })
 }
 
+/// Polls `last_sweep_at` every 5 s and updates `catalog_snapshot_staleness_seconds`.
+///
+/// If a sweep has completed, reports `elapsed.as_secs_f64()` since the last successful write.
+/// If no sweep has completed yet, reports time elapsed since the process started — the gauge
+/// begins climbing from boot so `FreshnessBreach` fires if the first sweep never lands.
+fn spawn_staleness_gauge_updater(
+    last_sweep_at: catalog_api_lib::sweep_loop::LastSweepAt,
+    process_start: std::time::Instant,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let staleness = {
+                let guard = last_sweep_at.lock().await;
+                match *guard {
+                    Some(t) => t.elapsed().as_secs_f64(),
+                    None => process_start.elapsed().as_secs_f64(),
+                }
+            };
+            metrics::set_snapshot_staleness(staleness);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+}
+
 /// Collects tokio runtime metrics at 15-second intervals and records them via the `metrics`
 /// facade under `tokio_*` names.
 fn spawn_tokio_metrics_collector(
@@ -130,6 +154,8 @@ fn spawn_tokio_metrics_collector(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let process_start = std::time::Instant::now();
+
     tracing_subscriber::fmt::init();
 
     // Install the global Prometheus recorder before any metrics::* calls.
@@ -156,18 +182,22 @@ async fn main() -> anyhow::Result<()> {
     // read-registry -> mutate -> write-registry critical section.
     let write_lock: RegistryWriteLock = registry_lock::new_registry_write_lock();
 
+    let last_sweep_at = sweep_loop::new_last_sweep_at();
+
     let sweep_cfg = sweep_config::build_sweep_config(&cfg.sweep_root_uri)?;
     let _sweep_task = sweep_loop::spawn_sweep_loop(
         sweep_cfg.clone(),
         cfg.registry_path.clone(),
         leader_state.clone(),
         write_lock.clone(),
+        last_sweep_at.clone(),
         cfg.sweep_interval,
     );
 
     // Background gauge updaters.
     let _leader_gauge = spawn_leader_gauge_updater(leader_state.clone());
     let _hydration_gauge = spawn_hydration_gauge_updater(registry_cache.clone());
+    let _staleness_gauge = spawn_staleness_gauge_updater(last_sweep_at, process_start);
 
     // Tokio runtime metrics collector.
     let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&tokio::runtime::Handle::current());

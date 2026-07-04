@@ -15,6 +15,15 @@ use crate::leader::{is_leader, LeaderState};
 use crate::metrics;
 use crate::registry_lock::RegistryWriteLock;
 
+/// Shared state tracking the instant the last successful sweep write completed.
+/// `None` means no sweep has completed yet in this process.
+pub type LastSweepAt = Arc<tokio::sync::Mutex<Option<Instant>>>;
+
+/// Create a new, initially-empty `LastSweepAt` tracker.
+pub fn new_last_sweep_at() -> LastSweepAt {
+    Arc::new(tokio::sync::Mutex::new(None))
+}
+
 /// Run a single sweep-merge-write cycle. Public so tests (and callers who want a one-shot
 /// sweep instead of the loop) can invoke it directly.
 ///
@@ -34,13 +43,25 @@ use crate::registry_lock::RegistryWriteLock;
 /// `DeclareTable`/`protect` call had already committed, silently reverting it). This matters
 /// starting Phase 6 because TTL apply consumes the `protected` flag: a silently-reverted
 /// `protect` would otherwise make a hard-delete irreversible.
+///
+/// On success, `last_sweep_at` is updated to `Instant::now()` so the staleness gauge updater
+/// can report time elapsed since the last completed write.
 pub async fn run_sweep_once(
     sweep_cfg: &SweepConfig,
     registry_path: &str,
     leader_state: &LeaderState,
     write_lock: &RegistryWriteLock,
+    last_sweep_at: &LastSweepAt,
 ) -> Result<()> {
-    run_sweep_once_inner(sweep_cfg, registry_path, leader_state, write_lock, None).await
+    run_sweep_once_inner(
+        sweep_cfg,
+        registry_path,
+        leader_state,
+        write_lock,
+        last_sweep_at,
+        None,
+    )
+    .await
 }
 
 /// Shared implementation. `after_read` (test-only) is notified exactly once, immediately
@@ -53,6 +74,7 @@ async fn run_sweep_once_inner(
     registry_path: &str,
     leader_state: &LeaderState,
     write_lock: &RegistryWriteLock,
+    last_sweep_at: &LastSweepAt,
     after_read: Option<Arc<tokio::sync::Notify>>,
 ) -> Result<()> {
     let cycle_start = Instant::now();
@@ -94,10 +116,11 @@ async fn run_sweep_once_inner(
         .await
         .context("write merged registry")?;
 
+    // Record completion time so the staleness gauge updater can track elapsed seconds.
+    *last_sweep_at.lock().await = Some(Instant::now());
+
     let elapsed = cycle_start.elapsed();
     metrics::record_sweep_cycle(tables_checked, elapsed);
-    // Staleness: the registry just updated — set to 0.
-    metrics::set_snapshot_staleness(0.0);
 
     Ok(())
 }
@@ -112,13 +135,20 @@ pub fn spawn_sweep_loop(
     registry_path: String,
     leader_state: LeaderState,
     write_lock: RegistryWriteLock,
+    last_sweep_at: LastSweepAt,
     interval: Duration,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             if is_leader(&leader_state) {
-                if let Err(e) =
-                    run_sweep_once(&sweep_cfg, &registry_path, &leader_state, &write_lock).await
+                if let Err(e) = run_sweep_once(
+                    &sweep_cfg,
+                    &registry_path,
+                    &leader_state,
+                    &write_lock,
+                    &last_sweep_at,
+                )
+                .await
                 {
                     tracing::error!(error = %e, "sweep cycle failed");
                 }
@@ -157,18 +187,30 @@ mod tests {
             .unwrap()
             .to_string();
         let write_lock = new_registry_write_lock();
+        let last_sweep_at = new_last_sweep_at();
 
         // Leadership already false by the time run_sweep_once is called -- simulates the
         // "lost leadership mid-sweep" window the re-check exists to close.
         let leader_state: LeaderState = Arc::new(AtomicBool::new(false));
-        run_sweep_once(&sweep_cfg, &registry_path, &leader_state, &write_lock)
-            .await
-            .expect("sweep-merge should not fail even when the write is skipped");
+        run_sweep_once(
+            &sweep_cfg,
+            &registry_path,
+            &leader_state,
+            &write_lock,
+            &last_sweep_at,
+        )
+        .await
+        .expect("sweep-merge should not fail even when the write is skipped");
 
         // No write ever happened: the registry dataset was never created.
         assert!(
             read_registry(&registry_path).await.is_err(),
             "registry should not exist -- the write must have been skipped"
+        );
+        // last_sweep_at must remain None when the write was skipped.
+        assert!(
+            last_sweep_at.lock().await.is_none(),
+            "last_sweep_at must stay None when registry write was skipped"
         );
     }
 
@@ -184,15 +226,27 @@ mod tests {
             .unwrap()
             .to_string();
         let write_lock = new_registry_write_lock();
+        let last_sweep_at = new_last_sweep_at();
 
         let leader_state: LeaderState = Arc::new(AtomicBool::new(true));
-        run_sweep_once(&sweep_cfg, &registry_path, &leader_state, &write_lock)
-            .await
-            .expect("sweep-merge-write should succeed");
+        run_sweep_once(
+            &sweep_cfg,
+            &registry_path,
+            &leader_state,
+            &write_lock,
+            &last_sweep_at,
+        )
+        .await
+        .expect("sweep-merge-write should succeed");
 
         assert!(
             read_registry(&registry_path).await.is_ok(),
             "registry should have been written while still leader"
+        );
+        // last_sweep_at must be populated after a successful write.
+        assert!(
+            last_sweep_at.lock().await.is_some(),
+            "last_sweep_at must be set after a successful sweep write"
         );
     }
 
@@ -239,18 +293,21 @@ mod tests {
         let leader_state: LeaderState = Arc::new(AtomicBool::new(true));
         let after_read = Arc::new(tokio::sync::Notify::new());
 
+        let last_sweep_at = new_last_sweep_at();
         let sweep_task = {
             let sweep_cfg = sweep_cfg.clone();
             let registry_path = registry_path.clone();
             let leader_state = leader_state.clone();
             let write_lock = write_lock.clone();
             let after_read = after_read.clone();
+            let last_sweep_at = last_sweep_at.clone();
             tokio::spawn(async move {
                 run_sweep_once_inner(
                     &sweep_cfg,
                     &registry_path,
                     &leader_state,
                     &write_lock,
+                    &last_sweep_at,
                     Some(after_read),
                 )
                 .await

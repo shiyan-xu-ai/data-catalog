@@ -84,6 +84,7 @@ async fn only_leader_writes_registry_and_both_pods_read_latest_state() {
         registry_path.clone(),
         leader_state,
         leader_write_lock,
+        catalog_api_lib::sweep_loop::new_last_sweep_at(),
         tick,
     );
     let follower_sweep_handle = catalog_api_lib::sweep_loop::spawn_sweep_loop(
@@ -91,6 +92,7 @@ async fn only_leader_writes_registry_and_both_pods_read_latest_state() {
         registry_path.clone(),
         follower_state,
         follower_write_lock,
+        catalog_api_lib::sweep_loop::new_last_sweep_at(),
         tick,
     );
 
