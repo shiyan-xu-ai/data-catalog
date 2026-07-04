@@ -1,5 +1,6 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::{routing::get, Json, Router};
@@ -8,9 +9,11 @@ use tower_http::cors::CorsLayer;
 
 use catalog_api_lib::api::{api_router, ApiState};
 use catalog_api_lib::config::{AppConfig, LeaderMode};
+use catalog_api_lib::internal_server;
 use catalog_api_lib::leader::{
     self, ForcedLeaderElector, KubeLeaseElector, LeaderElector, LeaderState,
 };
+use catalog_api_lib::metrics::{self, AppMetrics};
 use catalog_api_lib::registry_cache::{self, RegistryCache};
 use catalog_api_lib::registry_lock::{self, RegistryWriteLock};
 use catalog_api_lib::sweep_config;
@@ -22,7 +25,7 @@ async fn healthz() -> &'static str {
 }
 
 /// Internal debug endpoint: inspect the currently cached registry state. Not part of the
-/// public REST API (that's a later phase) — useful for local dev and integration tests.
+/// public REST API — useful for local dev and integration tests.
 async fn debug_registry(State(cache): State<RegistryCache>) -> Json<Vec<catalog_core::TableEntry>> {
     Json(cache.read().await.clone())
 }
@@ -59,9 +62,7 @@ fn app(
             get(debug_is_leader).with_state(leader_state),
         )
         .merge(api_router(api_state))
-        // Permissive CORS for the public /v1 + /ext + /metrics surface: v1.0.0 has no deployed
-        // frontend yet, so there's no concrete origin to allow-list. TODO (Phase 9/10): tighten
-        // to the frontend's actual deployed origin.
+        // Permissive CORS for the public /v1 + /ext surface.
         .layer(CorsLayer::permissive())
 }
 
@@ -85,9 +86,57 @@ async fn build_leader_elector(cfg: &AppConfig) -> anyhow::Result<Arc<dyn LeaderE
     }
 }
 
+/// Polls leader state every 5 s and updates the `catalog_is_leader` gauge.
+fn spawn_leader_gauge_updater(leader_state: LeaderState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            metrics::set_is_leader(leader::is_leader(&leader_state));
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+}
+
+/// Polls registry cache every 5 s and sets the `catalog_hydration_ready` gauge.
+fn spawn_hydration_gauge_updater(cache: RegistryCache) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let ready = !cache.read().await.is_empty();
+            metrics::set_hydration_ready(ready);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+}
+
+/// Collects tokio runtime metrics at 15-second intervals and records them via the `metrics`
+/// facade under `tokio_*` names.
+fn spawn_tokio_metrics_collector(
+    runtime_monitor: tokio_metrics::RuntimeMonitor,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut intervals = runtime_monitor.intervals();
+        loop {
+            if let Some(interval) = intervals.next() {
+                ::metrics::gauge!("tokio_workers_count").set(interval.workers_count as f64);
+                ::metrics::gauge!("tokio_live_tasks_count").set(interval.live_tasks_count as f64);
+                ::metrics::gauge!("tokio_worker_total_busy_duration_seconds")
+                    .set(interval.total_busy_duration.as_secs_f64());
+                ::metrics::counter!("tokio_total_park_count_total")
+                    .absolute(interval.total_park_count);
+            }
+            tokio::time::sleep(Duration::from_secs(15)).await;
+        }
+    })
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    // Install the global Prometheus recorder before any metrics::* calls.
+    let app_metrics: AppMetrics = metrics::init();
+
+    // Register process metrics descriptors (RSS, CPU, open fds).
+    metrics_process::Collector::default().describe();
 
     let cfg = AppConfig::from_env()?;
 
@@ -104,8 +153,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Shared with the sweep loop below: the SAME lock guards every writer's
-    // read-registry -> mutate -> write-registry critical section (see `registry_lock`
-    // module docs) so API mutations and the periodic sweep write can never interleave.
+    // read-registry -> mutate -> write-registry critical section.
     let write_lock: RegistryWriteLock = registry_lock::new_registry_write_lock();
 
     let sweep_cfg = sweep_config::build_sweep_config(&cfg.sweep_root_uri)?;
@@ -116,6 +164,18 @@ async fn main() -> anyhow::Result<()> {
         write_lock.clone(),
         cfg.sweep_interval,
     );
+
+    // Background gauge updaters.
+    let _leader_gauge = spawn_leader_gauge_updater(leader_state.clone());
+    let _hydration_gauge = spawn_hydration_gauge_updater(registry_cache.clone());
+
+    // Tokio runtime metrics collector.
+    let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&tokio::runtime::Handle::current());
+    let _tokio_metrics = spawn_tokio_metrics_collector(runtime_monitor);
+
+    // Internal server: /metrics + /healthz on a separate network-policy-restricted port.
+    let _internal_task =
+        internal_server::spawn_internal_server(cfg.metrics_bind_addr.clone(), app_metrics);
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await

@@ -3,7 +3,9 @@
 
 pub mod api;
 pub mod config;
+pub mod internal_server;
 pub mod leader;
+pub mod metrics;
 pub mod registry_cache;
 pub mod registry_lock;
 pub mod sweep_config;

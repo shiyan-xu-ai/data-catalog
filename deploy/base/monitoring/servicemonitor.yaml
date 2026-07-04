@@ -1,0 +1,24 @@
+---
+# ServiceMonitor — requires Prometheus Operator (kube-prometheus-stack or similar).
+# Additive: if the operator is not deployed, use the standalone prometheus/configmap.yaml
+# scrape config instead. Both target the same metrics port (9090) and may coexist if the
+# operator's Prometheus is also deployed alongside the standalone one.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: catalog-api
+  namespace: monitoring
+  labels:
+    app: catalog-api
+    prometheus: kube-prometheus
+spec:
+  selector:
+    matchLabels:
+      app: catalog-api
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scheme: http

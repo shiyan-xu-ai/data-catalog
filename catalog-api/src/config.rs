@@ -37,6 +37,9 @@ pub enum LeaderMode {
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub bind_addr: String,
+    /// Bind address for the internal metrics/healthz server (separate port from main API).
+    /// Scraped by Prometheus via the `metrics` port defined in the Service manifest.
+    pub metrics_bind_addr: String,
     pub leader_mode: LeaderMode,
     /// How often the leader-election task re-ticks (acquire/renew attempt, or a forced
     /// no-op for `LeaderMode::Forced`).
@@ -78,6 +81,7 @@ impl AppConfig {
 
         Ok(Self {
             bind_addr: env_or("CATALOG_BIND_ADDR", "0.0.0.0:8080"),
+            metrics_bind_addr: env_or("CATALOG_METRICS_BIND_ADDR", "0.0.0.0:9090"),
             leader_mode,
             leader_tick_interval: env_duration_secs("CATALOG_LEADER_TICK_INTERVAL_SECS", 10),
             lease_duration: env_duration_secs("CATALOG_LEASE_DURATION_SECS", 30),

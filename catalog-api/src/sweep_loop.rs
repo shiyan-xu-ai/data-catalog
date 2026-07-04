@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use catalog_core::{apply_sweep_result, read_registry, write_registry, TableEntry};
@@ -12,6 +12,7 @@ use catalog_store::SweepConfig;
 use tokio::task::JoinHandle;
 
 use crate::leader::{is_leader, LeaderState};
+use crate::metrics;
 use crate::registry_lock::RegistryWriteLock;
 
 /// Run a single sweep-merge-write cycle. Public so tests (and callers who want a one-shot
@@ -54,9 +55,14 @@ async fn run_sweep_once_inner(
     write_lock: &RegistryWriteLock,
     after_read: Option<Arc<tokio::sync::Notify>>,
 ) -> Result<()> {
+    let cycle_start = Instant::now();
+
+    metrics::record_s3_op("sweep_list", true); // LIST issued to discover tables
     let swept = catalog_store::sweep_root(sweep_cfg)
         .await
         .context("sweep root")?;
+
+    let tables_checked = swept.len() as u64;
 
     let _guard = write_lock.lock().await;
 
@@ -87,6 +93,12 @@ async fn run_sweep_once_inner(
     write_registry(registry_path, &merged)
         .await
         .context("write merged registry")?;
+
+    let elapsed = cycle_start.elapsed();
+    metrics::record_sweep_cycle(tables_checked, elapsed);
+    // Staleness: the registry just updated — set to 0.
+    metrics::set_snapshot_staleness(0.0);
+
     Ok(())
 }
 

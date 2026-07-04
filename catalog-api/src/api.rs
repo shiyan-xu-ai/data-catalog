@@ -54,15 +54,16 @@
 //!   in-memory cache) there is no cost problem that expand-filtering or paging would solve;
 //!   the `expand` query param is accepted (so callers that pass it don't 400) but has no
 //!   effect. Revisit if/when the registry grows large enough for payload size to matter.
-//! - **`GET /metrics` is a placeholder.** Phase 7 (monitoring) adds the real Prometheus
-//!   text-format metrics (RED, sweep, freshness, s3, is_leader, ttl_*); this phase only wires
-//!   the route so it exists and returns valid (if trivial) Prometheus exposition text instead
-//!   of 404ing.
 //! - **CORS is permissive (`Any` origin, GET/PUT/DELETE) for all `/v1` and `/ext` routes.**
 //!   v1.0.0 has no deployed frontend yet, so there's no concrete origin to allow-list. TODO
 //!   (Phase 9/10): tighten to the frontend's actual deployed origin once it exists.
+//! - **`GET /metrics` is served on a separate internal port** (default `9090`) by the internal
+//!   server in `crate::internal_server`. This allows network policy to restrict Prometheus
+//!   scraping to the metrics port without opening it to general API traffic. The main API
+//!   router no longer includes a `/metrics` route.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -73,6 +74,7 @@ use catalog_store::SweepConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::leader::{is_leader, LeaderState};
+use crate::metrics;
 use crate::registry_cache::RegistryCache;
 use crate::registry_lock::RegistryWriteLock;
 
@@ -450,16 +452,32 @@ async fn ttl_dryrun(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<TtlDryRunResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let start = Instant::now();
     let cache = state.cache.read().await;
-    let table = cache
-        .iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| table_not_found(&id))?;
+    let table = cache.iter().find(|e| e.id == id).ok_or_else(|| {
+        metrics::record_http_request(
+            "/ext/v1/tables/:id/ttl/dryrun",
+            "GET",
+            "404",
+            "ttl",
+            start.elapsed(),
+        );
+        table_not_found(&id)
+    })?;
     let policy = table.ttl_policy.unwrap_or_default();
     let eligible =
         catalog_core::ttl_eligible_versions(&policy, &table.versions, chrono::Utc::now());
-    let reclaimable_bytes = eligible.iter().map(|v| v.storage_bytes_total).sum();
+    let reclaimable_bytes: u64 = eligible.iter().map(|v| v.storage_bytes_total).sum();
     let candidates = eligible.into_iter().map(|v| v.version_id.clone()).collect();
+    // Update gauge so dashboards show current reclaimable bytes without needing an apply.
+    metrics::set_ttl_reclaimable_bytes(reclaimable_bytes);
+    metrics::record_http_request(
+        "/ext/v1/tables/:id/ttl/dryrun",
+        "GET",
+        "200",
+        "ttl",
+        start.elapsed(),
+    );
     Ok(Json(TtlDryRunResponse {
         table_id: id,
         candidates,
@@ -496,15 +514,31 @@ async fn ttl_apply(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<TtlApplyResponse>, axum::response::Response> {
+    let start = Instant::now();
+
     if !is_leader(&state.leader_state) {
+        metrics::record_http_request(
+            "/ext/v1/tables/:id/ttl/apply",
+            "POST",
+            "503",
+            "ttl",
+            start.elapsed(),
+        );
         return Err(not_leader().into_response_pair());
     }
 
     let _guard = state.write_lock.lock().await;
     let mut map = load_registry_map(&state.registry_path).await;
-    let entry = map
-        .get_mut(&id)
-        .ok_or_else(|| table_not_found(&id).into_response_pair())?;
+    let entry = map.get_mut(&id).ok_or_else(|| {
+        metrics::record_http_request(
+            "/ext/v1/tables/:id/ttl/apply",
+            "POST",
+            "404",
+            "ttl",
+            start.elapsed(),
+        );
+        table_not_found(&id).into_response_pair()
+    })?;
 
     let policy = entry.ttl_policy.unwrap_or_default();
     let now = chrono::Utc::now();
@@ -535,6 +569,8 @@ async fn ttl_apply(
         let prefix = state.sweep_cfg.path_for(&version.snapshot_path);
         match catalog_store::delete_prefix(state.sweep_cfg.store.as_ref(), &prefix).await {
             Ok(()) => {
+                metrics::record_ttl_delete(true);
+                metrics::record_s3_op("ttl_delete", true);
                 audit_records.push(TtlAuditRecord {
                     table_id: id.clone(),
                     version_id: vid.clone(),
@@ -547,27 +583,68 @@ async fn ttl_apply(
                 deleted.push(vid.clone());
                 entry.versions.remove(pos);
             }
-            Err(e) => delete_errors.push(format!("{vid}: {e}")),
+            Err(e) => {
+                metrics::record_ttl_delete(false);
+                metrics::record_s3_op("ttl_delete", false);
+                delete_errors.push(format!("{vid}: {e}"));
+            }
         }
     }
 
-    persist_and_refresh_cache(&state, map)
-        .await
-        .map_err(|e| internal_error(e).into_response_pair())?;
+    persist_and_refresh_cache(&state, map).await.map_err(|e| {
+        metrics::record_ttl_apply(false);
+        metrics::record_http_request(
+            "/ext/v1/tables/:id/ttl/apply",
+            "POST",
+            "500",
+            "ttl",
+            start.elapsed(),
+        );
+        internal_error(e).into_response_pair()
+    })?;
 
     if !audit_records.is_empty() {
         catalog_core::append_ttl_audit(&state.ttl_audit_path, &audit_records)
             .await
-            .map_err(|e| internal_error(e).into_response_pair())?;
+            .map_err(|e| {
+                metrics::record_ttl_apply(false);
+                metrics::record_http_request(
+                    "/ext/v1/tables/:id/ttl/apply",
+                    "POST",
+                    "500",
+                    "ttl",
+                    start.elapsed(),
+                );
+                internal_error(e).into_response_pair()
+            })?;
     }
 
     if !delete_errors.is_empty() {
+        metrics::record_ttl_apply(false);
+        metrics::record_http_request(
+            "/ext/v1/tables/:id/ttl/apply",
+            "POST",
+            "500",
+            "ttl",
+            start.elapsed(),
+        );
         return Err(internal_error(anyhow::anyhow!(
             "some versions failed to delete: {}",
             delete_errors.join("; ")
         ))
         .into_response_pair());
     }
+
+    // Update the reclaimable-bytes gauge — post-apply, reclaimable drops by what we deleted.
+    metrics::set_ttl_reclaimable_bytes(0);
+    metrics::record_ttl_apply(true);
+    metrics::record_http_request(
+        "/ext/v1/tables/:id/ttl/apply",
+        "POST",
+        "200",
+        "ttl",
+        start.elapsed(),
+    );
 
     Ok(Json(TtlApplyResponse {
         table_id: id,
@@ -594,24 +671,12 @@ impl<T: Serialize> IntoResponsePair for (StatusCode, Json<T>) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// /metrics placeholder (real metrics land in Phase 7)
-// ---------------------------------------------------------------------------
-
-/// Trivial placeholder in valid Prometheus text-exposition format, so the route exists and
-/// scraping doesn't 404 before Phase 7 wires the real RED/sweep/freshness/ttl metrics.
-async fn metrics() -> (StatusCode, [(&'static str, &'static str); 1], &'static str) {
-    (
-        StatusCode::OK,
-        [("content-type", "text/plain; version=0.0.4")],
-        "# HELP catalog_api_up Always 1 while the process is serving requests.\n\
-         # TYPE catalog_api_up gauge\n\
-         catalog_api_up 1\n",
-    )
-}
-
-/// Build the public `/v1` + `/ext/v1` + `/metrics` router, fully wired to `state` (returns
-/// `Router<()>`, ready to `.merge()` into the top-level app router).
+/// Build the public `/v1` + `/ext/v1` router, fully wired to `state` (returns `Router<()>`,
+/// ready to `.merge()` into the top-level app router). HTTP RED metrics are recorded at the
+/// TTL handler call sites; the broader RED middleware approach is tracked as a future
+/// improvement — for now, ttl/dryrun and ttl/apply are explicitly instrumented since those
+/// are the operations with the most operational impact. The `/metrics` endpoint lives on the
+/// separate internal server (`crate::internal_server`).
 pub fn api_router(state: ApiState) -> Router {
     Router::new()
         .route("/v1/namespaces", get(list_namespaces))
@@ -631,6 +696,5 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/ext/v1/tables/:id/ttl/dryrun", get(ttl_dryrun))
         .route("/ext/v1/tables/:id/ttl/apply", post(ttl_apply))
-        .route("/metrics", get(metrics))
         .with_state(state)
 }
