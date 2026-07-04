@@ -133,7 +133,10 @@ Response is a JSON array of records:
 - `actor` is the apply principal (`ttl-engine` for the automated engine).
 
 If no TTL deletion has ever been recorded for the table, or the audit dataset
-does not exist yet, the endpoint returns an empty list (not an error).
+does not exist yet, the endpoint returns an empty list (not an error). An
+empty list therefore means "no deletions recorded", never "the audit log could
+not be read": a genuine read failure (transient object-store error, corrupt
+manifest) now returns `500`, so an empty response can be trusted.
 
 ## Shielding a version with `protected`
 
@@ -181,31 +184,34 @@ undercount if a future layout drops a file at the dataset root.
 
 ### (b) The TTL apply audit-vs-registry write is not atomic across the two Lance tables
 
-`ttl_apply` does, per eligible version: delete the S3 prefix, remove the
-version from the in-memory registry, then *after* the loop:
-`persist_and_refresh_cache` (the registry write, a Lance `Overwrite`) and then
-`append_ttl_audit` (the audit write, a separate Lance `Overwrite`). These
-are two separate non-atomic Lance writes.
+`ttl_apply` does, per eligible version: delete the S3 prefix and collect an
+audit record for it. Then *after* the loop, in order: `append_ttl_audit` (the
+audit write, a Lance `Append`) **first**, then `persist_and_refresh_cache`
+(the registry write, a Lance `Overwrite`) that removes the deleted versions.
+These are two separate non-atomic Lance writes.
 
-If the process crashes between the registry write and the audit write, the
-registry correctly reflects the deletions (versions gone, matching S3 reality)
-but the **audit log under-records** the deletions that occurred immediately
-before the crash. This is an audit-completeness gap under a mid-apply crash,
-**not** data loss and **not** unintended deletion — the objects are already
-gone and the registry correctly reflects that.
+The audit is written **before** the registry removal deliberately. If the
+process crashes between the two writes, the deletions are already recorded in
+the durable audit log, but the registry still lists the (already-deleted)
+versions. That is self-healing: the next apply recomputes those versions as
+eligible, re-issues the delete (a NotFound no-op — the objects are already
+gone), removes them from the registry, and appends a **duplicate** audit
+record. So the residual failure mode is a possible *duplicate* audit entry on
+crash + retry, never a *lost* one.
 
-The chosen order (registry-then-audit) is the safer of the two: the reverse
-(audit-then-registry) would risk a *duplicate* audit record on a crash +
-retry (a retry re-deletes as a NotFound no-op and re-audits). True atomicity
-across the two Lance tables would need a transaction spanning both, which is
-out of scope for v1.0.0.
+This ordering is the deliberate safer choice: the audit log is the only
+durable evidence that an irreversible hard-delete happened, so audit
+completeness is prioritized over audit dedup. (The audit write also uses Lance
+`Append`, not a read-all-then-`Overwrite` rewrite, so a transient read error
+can never truncate prior audit history.) True atomicity across the two Lance
+tables would need a transaction spanning both, which is out of scope for
+v1.0.0.
 
-**Operational implication:** treat the audit log as a best-effort record. If
-a leader crash occurs during an apply, cross-check S3 (the deleted version
-directories should be gone) and the registry (the versions should be absent)
-rather than relying solely on the audit log to account for every deletion.
-The registry is the source of truth for "what versions exist"; the audit log
-is a best-effort history.
+**Operational implication:** the audit log never *under*-records a completed
+delete, but may contain a duplicate record for a version whose apply was
+interrupted and retried. When reconciling, de-duplicate audit records by
+`(table_id, version_id)`. The registry remains the source of truth for "what
+versions exist"; the audit log is the durable history of deletions.
 
 ### (c) Partial-failure behavior (no rollback, by design)
 

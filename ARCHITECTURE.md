@@ -154,6 +154,14 @@ section of every registry writer — the sweep loop and all four API mutation
 handlers (`DeclareTable`, `DeregisterTable`, version `protect`, TTL `apply`)
 — on the leader pod, so no two writers interleave.
 
+Registry reads fail closed. `read_registry` returns `Ok(None)` only for a
+genuinely absent dataset (first boot); any other read failure is an `Err` that
+callers propagate rather than treating as an empty registry. A read-modify-
+write that merged into an empty map and wrote it back (via `Overwrite`) would
+silently drop every table's API-assigned `owner`/`ttl_policy` and reset every
+version's `protected` flag, so a transient object-store error aborts the sweep
+cycle or fails the mutation with a `500` instead.
+
 ### Registry cache
 
 Every pod (leader or not) maintains an in-memory `RegistryCache`
@@ -208,10 +216,16 @@ A version is eligible for deletion only if *all* of the following hold:
   candidates; logical/deduped, not physical footprint).
 - `POST /ext/v1/tables/:id/ttl/apply` — leader-only, irreversible. Recomputes
   eligibility fresh (never trusts a stale dry-run response). For each eligible
-  version: physically deletes its entire `<table>/<timestamp>/` prefix tree,
-  appends a `TtlAuditRecord` to `_catalog/ttl_audit`, and removes the version
-  from the registry — all inside the shared `write_lock`-guarded critical
-  section. Idempotent: re-apply is a no-op for already-removed versions.
+  version: resolves the delete prefix (a `snapshot_path` that does not resolve
+  under the sweep root is refused, keeping the version rather than fake-
+  succeeding), physically deletes its entire `<table>/<timestamp>/` prefix
+  tree, and collects a `TtlAuditRecord`. After the loop it recomputes
+  `aux_latest`, appends the audit records to `_catalog/ttl_audit` (Lance
+  `Append`) **before** persisting the registry removal, so a mid-apply crash
+  can leave a duplicate audit entry but never a lost one — all inside the
+  shared `write_lock`-guarded critical section. Idempotent: re-apply is a
+  no-op for already-removed versions. See [`docs/RUNBOOK-TTL.md`](docs/RUNBOOK-TTL.md)
+  caveat (b) for the non-atomic-across-two-tables detail.
 - `GET /ext/v1/tables/:id/ttl/audit` — read-only, any pod; returns the
   filtered audit records for the table (empty list if no apply has ever run
   or the audit dataset does not exist yet).
@@ -272,8 +286,10 @@ in-sandbox gaps:
   cross-pod leadership-flip window (bounded, self-correcting); a full
   fencing-token / Lance CAS commit protocol is out of scope for v1.0.0.
 - **TTL audit-vs-registry write is not atomic across the two Lance tables.**
-  See [`docs/RUNBOOK-TTL.md`](docs/RUNBOOK-TTL.md) (audit log is best-effort
-  under a mid-apply crash).
+  The audit is appended before the registry removal, so a mid-apply crash can
+  produce a duplicate audit record on retry but never a lost one; the audit
+  write uses Lance `Append` so a transient read can't truncate prior history.
+  See [`docs/RUNBOOK-TTL.md`](docs/RUNBOOK-TTL.md) caveat (b).
 - **`/debug/*` routes and mutation routes are unauthenticated.** Acceptable
   while the service is behind an admin boundary; revisit auth/gating before
   exposing beyond that.

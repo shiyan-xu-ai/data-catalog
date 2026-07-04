@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use anyhow::{anyhow, Result};
 use object_store::path::Path as ObjPath;
 use object_store::ObjectStore;
 
@@ -54,19 +55,24 @@ impl SweepConfig {
     /// Inverse of `uri_for`: recover the `ObjectStore`-relative path from a URI previously
     /// produced by `uri_for` (e.g. a `TableVersion::snapshot_path`), so it can be used for
     /// LIST/DELETE against `store` (TTL hard-delete).
-    pub fn path_for(&self, uri: &str) -> ObjPath {
+    ///
+    /// Errors if `uri` is not under `root_uri`. This is a hard error rather than a silent
+    /// fallback: `path_for` feeds the irreversible TTL delete, and a fallback path that doesn't
+    /// resolve to real objects would turn a failed delete into a fake success (the version
+    /// dropped from the registry while its bytes remain on S3).
+    pub fn path_for(&self, uri: &str) -> Result<ObjPath> {
         let root_uri = self.root_uri.trim_end_matches('/');
         let rel = uri
             .strip_prefix(root_uri)
-            .unwrap_or(uri)
+            .ok_or_else(|| anyhow!("uri {uri} is not under sweep root {root_uri}"))?
             .trim_start_matches('/');
         let root_str = self.root_path.as_ref().trim_end_matches('/');
         if rel.is_empty() {
-            self.root_path.clone()
+            Ok(self.root_path.clone())
         } else if root_str.is_empty() {
-            ObjPath::from(rel)
+            Ok(ObjPath::from(rel))
         } else {
-            ObjPath::from(format!("{root_str}/{rel}"))
+            Ok(ObjPath::from(format!("{root_str}/{rel}")))
         }
     }
 }
@@ -90,6 +96,19 @@ mod tests {
             uri,
             "s3://bucket/scenario_dataset_export/smoke_test/2026-06-26_12-00-00"
         );
-        assert_eq!(cfg.path_for(&uri), original);
+        assert_eq!(cfg.path_for(&uri).unwrap(), original);
+    }
+
+    #[test]
+    fn path_for_errors_when_uri_is_not_under_the_sweep_root() {
+        let cfg = SweepConfig::new(
+            Arc::new(LocalFileSystem::new()),
+            ObjPath::from("scenario_dataset_export"),
+            "s3://bucket/scenario_dataset_export".to_string(),
+        );
+        // A snapshot_path pointing at a different bucket/root must NOT silently fall back to a
+        // path under this store -- it must error, so a TTL delete refuses rather than pretending
+        // to have deleted something it never located.
+        assert!(cfg.path_for("s3://other-bucket/elsewhere/v1").is_err());
     }
 }

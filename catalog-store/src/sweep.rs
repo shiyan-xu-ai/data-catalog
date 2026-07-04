@@ -196,27 +196,27 @@ pub async fn sweep_version(
         }
     }
 
-    // Find the main lance dir among the leftover candidates: detected purely by presence
-    // of `_versions`+`_transactions` at its own root, never by name (findings.md "Main
-    // lance dir detection").
+    // Find the main lance dir among the candidates: detected purely by presence of
+    // `_versions`+`_transactions` at its own root, never by name (findings.md "Main lance dir
+    // detection"). The first lance-shaped candidate wins; every OTHER candidate -- whether it
+    // appears before or after the main dir in the listing -- is collected into `leftovers` and
+    // folded into `other_aux_bytes` + `aux` below, so no top-level dir's bytes are ever silently
+    // dropped from the version's accounting.
     let mut main_dir: Option<(String, ObjPath, DirListing)> = None;
-    let mut partial_candidate: Option<(String, ObjPath)> = None;
+    let mut leftovers: Vec<(String, ObjPath)> = Vec::new();
     for (name, path) in &candidates {
-        let child_listing = list_dir(store, path).await?;
-        if is_lance_shaped(&child_listing) {
-            main_dir = Some((name.clone(), path.clone(), child_listing));
-            break;
-        } else if partial_candidate.is_none() {
-            // AMBIGUOUS DESIGN CALL: any non-lance-shaped leftover top-level dir (once
-            // known sidecar/segments/aux names are excluded) is treated as the
-            // "attempted main dataset dir" for LanceOnlyPartial classification, per
-            // findings.md's `dataset.lance/` w/ only `index_datasets/`+`tag_datasets/`
-            // case. We don't recurse to verify it truly contains *only* nested lances —
-            // if it turns out to be some other unrecognized top-level dir, it still gets
-            // folded into `other_aux_bytes` below, so nothing is silently dropped; it's
-            // just classified as `partial` rather than a clean shape.
-            partial_candidate = Some((name.clone(), path.clone()));
+        if main_dir.is_none() {
+            let child_listing = list_dir(store, path).await?;
+            if is_lance_shaped(&child_listing) {
+                main_dir = Some((name.clone(), path.clone(), child_listing));
+                continue;
+            }
         }
+        // Not the main lance dir (either not lance-shaped, or a main dir was already found):
+        // account for it as an aux/other dir. The first leftover, when there is NO main dir,
+        // also drives the `LanceOnlyPartial` shape classification below (findings.md's
+        // `dataset.lance/` w/ only `index_datasets/`+`tag_datasets/` case).
+        leftovers.push((name.clone(), path.clone()));
     }
 
     let mut aux: Vec<AuxEntry> = Vec::new();
@@ -302,17 +302,27 @@ pub async fn sweep_version(
                 partial = true;
             }
         }
-    } else if let Some((name, path)) = &partial_candidate {
+    } else if !leftovers.is_empty() {
+        // No openable main lance dir, but at least one unrecognized top-level dir is present
+        // (e.g. a `dataset.lance/` holding only nested lances). Classify partial; the dir(s)
+        // are byte-accounted in the unconditional leftover loop below.
         shape = VersionShape::LanceOnlyPartial;
         partial = true;
-        other_aux_bytes += recursive_bytes(store, path).await?;
-        aux.push(aux_entry_for(cfg, name, path).await?);
     } else if top_segments.is_some() || !top_known_aux.is_empty() || top_sidecar.is_some() {
         shape = VersionShape::SegOnly;
         partial = true;
     } else {
         shape = VersionShape::Empty;
         partial = true;
+    }
+
+    // Account for EVERY leftover top-level candidate dir (siblings of the main lance dir that
+    // are neither lance-core, sidecar, segments, nor a known aux name), regardless of shape, so
+    // their bytes land in `other_aux_bytes` and they surface as aux entries instead of being
+    // silently dropped from the version's size accounting.
+    for (name, path) in &leftovers {
+        other_aux_bytes += recursive_bytes(store, path).await?;
+        aux.push(aux_entry_for(cfg, name, path).await?);
     }
 
     // Segments + other known top-level aux are independent of shape classification.

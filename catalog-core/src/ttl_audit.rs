@@ -1,12 +1,10 @@
 //! `_catalog/ttl_audit` Lance table: append-only record of every TTL hard-delete.
 //!
-//! Same JSON-into-Utf8-column pattern as `registry.rs`. "Append" is implemented as
-//! read-existing + concatenate + full `WriteMode::Overwrite` rewrite (not Lance's own
-//! `WriteMode::Append`), reusing the exact write path `registry.rs` already proves correct
-//! with its round-trip test. This is fine at v1.0.0's audit-log scale: one write per TTL
-//! `apply` call (admin-triggered, not a hot path), and all TTL applies happen on the leader
-//! under the same `RegistryWriteLock`-guarded critical section as the registry write, so
-//! there is no concurrent-writer hazard on this path either.
+//! Same JSON-into-Utf8-column pattern as `registry.rs`. Appends use Lance's own
+//! `WriteMode::Append` (creating the dataset on the first write) so a new record never reads,
+//! rewrites, or risks truncating the existing log. All TTL applies happen on the leader under
+//! the same `RegistryWriteLock`-guarded critical section as the registry write, so there is no
+//! concurrent-writer hazard on this path.
 
 use std::sync::Arc;
 
@@ -104,41 +102,58 @@ fn batch_to_records(batch: &RecordBatch) -> Result<Vec<TtlAuditRecord>> {
     Ok(records)
 }
 
-/// Read all audit records at `path`. Returns an empty vec if the dataset doesn't exist yet
-/// (no TTL deletion has ever happened for any table).
-pub async fn read_ttl_audit(path: &str) -> Result<Vec<TtlAuditRecord>> {
-    match Dataset::open(path).await {
-        Ok(dataset) => {
-            let batch = dataset
-                .scan()
-                .try_into_batch()
-                .await
-                .context("scan ttl_audit dataset")?;
-            batch_to_records(&batch)
-        }
-        Err(_) => Ok(Vec::new()),
-    }
+/// Read all audit records at `path`.
+///
+/// Returns `Ok(None)` only when the audit dataset does not exist yet (no TTL deletion has ever
+/// been recorded). Every other failure is propagated as `Err` -- a transient open/scan error
+/// must never be mistaken for "no audit history", because this log is the only durable record
+/// of irreversible hard-deletes.
+pub async fn read_ttl_audit(path: &str) -> Result<Option<Vec<TtlAuditRecord>>> {
+    let dataset = match Dataset::open(path).await {
+        Ok(dataset) => dataset,
+        Err(lance::Error::DatasetNotFound { .. }) => return Ok(None),
+        Err(e) => return Err(e).context("open ttl_audit dataset"),
+    };
+    let batch = dataset
+        .scan()
+        .try_into_batch()
+        .await
+        .context("scan ttl_audit dataset")?;
+    Ok(Some(batch_to_records(&batch)?))
 }
 
 /// Append `new_records` to the audit log at `path`. A no-op if `new_records` is empty --
 /// never creates an (empty) dataset just to record that nothing happened.
+///
+/// Uses Lance `WriteMode::Append` (creating the dataset on the first write), NOT the earlier
+/// read-all-then-`Overwrite` pattern: that read the entire existing log and rewrote it in
+/// full, so any transient read failure would silently truncate the durable audit trail to
+/// only the new records. Append writes just the new rows and never reads the old ones, so a
+/// prior record can't be lost, and the cost is O(new) instead of O(all).
 pub async fn append_ttl_audit(path: &str, new_records: &[TtlAuditRecord]) -> Result<()> {
     if new_records.is_empty() {
         return Ok(());
     }
-    let mut all = read_ttl_audit(path).await?;
-    all.extend(new_records.iter().cloned());
+
+    // Append requires the dataset to already exist; Create requires it to NOT exist. Match the
+    // not-found case explicitly and propagate any other open error rather than falling through
+    // to a write that could clobber existing history.
+    let mode = match Dataset::open(path).await {
+        Ok(_) => WriteMode::Append,
+        Err(lance::Error::DatasetNotFound { .. }) => WriteMode::Create,
+        Err(e) => return Err(e).context("open ttl_audit dataset for append"),
+    };
 
     let schema = ttl_audit_schema();
-    let batch = records_to_batch(&all)?;
+    let batch = records_to_batch(new_records)?;
     let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
     let params = WriteParams {
-        mode: WriteMode::Overwrite,
+        mode,
         ..Default::default()
     };
     Dataset::write(reader, path, Some(params))
         .await
-        .context("write ttl_audit dataset")?;
+        .context("append ttl_audit dataset")?;
     Ok(())
 }
 
@@ -168,14 +183,18 @@ mod tests {
         let path = dir.path().join("ttl_audit.lance");
         let path = path.to_str().unwrap();
 
-        assert!(read_ttl_audit(path).await.unwrap().is_empty());
+        // Not created yet: read returns None (distinct from an existing-but-empty log).
+        assert!(read_ttl_audit(path).await.unwrap().is_none());
 
         append_ttl_audit(path, &[sample("t1", "v1")]).await.unwrap();
         append_ttl_audit(path, &[sample("t1", "v2"), sample("t2", "v1")])
             .await
             .unwrap();
 
-        let mut records = read_ttl_audit(path).await.unwrap();
+        let mut records = read_ttl_audit(path)
+            .await
+            .unwrap()
+            .expect("audit log exists");
         records.sort_by(|a, b| {
             (a.table_id.as_str(), a.version_id.as_str())
                 .cmp(&(b.table_id.as_str(), b.version_id.as_str()))
@@ -194,7 +213,7 @@ mod tests {
         let path = path.to_str().unwrap();
 
         append_ttl_audit(path, &[]).await.unwrap();
-        assert!(read_ttl_audit(path).await.unwrap().is_empty());
+        assert!(read_ttl_audit(path).await.unwrap().is_none());
         assert!(
             Dataset::open(path).await.is_err(),
             "no dataset should have been created for an empty append"

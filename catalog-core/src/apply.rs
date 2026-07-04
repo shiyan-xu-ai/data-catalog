@@ -42,14 +42,18 @@ fn merge_versions(existing: &mut Vec<TableVersion>, incoming: Vec<TableVersion>)
 /// Recompute `aux_latest` from the version with the lexicographically-greatest `version_id`
 /// (ISO8601 timestamps sort chronologically as strings). Deriving it from merged state rather
 /// than carrying it through per-call keeps the result order-independent.
-fn recompute_aux_latest(entry: &mut TableEntry) {
-    if let Some(latest) = entry
+///
+/// The assignment is total: when `versions` is empty, `aux_latest` is cleared. This matters
+/// after a TTL apply removes the latest (or all) versions -- otherwise `aux_latest` would keep
+/// pointing at aux paths that were just hard-deleted from S3. Exposed (and re-exported from the
+/// crate root) so `catalog-api`'s TTL apply can restore the invariant after removing versions.
+pub fn recompute_aux_latest(entry: &mut TableEntry) {
+    entry.aux_latest = entry
         .versions
         .iter()
         .max_by(|a, b| a.version_id.cmp(&b.version_id))
-    {
-        entry.aux_latest = latest.aux.clone();
-    }
+        .map(|latest| latest.aux.clone())
+        .unwrap_or_default();
 }
 
 fn max_option<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {

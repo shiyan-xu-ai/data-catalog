@@ -557,7 +557,10 @@ v1.0.0 concretizes this to a per-table API policy with hard-delete semantics:
   `seg_only` only; `lance_only_partial`/`empty` refused).
 - `apply` hard-deletes the entire `<table>/<timestamp>/` prefix tree from S3
   (irreversible), appends a `TtlAuditRecord` per deletion to
-  `_catalog/ttl_audit`, and removes the version from the registry.
+  `_catalog/ttl_audit` (durable Lance `Append`) **before** removing the
+  version from the registry, so a mid-apply crash can leave a duplicate audit
+  entry but never a lost one. A `snapshot_path` that does not resolve under
+  the sweep root is refused rather than fake-succeeding the delete.
   Lineage-aware retention (never reap a version referenced as a job input)
   is not implemented in v1.0.0 (deferred alongside lineage).
 - Dry-run returns candidate versions + `reclaimable_bytes` (logical/deduped

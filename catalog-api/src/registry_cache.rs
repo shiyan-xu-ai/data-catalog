@@ -23,9 +23,12 @@ pub fn spawn_refresh(
     tokio::spawn(async move {
         loop {
             match catalog_core::read_registry(&registry_path).await {
-                Ok(entries) => {
+                Ok(Some(entries)) => {
                     *cache.write().await = entries;
                 }
+                // Registry not written yet (before the first sweep): keep the current (empty)
+                // cache rather than clobbering it.
+                Ok(None) => {}
                 Err(e) => {
                     tracing::debug!(error = %e, "registry refresh: read failed, keeping cached state");
                 }

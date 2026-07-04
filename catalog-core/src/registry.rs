@@ -169,12 +169,23 @@ pub async fn write_registry(path: &str, entries: &[TableEntry]) -> Result<()> {
 }
 
 /// Read all registry entries from the Lance dataset at `path`.
-pub async fn read_registry(path: &str) -> Result<Vec<TableEntry>> {
-    let dataset = Dataset::open(path).await.context("open registry dataset")?;
+///
+/// Returns `Ok(None)` only when the dataset does not exist yet (expected on the very first
+/// boot, before any sweep has written it). Every other failure -- transient object-store
+/// errors, throttling, corrupt manifests, deserialization failures -- is propagated as `Err`.
+/// Callers MUST NOT treat an `Err` as "empty registry": doing so lets a transient read failure
+/// rebuild the registry from scratch, and because `write_registry` uses `WriteMode::Overwrite`
+/// that silently drops every table's API-assigned `owner`/`ttl_policy`/`protected` state.
+pub async fn read_registry(path: &str) -> Result<Option<Vec<TableEntry>>> {
+    let dataset = match Dataset::open(path).await {
+        Ok(dataset) => dataset,
+        Err(lance::Error::DatasetNotFound { .. }) => return Ok(None),
+        Err(e) => return Err(e).context("open registry dataset"),
+    };
     let batch = dataset
         .scan()
         .try_into_batch()
         .await
         .context("scan registry dataset")?;
-    batch_to_entries(&batch)
+    Ok(Some(batch_to_entries(&batch)?))
 }

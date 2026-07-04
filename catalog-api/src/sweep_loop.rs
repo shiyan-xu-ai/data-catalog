@@ -88,10 +88,17 @@ async fn run_sweep_once_inner(
 
     let _guard = write_lock.lock().await;
 
-    // The registry may not exist yet on the very first sweep.
-    let mut current: HashMap<String, TableEntry> = match read_registry(registry_path).await {
-        Ok(entries) => entries.into_iter().map(|e| (e.id.clone(), e)).collect(),
-        Err(_) => HashMap::new(),
+    // The registry may not exist yet on the very first sweep (`Ok(None)`) -- start from an
+    // empty map in that case only. A real read error aborts the whole cycle: merging the
+    // freshly-swept tables into an empty map and writing that back (via `Overwrite`) would
+    // silently drop every table's API-assigned owner/ttl_policy and reset every version's
+    // `protected` flag. Discarding this cycle is recoverable; overwriting the registry is not.
+    let mut current: HashMap<String, TableEntry> = match read_registry(registry_path)
+        .await
+        .context("read registry for sweep merge")?
+    {
+        Some(entries) => entries.into_iter().map(|e| (e.id.clone(), e)).collect(),
+        None => HashMap::new(),
     };
 
     if let Some(notify) = &after_read {
@@ -204,7 +211,7 @@ mod tests {
 
         // No write ever happened: the registry dataset was never created.
         assert!(
-            read_registry(&registry_path).await.is_err(),
+            read_registry(&registry_path).await.unwrap().is_none(),
             "registry should not exist -- the write must have been skipped"
         );
         // last_sweep_at must remain None when the write was skipped.
@@ -240,7 +247,7 @@ mod tests {
         .expect("sweep-merge-write should succeed");
 
         assert!(
-            read_registry(&registry_path).await.is_ok(),
+            read_registry(&registry_path).await.unwrap().is_some(),
             "registry should have been written while still leader"
         );
         // last_sweep_at must be populated after a successful write.
@@ -351,7 +358,10 @@ mod tests {
         let resp = declare_task.await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let final_registry = read_registry(&registry_path).await.unwrap();
+        let final_registry = read_registry(&registry_path)
+            .await
+            .unwrap()
+            .expect("registry exists after the sweep write");
         let entry = final_registry
             .iter()
             .find(|e| e.id == "smoke_test")
