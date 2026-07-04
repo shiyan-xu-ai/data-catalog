@@ -479,6 +479,22 @@ struct TtlApplyResponse {
     reclaimed_bytes: u64,
 }
 
+/// `GET /ext/v1/tables/{id}/ttl/audit` -- read-only audit log for a table. Returns the
+/// `TtlAuditRecord`s for `id` (filtered from the global `_catalog/ttl_audit` log). Any pod
+/// can serve this; no leader requirement (read-only, like every other GET). Returns an empty
+/// list if no TTL deletion has ever been recorded for the table (or if the audit dataset does
+/// not exist yet).
+async fn ttl_audit(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<TtlAuditRecord>>, (StatusCode, Json<ErrorResponse>)> {
+    let records = catalog_core::read_ttl_audit(&state.ttl_audit_path)
+        .await
+        .map_err(internal_error)?;
+    let filtered: Vec<TtlAuditRecord> = records.into_iter().filter(|r| r.table_id == id).collect();
+    Ok(Json(filtered))
+}
+
 /// `POST /ext/v1/tables/{id}/ttl/apply` -- leader-only, IRREVERSIBLE hard delete.
 ///
 /// Recomputes TTL-eligible versions fresh against the current registry state (never trusts a
@@ -697,6 +713,7 @@ pub fn api_router(state: ApiState) -> Router {
             put(ext_protect_version),
         )
         .route("/ext/v1/tables/:id/ttl/dryrun", get(ttl_dryrun))
+        .route("/ext/v1/tables/:id/ttl/audit", get(ttl_audit))
         .route("/ext/v1/tables/:id/ttl/apply", post(ttl_apply))
         .layer(axum::middleware::from_fn(red_middleware))
         .with_state(state)
