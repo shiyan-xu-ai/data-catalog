@@ -13,12 +13,22 @@ fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-fn env_duration_secs(name: &str, default_secs: u64) -> Duration {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(default_secs))
+/// Parse a duration-in-seconds env var, falling back to `default_secs` when unset. An unset var
+/// is fine, but a *set-but-invalid* value is a hard error rather than a silent fallback (a typo
+/// shouldn't leave the operator thinking their override took effect), and `0` is rejected
+/// because every duration here drives a loop interval or lease lifetime where 0 means a hot
+/// loop or an instantly-expired lease.
+fn env_duration_secs(name: &str, default_secs: u64) -> Result<Duration> {
+    let secs = match std::env::var(name) {
+        Ok(v) => v.parse::<u64>().map_err(|_| {
+            anyhow!("{name} must be a positive integer number of seconds, got {v:?}")
+        })?,
+        Err(_) => default_secs,
+    };
+    if secs == 0 {
+        return Err(anyhow!("{name} must be greater than 0 seconds"));
+    }
+    Ok(Duration::from_secs(secs))
 }
 
 /// How leadership is determined.
@@ -79,8 +89,8 @@ impl AppConfig {
             }
         };
 
-        let leader_tick_interval = env_duration_secs("CATALOG_LEADER_TICK_INTERVAL_SECS", 10);
-        let lease_duration = env_duration_secs("CATALOG_LEASE_DURATION_SECS", 30);
+        let leader_tick_interval = env_duration_secs("CATALOG_LEADER_TICK_INTERVAL_SECS", 10)?;
+        let lease_duration = env_duration_secs("CATALOG_LEASE_DURATION_SECS", 30)?;
         // The tick interval must be shorter than the lease duration: the elector renews once
         // per tick, so an interval >= lease_duration means the lease can expire between renewals
         // and leadership flaps every cycle. The deadline policy in `run_leader_election` also
@@ -105,13 +115,49 @@ impl AppConfig {
             registry_refresh_interval: env_duration_secs(
                 "CATALOG_REGISTRY_REFRESH_INTERVAL_SECS",
                 5,
-            ),
+            )?,
             sweep_root_uri: env_or(
                 "CATALOG_SWEEP_ROOT_URI",
                 "s3://onroad-perception-datasets/scenario_dataset_export",
             ),
             // Default per findings.md ("~30 min full pass"); override for tests/local dev.
-            sweep_interval: env_duration_secs("CATALOG_SWEEP_INTERVAL_SECS", 1800),
+            sweep_interval: env_duration_secs("CATALOG_SWEEP_INTERVAL_SECS", 1800)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_duration_secs_defaults_parses_and_rejects_invalid_and_zero() {
+        // A test-only var name that no other config var or parallel test reads.
+        let name = "CATALOG_TEST_ENV_DURATION_SECS";
+        // SAFETY: single-threaded within this test; the unique name avoids clashing with any
+        // other test that mutates the environment.
+        unsafe {
+            std::env::remove_var(name);
+        }
+        // Unset -> default.
+        assert_eq!(env_duration_secs(name, 7).unwrap(), Duration::from_secs(7));
+        // Valid override -> parsed.
+        unsafe {
+            std::env::set_var(name, "42");
+        }
+        assert_eq!(env_duration_secs(name, 7).unwrap(), Duration::from_secs(42));
+        // Non-numeric -> error, not a silent fallback to the default.
+        unsafe {
+            std::env::set_var(name, "notanumber");
+        }
+        assert!(env_duration_secs(name, 7).is_err());
+        // Zero -> error (a 0s interval is a hot loop / instantly-expired lease).
+        unsafe {
+            std::env::set_var(name, "0");
+        }
+        assert!(env_duration_secs(name, 7).is_err());
+        unsafe {
+            std::env::remove_var(name);
+        }
     }
 }

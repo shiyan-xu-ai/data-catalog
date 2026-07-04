@@ -26,7 +26,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-use kube::api::{Api, PostParams};
+use kube::api::{Api, DeleteParams, PostParams, Preconditions};
 use kube::Client;
 use tokio::task::JoinHandle;
 
@@ -47,6 +47,13 @@ pub type LeaderState = Arc<AtomicBool>;
 #[async_trait]
 pub trait LeaderElector: Send + Sync {
     async fn tick(&self) -> Result<bool>;
+
+    /// Best-effort release of the lease on shutdown, so a successor takes over promptly instead
+    /// of waiting a full `lease_duration` for the lease to expire. A no-op if we don't currently
+    /// hold the lease. Default implementation does nothing (for electors with no external lease).
+    async fn relinquish(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// The three leadership states a tick can resolve to, after mapping the elector's
@@ -394,6 +401,37 @@ impl LeaderElector for KubeLeaseElector {
         // transient failure (hold leadership until the deadline) from a definitive
         // `Ok(false)` (someone else holds the lease -> demote now). See `run_leader_election`.
         self.acquire_or_renew().await
+    }
+
+    async fn relinquish(&self) -> Result<()> {
+        let existing = match self.api.get(&self.lease_name).await {
+            Ok(lease) => lease,
+            // Already gone: nothing to release.
+            Err(kube::Error::Api(err)) if err.code == 404 => return Ok(()),
+            Err(e) => return Err(e).context("get lease to relinquish"),
+        };
+
+        // Only release a lease we actually hold. If a takeover already happened, leave it.
+        if !self.we_hold_it(&existing) {
+            return Ok(());
+        }
+
+        // Delete the lease (guarded by the observed `resourceVersion`) so a successor's next GET
+        // 404s and it Creates immediately, instead of waiting a full `lease_duration` for expiry.
+        // Best-effort: if the lease changed under us (409) or is already gone (404), a takeover
+        // has happened -- we're stepping down anyway, so treat both as success.
+        let params = DeleteParams {
+            preconditions: Some(Preconditions {
+                resource_version: existing.metadata.resource_version.clone(),
+                uid: None,
+            }),
+            ..Default::default()
+        };
+        match self.api.delete(&self.lease_name, &params).await {
+            Ok(_) => Ok(()),
+            Err(kube::Error::Api(err)) if err.code == 404 || err.code == 409 => Ok(()),
+            Err(e) => Err(e).context("delete lease to relinquish"),
+        }
     }
 }
 

@@ -16,12 +16,14 @@
 //! In a real deployment, a `NetworkPolicy` would allow ingress on port 9090 only from the
 //! Prometheus namespace, while the main API port is accessible to regular callers.
 
+use anyhow::{Context, Result};
 use axum::extract::State;
 use axum::routing::get;
 use axum::Router;
 use tokio::task::JoinHandle;
 
 use crate::metrics::AppMetrics;
+use crate::shutdown::shutdown_signal;
 
 async fn healthz() -> &'static str {
     "ok"
@@ -48,15 +50,24 @@ pub fn internal_router(app_metrics: AppMetrics) -> Router {
         .with_state(app_metrics)
 }
 
-/// Spawn the internal server on `bind_addr`. Returns the `JoinHandle`; drop it to cancel.
-pub fn spawn_internal_server(bind_addr: String, app_metrics: AppMetrics) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(&bind_addr)
+/// Bind the internal server on `bind_addr`, then spawn it. The bind happens *before* the spawn
+/// and its failure is returned to the caller (which fails startup), rather than panicking inside
+/// a detached task where the process would otherwise keep running without `/metrics`. The spawned
+/// server drains on `SIGTERM`/Ctrl-C via `with_graceful_shutdown`.
+pub async fn spawn_internal_server(
+    bind_addr: String,
+    app_metrics: AppMetrics,
+) -> Result<JoinHandle<()>> {
+    let listener = tokio::net::TcpListener::bind(&bind_addr)
+        .await
+        .with_context(|| format!("bind internal metrics server to {bind_addr}"))?;
+    tracing::info!(addr = %bind_addr, "internal metrics server listening");
+    Ok(tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, internal_router(app_metrics))
+            .with_graceful_shutdown(shutdown_signal())
             .await
-            .unwrap_or_else(|e| panic!("failed to bind internal server to {bind_addr}: {e}"));
-        tracing::info!(addr = %bind_addr, "internal metrics server listening");
-        axum::serve(listener, internal_router(app_metrics))
-            .await
-            .expect("internal metrics server error");
-    })
+        {
+            tracing::error!(error = %e, "internal metrics server error");
+        }
+    }))
 }

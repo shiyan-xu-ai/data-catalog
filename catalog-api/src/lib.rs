@@ -8,5 +8,6 @@ pub mod leader;
 pub mod metrics;
 pub mod registry_cache;
 pub mod registry_lock;
+pub mod shutdown;
 pub mod sweep_config;
 pub mod sweep_loop;

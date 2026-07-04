@@ -102,11 +102,13 @@ async fn only_leader_writes_registry_and_both_pods_read_latest_state() {
     let leader_refresh_handle = catalog_api_lib::registry_cache::spawn_refresh(
         registry_path.clone(),
         leader_cache.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
         Duration::from_millis(20),
     );
     let follower_refresh_handle = catalog_api_lib::registry_cache::spawn_refresh(
         registry_path.clone(),
         follower_cache.clone(),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
         Duration::from_millis(20),
     );
 
