@@ -20,6 +20,13 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_INCREMENTAL: "0"
+      # Link with lld instead of the default bfd ld. Linking the large
+      # lance + datafusion + arrow binaries is the slowest part of the build
+      # (and the earlier SIGBUS-on-link culprit); lld is dramatically faster
+      # and more memory-frugal. Scoped to CI via RUSTFLAGS so local dev builds
+      # are unaffected and contributors don't need lld installed. lld must be
+      # installed before any cargo step below.
+      RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
     steps:
       - uses: actions/checkout@v4
 
@@ -51,8 +58,15 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
 
-      - name: cargo build --workspace
-        run: cargo build --workspace --all-targets
+      # lld linker for the RUSTFLAGS=-fuse-ld=lld above. Must precede cargo.
+      - name: Install lld
+        run: sudo apt-get update && sudo apt-get install -y lld
 
+      # Single pass: `cargo test --all-targets` compiles every target (lib,
+      # the catalog-api bin, and all test binaries) AND runs the tests in one
+      # invocation — so we keep a full-workspace build signal (the bin still
+      # has to compile and link) without the redundant separate `cargo build`
+      # that recompiled/relinked everything a second time. There are no
+      # doctests in this workspace, so --all-targets skips nothing.
       - name: cargo test --workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets
