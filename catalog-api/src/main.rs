@@ -168,8 +168,12 @@ async fn main() -> anyhow::Result<()> {
 
     let leader_state: LeaderState = Arc::new(AtomicBool::new(false));
     let elector = build_leader_elector(&cfg).await?;
-    let _leader_task =
-        leader::run_leader_election(elector, leader_state.clone(), cfg.leader_tick_interval);
+    let _leader_task = leader::run_leader_election(
+        elector,
+        leader_state.clone(),
+        cfg.leader_tick_interval,
+        cfg.lease_duration,
+    );
 
     let registry_cache: RegistryCache = Arc::new(RwLock::new(Vec::new()));
     let _refresh_task = registry_cache::spawn_refresh(

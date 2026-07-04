@@ -79,12 +79,27 @@ impl AppConfig {
             }
         };
 
+        let leader_tick_interval = env_duration_secs("CATALOG_LEADER_TICK_INTERVAL_SECS", 10);
+        let lease_duration = env_duration_secs("CATALOG_LEASE_DURATION_SECS", 30);
+        // The tick interval must be shorter than the lease duration: the elector renews once
+        // per tick, so an interval >= lease_duration means the lease can expire between renewals
+        // and leadership flaps every cycle. The deadline policy in `run_leader_election` also
+        // bounds each tick by one interval, which must stay under the lease to be meaningful.
+        if leader_tick_interval >= lease_duration {
+            return Err(anyhow!(
+                "CATALOG_LEADER_TICK_INTERVAL_SECS ({}s) must be less than \
+                 CATALOG_LEASE_DURATION_SECS ({}s)",
+                leader_tick_interval.as_secs(),
+                lease_duration.as_secs()
+            ));
+        }
+
         Ok(Self {
             bind_addr: env_or("CATALOG_BIND_ADDR", "0.0.0.0:8080"),
             metrics_bind_addr: env_or("CATALOG_METRICS_BIND_ADDR", "0.0.0.0:9090"),
             leader_mode,
-            leader_tick_interval: env_duration_secs("CATALOG_LEADER_TICK_INTERVAL_SECS", 10),
-            lease_duration: env_duration_secs("CATALOG_LEASE_DURATION_SECS", 30),
+            leader_tick_interval,
+            lease_duration,
             registry_path: env_or("CATALOG_REGISTRY_PATH", "_catalog/registry"),
             ttl_audit_path: env_or("CATALOG_TTL_AUDIT_PATH", "_catalog/ttl_audit"),
             registry_refresh_interval: env_duration_secs(

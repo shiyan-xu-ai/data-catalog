@@ -148,6 +148,20 @@ Only the leader pod writes the registry. Leadership is determined by a k8s
 - **Create** (lease absent, 404 on GET): an atomic `create`; a lost create
   race yields 409 and the loser reports non-leader.
 
+Leadership is **deadline-based**. Each tick is `timeout`-bounded, and a
+successful renew extends a local deadline by `lease_duration`. A transient tick
+failure (kube API error or timeout) does **not** immediately demote a live
+leader — it keeps leadership only until that deadline, then releases it. This
+closes two failure modes: flapping (one blipped API call demoting a healthy
+leader and skipping its sweep write) and stale leadership (a hung tick keeping
+the flag `true` forever). The deadline is derived from the instant *before* the
+tick, so it is conservatively earlier than the lease's true expiry — this pod
+always demotes before another can legitimately take over. `is_leader` is
+re-checked immediately before the registry write, so a demotion mid-sweep skips
+the write. `CATALOG_LEADER_TICK_INTERVAL_SECS` must be less than
+`CATALOG_LEASE_DURATION_SECS` (validated at startup); a
+`catalog_leader_transitions_total` counter records each acquire/loss edge.
+
 A shared `RegistryWriteLock` (`catalog-api/src/registry_lock.rs`,
 `Arc<tokio::sync::Mutex<()>>`) serializes the read-modify-write critical
 section of every registry writer — the sweep loop and all four API mutation
@@ -245,7 +259,7 @@ once per distinct pattern. Metric names shipped in v1.0.0:
 - Sweep: `catalog_sweep_tables_checked_total`, `catalog_sweep_cycle_duration_seconds`,
   `catalog_snapshot_staleness_seconds`
 - Freshness: `catalog_hydration_ready`
-- Leader: `catalog_is_leader`
+- Leader: `catalog_is_leader`, `catalog_leader_transitions_total`
 - TTL: `catalog_ttl_deletes_total`, `catalog_ttl_apply_total`, `catalog_ttl_reclaimable_bytes`
 - Object store: `catalog_s3_operations_total`
 - Runtime: `tokio_*` (tokio-metrics), `process_*` (metrics-process)

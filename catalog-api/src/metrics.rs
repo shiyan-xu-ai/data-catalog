@@ -29,6 +29,7 @@
 //!
 //! **Controller lifecycle**
 //! - `catalog_is_leader`                    — gauge     (0/1)
+//! - `catalog_leader_transitions_total`     — counter   () — leadership acquire/loss edges
 //!
 //! **TTL**
 //! - `catalog_ttl_deletes_total`            — counter   (result)
@@ -156,6 +157,11 @@ fn register_metric_metadata() {
         "catalog_is_leader",
         "1 if this pod currently holds the leader lease, 0 otherwise."
     );
+    describe_counter!(
+        "catalog_leader_transitions_total",
+        Unit::Count,
+        "Total leadership transitions observed by this pod (each acquire or loss is one edge)."
+    );
 
     // --- TTL ---
     describe_counter!(
@@ -227,6 +233,11 @@ pub fn set_snapshot_staleness(seconds: f64) {
 /// Update the leader gauge.
 pub fn set_is_leader(is_leader: bool) {
     metrics::gauge!("catalog_is_leader").set(if is_leader { 1.0 } else { 0.0 });
+}
+
+/// Record one leadership transition (a false->true or true->false edge).
+pub fn record_leader_transition() {
+    metrics::counter!("catalog_leader_transitions_total").increment(1);
 }
 
 /// Update the hydration-ready gauge.
