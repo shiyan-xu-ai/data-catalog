@@ -175,6 +175,8 @@ async fn two_concurrent_acquirers_of_an_expired_lease_cannot_both_win() {
     );
 
     let (a_won, b_won) = tokio::join!(pod_a.tick(), pod_b.tick());
+    let a_won = a_won.expect("tick must not error against the fake backend");
+    let b_won = b_won.expect("tick must not error against the fake backend");
 
     assert_ne!(
         a_won, b_won,
@@ -228,6 +230,8 @@ async fn lapsed_former_holder_renewing_cannot_clobber_a_concurrent_acquirer() {
     // pod_a is racing to renew a lease it thinks it holds; pod_b is racing to acquire the
     // same (actually expired) lease. Exactly one may win.
     let (a_won, b_won) = tokio::join!(pod_a.tick(), pod_b.tick());
+    let a_won = a_won.expect("tick must not error against the fake backend");
+    let b_won = b_won.expect("tick must not error against the fake backend");
 
     assert_ne!(
         a_won, b_won,
@@ -272,6 +276,8 @@ async fn two_concurrent_acquirers_of_an_absent_lease_cannot_both_win() {
     );
 
     let (a_won, b_won) = tokio::join!(pod_a.tick(), pod_b.tick());
+    let a_won = a_won.expect("tick must not error against the fake backend");
+    let b_won = b_won.expect("tick must not error against the fake backend");
 
     assert_ne!(
         a_won, b_won,

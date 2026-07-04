@@ -1,9 +1,15 @@
 //! Leader election so only one `catalog-api` pod sweeps + writes the registry at a time.
 //!
-//! `LeaderElector` is a small trait with a single `tick()` method: "try to
-//! acquire/renew leadership, return whether we hold it now." A generic `run_leader_election`
-//! loop calls `tick()` on an interval and publishes the result into a shared
-//! `Arc<AtomicBool>` that the rest of the service reads via `is_leader()`.
+//! `LeaderElector` is a small trait with a single `tick()` method: "try to acquire/renew
+//! leadership, and report `Ok(true)` (we hold it), `Ok(false)` (someone else does), or `Err`
+//! (couldn't tell)." A generic `run_leader_election` loop calls `tick()` on an interval and
+//! publishes leadership into a shared `Arc<AtomicBool>` read via `is_leader()`.
+//!
+//! Leadership is deadline-based (see `apply_tick`): a successful renew extends a local deadline
+//! by `lease_duration`, and a transient tick failure keeps leadership only until that deadline
+//! rather than dropping it on the first blip. This avoids both flapping (one failed kube call
+//! demoting a healthy leader and skipping its sweep write) and stale leadership (a hung tick
+//! that never resolves keeping the flag `true` forever) — the tick itself is `timeout`-bounded.
 //!
 //! Two implementations:
 //! - [`KubeLeaseElector`] acquires/renews a real `coordination.k8s.io/v1` Lease object
@@ -14,7 +20,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -24,31 +30,126 @@ use kube::api::{Api, PostParams};
 use kube::Client;
 use tokio::task::JoinHandle;
 
+use crate::metrics;
+
 /// Shared, cheaply-cloneable leadership flag read by the rest of the service.
 pub type LeaderState = Arc<AtomicBool>;
 
-/// Something that can try to acquire/renew leadership on each call and report whether we
-/// hold it right now. Implementations must be safe to call repeatedly on a timer.
+/// Something that can try to acquire/renew leadership on each call and report the outcome.
+/// Implementations must be safe to call repeatedly on a timer.
+///
+/// The `Result<bool>` is three-valued on purpose:
+/// - `Ok(true)`  — we hold leadership now (freshly acquired or renewed).
+/// - `Ok(false)` — we definitively do NOT hold it (someone else holds a live lease, or we
+///   lost an acquire race). A clean negative, not a failure.
+/// - `Err(_)`    — the attempt could not be completed (API error, timeout). The caller keeps
+///   its prior leadership until its local deadline rather than demoting on a transient blip.
 #[async_trait]
 pub trait LeaderElector: Send + Sync {
-    async fn tick(&self) -> bool;
+    async fn tick(&self) -> Result<bool>;
 }
 
-/// Spawn a background task that calls `elector.tick()` every `interval` and publishes the
-/// result into `state`. Runs until the process exits (no graceful shutdown needed for this
-/// phase — the task is a plain infinite loop owned by `main`).
+/// The three leadership states a tick can resolve to, after mapping the elector's
+/// `Result<bool>` (and any timeout) onto the deadline policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TickResult {
+    /// The elector confirmed we hold the lease.
+    Leader,
+    /// The elector confirmed we do NOT hold the lease (someone else does / lost a race).
+    NotLeader,
+    /// The tick could not be completed (API error or timeout).
+    Transient,
+}
+
+/// Given the previous deadline and this tick's result, decide whether we hold leadership now
+/// and what the new deadline is.
+///
+/// Pure (no I/O, no clock reads): `tick_start`/`now` are passed in so the deadline policy is
+/// unit-testable. `tick_start` is captured *before* the elector call, so the resulting deadline
+/// (`tick_start + lease_duration`) is conservatively *earlier* than the lease's true expiry
+/// (the lease's `renewTime` is stamped after the network round-trip), guaranteeing we demote
+/// before another pod can legitimately take over.
+///
+/// The key behavior: a `Transient` result does NOT immediately demote a live leader (that was
+/// the flapping bug — one blipped kube call dropped leadership and skipped the sweep write).
+/// Leadership is held until the deadline set by the last successful renew, then released.
+fn apply_tick(
+    prev_deadline: Option<Instant>,
+    result: TickResult,
+    tick_start: Instant,
+    now: Instant,
+    lease_duration: Duration,
+) -> (bool, Option<Instant>) {
+    match result {
+        TickResult::Leader => (true, Some(tick_start + lease_duration)),
+        TickResult::NotLeader => (false, None),
+        TickResult::Transient => {
+            if prev_deadline.is_some_and(|deadline| now < deadline) {
+                (true, prev_deadline)
+            } else {
+                (false, None)
+            }
+        }
+    }
+}
+
+/// Deterministic-but-varying jitter in `[0, interval/4)` to keep replicas from ticking in
+/// lockstep. Zero-dependency: hashes a wall-clock nanosecond sample.
+fn tick_jitter(interval: Duration) -> Duration {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0)
+        .hash(&mut hasher);
+    let frac = (hasher.finish() % 1000) as f64 / 1000.0;
+    interval.mul_f64(0.25 * frac)
+}
+
+/// Spawn a background task that calls `elector.tick()` every `interval` and publishes leadership
+/// into `state`, applying a deadline policy so a transient kube error does not demote a live
+/// leader (see `apply_tick`). Each tick is bounded by a `timeout` of one `interval` so a hung
+/// API call is treated as transient rather than blocking the loop. Runs until the process exits.
 pub fn run_leader_election(
     elector: Arc<dyn LeaderElector>,
     state: LeaderState,
     interval: Duration,
+    lease_duration: Duration,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut deadline: Option<Instant> = None;
         loop {
-            let is_leader = elector.tick().await;
-            state.store(is_leader, Ordering::SeqCst);
-            tokio::time::sleep(interval).await;
+            let tick_start = Instant::now();
+            let result = match tokio::time::timeout(interval, elector.tick()).await {
+                Ok(Ok(true)) => TickResult::Leader,
+                Ok(Ok(false)) => TickResult::NotLeader,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "leader tick failed; holding leadership until deadline");
+                    TickResult::Transient
+                }
+                Err(_elapsed) => {
+                    tracing::warn!("leader tick timed out; holding leadership until deadline");
+                    TickResult::Transient
+                }
+            };
+            let (leader, next_deadline) =
+                apply_tick(deadline, result, tick_start, Instant::now(), lease_duration);
+            deadline = next_deadline;
+            publish_leadership(&state, leader);
+            tokio::time::sleep(interval + tick_jitter(interval)).await;
         }
     })
+}
+
+/// Publish `leader` into the shared flag, counting a `catalog_leader_transitions_total` edge
+/// whenever the value actually changes.
+fn publish_leadership(state: &LeaderState, leader: bool) {
+    let previous = state.swap(leader, Ordering::SeqCst);
+    if previous != leader {
+        metrics::record_leader_transition();
+        tracing::info!(leader, "leadership state changed");
+    }
 }
 
 pub fn is_leader(state: &LeaderState) -> bool {
@@ -68,8 +169,8 @@ impl ForcedLeaderElector {
 
 #[async_trait]
 impl LeaderElector for ForcedLeaderElector {
-    async fn tick(&self) -> bool {
-        self.leader
+    async fn tick(&self) -> Result<bool> {
+        Ok(self.leader)
     }
 }
 
@@ -201,6 +302,17 @@ impl KubeLeaseElector {
                 LeaseDecision::Renew => {
                     let mut candidate = self.renewed_spec();
                     candidate.metadata.resource_version = existing.metadata.resource_version;
+                    // Preserve the original `acquireTime` across renewals (k8s Lease
+                    // convention: acquireTime marks first acquisition, renewTime the last
+                    // renewal). `renewed_spec` defaults acquireTime to now for a fresh acquire;
+                    // on a renew we carry the existing value forward instead.
+                    if let Some(existing_acquire) =
+                        existing.spec.as_ref().and_then(|s| s.acquire_time.clone())
+                    {
+                        if let Some(spec) = candidate.spec.as_mut() {
+                            spec.acquire_time = Some(existing_acquire);
+                        }
+                    }
                     match self
                         .api
                         .replace(&self.lease_name, &PostParams::default(), &candidate)
@@ -277,14 +389,11 @@ impl KubeLeaseElector {
 
 #[async_trait]
 impl LeaderElector for KubeLeaseElector {
-    async fn tick(&self) -> bool {
-        match self.acquire_or_renew().await {
-            Ok(is_leader) => is_leader,
-            Err(e) => {
-                tracing::warn!(error = %e, "lease acquire/renew failed; reporting non-leader");
-                false
-            }
-        }
+    async fn tick(&self) -> Result<bool> {
+        // Propagate errors instead of swallowing them: the election loop distinguishes a
+        // transient failure (hold leadership until the deadline) from a definitive
+        // `Ok(false)` (someone else holds the lease -> demote now). See `run_leader_election`.
+        self.acquire_or_renew().await
     }
 }
 
@@ -381,18 +490,117 @@ mod tests {
     async fn forced_leader_reports_fixed_state() {
         let leader = ForcedLeaderElector::new(true);
         let non_leader = ForcedLeaderElector::new(false);
-        assert!(leader.tick().await);
-        assert!(!non_leader.tick().await);
+        assert!(leader.tick().await.unwrap());
+        assert!(!non_leader.tick().await.unwrap());
     }
 
     #[tokio::test]
     async fn run_leader_election_publishes_tick_result_into_shared_state() {
         let state: LeaderState = Arc::new(AtomicBool::new(false));
         let elector: Arc<dyn LeaderElector> = Arc::new(ForcedLeaderElector::new(true));
-        let handle = run_leader_election(elector, state.clone(), Duration::from_millis(10));
+        let handle = run_leader_election(
+            elector,
+            state.clone(),
+            Duration::from_millis(10),
+            Duration::from_secs(30),
+        );
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(is_leader(&state));
         handle.abort();
+    }
+
+    // --- deadline policy (`apply_tick`) ---------------------------------------------------
+    //
+    // These drive the pure deadline logic with synthetic `Instant`s, so the "hold leadership
+    // through transient errors, but not past the lease deadline" behavior is tested
+    // deterministically without spawning the loop or sleeping on the wall clock.
+
+    #[test]
+    fn apply_tick_leader_result_sets_a_fresh_deadline() {
+        let start = Instant::now();
+        let (leader, deadline) = apply_tick(
+            None,
+            TickResult::Leader,
+            start,
+            start,
+            Duration::from_secs(30),
+        );
+        assert!(leader);
+        assert_eq!(deadline, Some(start + Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn apply_tick_not_leader_result_demotes_immediately_and_clears_deadline() {
+        let start = Instant::now();
+        // Even while a prior deadline is still in the future, a definitive NotLeader demotes.
+        let prev = Some(start + Duration::from_secs(30));
+        let (leader, deadline) = apply_tick(
+            prev,
+            TickResult::NotLeader,
+            start,
+            start,
+            Duration::from_secs(30),
+        );
+        assert!(!leader);
+        assert_eq!(deadline, None);
+    }
+
+    #[test]
+    fn apply_tick_transient_holds_leadership_while_within_the_deadline() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(30);
+        // `now` is before the deadline: a transient failure must NOT demote a live leader.
+        let now = start + Duration::from_secs(5);
+        let (leader, next) = apply_tick(
+            Some(deadline),
+            TickResult::Transient,
+            start,
+            now,
+            Duration::from_secs(30),
+        );
+        assert!(
+            leader,
+            "must stay leader through a transient error within the deadline"
+        );
+        assert_eq!(
+            next,
+            Some(deadline),
+            "deadline must not be extended by a transient tick"
+        );
+    }
+
+    #[test]
+    fn apply_tick_transient_demotes_once_the_deadline_has_passed() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(30);
+        let now = start + Duration::from_secs(31); // past the deadline
+        let (leader, next) = apply_tick(
+            Some(deadline),
+            TickResult::Transient,
+            start,
+            now,
+            Duration::from_secs(30),
+        );
+        assert!(
+            !leader,
+            "must demote once the lease deadline has elapsed with no renewal"
+        );
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn apply_tick_transient_with_no_prior_deadline_is_not_leader() {
+        let start = Instant::now();
+        // Never established leadership (deadline None) + a transient failure -> stay non-leader.
+        let (leader, next) = apply_tick(
+            None,
+            TickResult::Transient,
+            start,
+            start,
+            Duration::from_secs(30),
+        );
+        assert!(!leader);
+        assert_eq!(next, None);
     }
 }
