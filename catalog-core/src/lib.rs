@@ -7,7 +7,7 @@ mod ttl;
 mod ttl_audit;
 mod types;
 
-pub use apply::apply_sweep_result;
+pub use apply::{apply_sweep_result, recompute_aux_latest};
 pub use registry::{read_registry, write_registry};
 pub use ttl::ttl_eligible_versions;
 pub use ttl_audit::{append_ttl_audit, read_ttl_audit};
@@ -75,7 +75,10 @@ mod tests {
         let entries = vec![sample_entry("smoke_test"), sample_entry("closed_loop")];
 
         write_registry(path, &entries).await.unwrap();
-        let mut read_back = read_registry(path).await.unwrap();
+        let mut read_back = read_registry(path)
+            .await
+            .unwrap()
+            .expect("registry exists after write");
         read_back.sort_by(|a, b| a.id.cmp(&b.id));
 
         let mut expected = entries;

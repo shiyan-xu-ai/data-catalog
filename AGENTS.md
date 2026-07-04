@@ -23,3 +23,23 @@ Cargo workspace with three crates:
 - `cargo build --workspace` and `cargo test --workspace` must pass before
   committing.
 - 4-space indentation, LF line endings, UTF-8 (see `.editorconfig`).
+
+## Commit messages
+
+Commit subjects (and PR titles — PRs are squash-merged, so the PR title
+becomes the final commit message) must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>)?: <description>
+```
+
+Types: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`,
+`revert`, `style`, `test`. Example: `fix(api): return 404 for unknown table id`.
+
+This is enforced in CI (`.github/workflows/commit-lint.yml`) against both the
+PR title and every commit in the PR. Enable the matching local pre-commit
+check with:
+
+```
+git config core.hooksPath .githooks
+```

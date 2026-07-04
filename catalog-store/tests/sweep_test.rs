@@ -297,3 +297,49 @@ async fn full_sweep_multiple_tables_multiple_versions() {
     assert_eq!(table_g.versions[0].shape, VersionShape::LanceOnly);
     assert!(!table_g.versions[0].partial);
 }
+
+/// A version dir with an openable main lance dataset PLUS an unrecognized top-level dir (not
+/// sidecar/segments/known-aux and not lance-shaped) must fold that dir into `other_aux_bytes`
+/// and surface it as an aux entry -- not silently drop its bytes. Regression test for the sweep
+/// accounting gap where a leftover sibling of the main lance dir was dropped entirely.
+#[tokio::test]
+async fn unknown_top_level_dir_is_accounted_not_dropped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
+    let table_dir = tmp.path().join("tableH/2026-06-27_10-00-00");
+    std::fs::create_dir_all(&table_dir).unwrap();
+
+    write_lance_dataset(&table_dir.join("dataset.lance")).await;
+    // An arbitrary unrecognized top-level dir alongside the main lance dir.
+    write_fake_file(
+        &store,
+        "tableH/2026-06-27_10-00-00/mystery_outputs/data.bin",
+        b"twelve-bytes",
+    )
+    .await;
+
+    let cfg = cfg(store, tmp.path());
+    let entry = catalog_store::sweep_table(&cfg, "tableH", &ObjPath::from("tableH"))
+        .await
+        .unwrap();
+
+    assert_eq!(entry.versions.len(), 1);
+    let v = &entry.versions[0];
+    // Main lance dir still detected; the extra dir does not change the shape.
+    assert_eq!(v.shape, VersionShape::LanceOnly);
+    assert!(v.lance_core_bytes > 0);
+    assert!(
+        v.other_aux_bytes > 0,
+        "the unknown top-level dir's bytes must land in other_aux_bytes"
+    );
+    assert_eq!(
+        v.storage_bytes_total,
+        v.lance_core_bytes + v.sidecar_bytes + v.segments_bytes + v.other_aux_bytes
+    );
+    let mystery = v
+        .aux
+        .iter()
+        .find(|a| a.name == "mystery_outputs")
+        .expect("the unknown dir must surface as an aux entry");
+    assert_eq!(mystery.storage_bytes, v.other_aux_bytes);
+}

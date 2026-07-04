@@ -169,11 +169,20 @@ impl ApiState {
     }
 }
 
-async fn load_registry_map(path: &str) -> HashMap<String, TableEntry> {
-    match catalog_core::read_registry(path).await {
-        Ok(entries) => entries.into_iter().map(|e| (e.id.clone(), e)).collect(),
-        Err(_) => HashMap::new(),
-    }
+/// Load the registry into an id-keyed map for a read-modify-write mutation.
+///
+/// A missing dataset (`Ok(None)`, expected before the first sweep) yields an empty map. A real
+/// read error is propagated: mutation handlers turn it into a 500 rather than proceeding, so a
+/// transient object-store failure can never make a handler persist a registry rebuilt from an
+/// empty map (which `write_registry`'s `Overwrite` would then use to wipe every other table's
+/// `owner`/`ttl_policy`/`protected` state).
+async fn load_registry_map(path: &str) -> anyhow::Result<HashMap<String, TableEntry>> {
+    Ok(catalog_core::read_registry(path)
+        .await?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect())
 }
 
 /// Write the merged map back to storage and immediately refresh the in-process cache, so a
@@ -291,7 +300,9 @@ async fn declare_table(
     }
 
     let _guard = state.write_lock.lock().await;
-    let mut map = load_registry_map(&state.registry_path).await;
+    let mut map = load_registry_map(&state.registry_path)
+        .await
+        .map_err(|e| internal_error(e).into_response_pair())?;
     let entry = map.entry(id.clone()).or_insert_with(|| TableEntry {
         id: id.clone(),
         name: id.clone(),
@@ -329,7 +340,9 @@ async fn deregister_table(
     }
 
     let _guard = state.write_lock.lock().await;
-    let mut map = load_registry_map(&state.registry_path).await;
+    let mut map = load_registry_map(&state.registry_path)
+        .await
+        .map_err(|e| internal_error(e).into_response_pair())?;
     if map.remove(&id).is_none() {
         return Err(table_not_found(&id).into_response_pair());
     }
@@ -404,7 +417,9 @@ async fn ext_protect_version(
     }
 
     let _guard = state.write_lock.lock().await;
-    let mut map = load_registry_map(&state.registry_path).await;
+    let mut map = load_registry_map(&state.registry_path)
+        .await
+        .map_err(|e| internal_error(e).into_response_pair())?;
     let entry = map
         .get_mut(&id)
         .ok_or_else(|| table_not_found(&id).into_response_pair())?;
@@ -490,7 +505,8 @@ async fn ttl_audit(
 ) -> Result<Json<Vec<TtlAuditRecord>>, (StatusCode, Json<ErrorResponse>)> {
     let records = catalog_core::read_ttl_audit(&state.ttl_audit_path)
         .await
-        .map_err(internal_error)?;
+        .map_err(internal_error)?
+        .unwrap_or_default();
     let filtered: Vec<TtlAuditRecord> = records.into_iter().filter(|r| r.table_id == id).collect();
     Ok(Json(filtered))
 }
@@ -521,7 +537,9 @@ async fn ttl_apply(
     }
 
     let _guard = state.write_lock.lock().await;
-    let mut map = load_registry_map(&state.registry_path).await;
+    let mut map = load_registry_map(&state.registry_path)
+        .await
+        .map_err(|e| internal_error(e).into_response_pair())?;
     let entry = map
         .get_mut(&id)
         .ok_or_else(|| table_not_found(&id).into_response_pair())?;
@@ -552,7 +570,17 @@ async fn ttl_apply(
             continue;
         }
 
-        let prefix = state.sweep_cfg.path_for(&version.snapshot_path);
+        // A snapshot_path that doesn't resolve under the sweep root is a hard error, not a
+        // silent success: without a valid prefix we cannot delete anything, so keep the version
+        // in the registry and report it rather than removing it while its bytes remain on S3.
+        let prefix = match state.sweep_cfg.path_for(&version.snapshot_path) {
+            Ok(prefix) => prefix,
+            Err(e) => {
+                metrics::record_ttl_delete(false);
+                delete_errors.push(format!("{vid}: unresolvable snapshot path: {e}"));
+                continue;
+            }
+        };
         match catalog_store::delete_prefix(state.sweep_cfg.store.as_ref(), &prefix).await {
             Ok(()) => {
                 metrics::record_ttl_delete(true);
@@ -577,11 +605,15 @@ async fn ttl_apply(
         }
     }
 
-    persist_and_refresh_cache(&state, map).await.map_err(|e| {
-        metrics::record_ttl_apply(false);
-        internal_error(e).into_response_pair()
-    })?;
+    // The deleted versions are gone from `entry.versions`; the denormalized `aux_latest` must
+    // be recomputed so it never points at a version that was just hard-deleted from S3.
+    catalog_core::recompute_aux_latest(entry);
 
+    // Durably record the deletions BEFORE persisting their removal from the registry. If the
+    // process crashes between these two writes, the version is still listed in the registry
+    // (self-healing: the next apply re-computes it as eligible and the delete is idempotent),
+    // but it is already audited -- the audit is the only durable evidence of an irreversible
+    // hard-delete, so it must never be the write that gets lost.
     if !audit_records.is_empty() {
         catalog_core::append_ttl_audit(&state.ttl_audit_path, &audit_records)
             .await
@@ -590,6 +622,11 @@ async fn ttl_apply(
                 internal_error(e).into_response_pair()
             })?;
     }
+
+    persist_and_refresh_cache(&state, map).await.map_err(|e| {
+        metrics::record_ttl_apply(false);
+        internal_error(e).into_response_pair()
+    })?;
 
     if !delete_errors.is_empty() {
         metrics::record_ttl_apply(false);

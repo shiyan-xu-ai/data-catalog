@@ -122,6 +122,7 @@ async fn only_leader_writes_registry_and_both_pods_read_latest_state() {
     // Only the leader wrote: tableA is in the registry, tableZ never made it in.
     let registry = catalog_core::read_registry(&registry_path)
         .await
+        .expect("registry read should not error")
         .expect("leader should have written the registry by now");
     assert_eq!(
         registry.len(),

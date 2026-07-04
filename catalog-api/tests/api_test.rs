@@ -578,19 +578,19 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
 
     // The deleted version's objects are gone; the kept and protected versions' objects
     // remain untouched.
-    let deleted_prefix = sweep_cfg.path_for(&eligible_old.snapshot_path);
+    let deleted_prefix = sweep_cfg.path_for(&eligible_old.snapshot_path).unwrap();
     let deleted_bytes = catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &deleted_prefix)
         .await
         .unwrap();
     assert_eq!(deleted_bytes, 0, "deleted version's objects must be gone");
 
-    let kept_prefix = sweep_cfg.path_for(&recent.snapshot_path);
+    let kept_prefix = sweep_cfg.path_for(&recent.snapshot_path).unwrap();
     let kept_bytes = catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &kept_prefix)
         .await
         .unwrap();
     assert!(kept_bytes > 0, "kept version's objects must survive");
 
-    let protected_prefix = sweep_cfg.path_for(&protected_old.snapshot_path);
+    let protected_prefix = sweep_cfg.path_for(&protected_old.snapshot_path).unwrap();
     let protected_bytes =
         catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &protected_prefix)
             .await
@@ -625,7 +625,10 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
     );
 
     // Audit record written for the deleted version only.
-    let audit = catalog_core::read_ttl_audit(&ttl_audit_path).await.unwrap();
+    let audit = catalog_core::read_ttl_audit(&ttl_audit_path)
+        .await
+        .unwrap()
+        .expect("audit log exists after a delete");
     assert_eq!(audit.len(), 1);
     assert_eq!(audit[0].table_id, "t1");
     assert_eq!(audit[0].version_id, eligible_old.version_id);
@@ -646,7 +649,10 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
     let json = body_json(resp).await;
     assert_eq!(json["deleted"], serde_json::json!(Vec::<String>::new()));
 
-    let audit_after = catalog_core::read_ttl_audit(&ttl_audit_path).await.unwrap();
+    let audit_after = catalog_core::read_ttl_audit(&ttl_audit_path)
+        .await
+        .unwrap()
+        .expect("audit log still exists");
     assert_eq!(
         audit_after.len(),
         1,

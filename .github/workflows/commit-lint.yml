@@ -1,0 +1,50 @@
+name: commit-lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  conventional-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-zA-Z0-9_./-]+\))?!?: .{1,100}$'
+          echo "PR title: $TITLE"
+          if ! echo "$TITLE" | grep -qE "$pattern"; then
+            echo "::error::PR title does not follow Conventional Commits format."
+            echo "Expected: <type>(<scope>)?: <description>"
+            echo "Types: build chore ci docs feat fix perf refactor revert style test"
+            echo "Example: fix(api): return 404 for unknown table id"
+            exit 1
+          fi
+
+      # Squash-merge (this repo's convention) uses the PR title as the final commit
+      # message, but this also catches malformed commits if a PR is ever merge- or
+      # rebase-merged instead, and gives fast feedback while a PR's history is being
+      # cleaned up before merge.
+      - name: Validate commit messages
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-zA-Z0-9_./-]+\))?!?: .{1,100}$'
+          failed=0
+          while IFS= read -r sha; do
+            subject=$(git log -1 --format='%s' "$sha")
+            case "$subject" in
+              "Merge "*|"fixup! "*|"squash! "*) continue ;;
+            esac
+            if ! echo "$subject" | grep -qE "$pattern"; then
+              echo "::error::commit $sha does not follow Conventional Commits format: $subject"
+              failed=1
+            fi
+          done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
+          exit "$failed"
