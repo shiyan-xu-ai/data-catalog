@@ -1,0 +1,28 @@
+#!/bin/sh
+# Enforce Conventional Commits (https://www.conventionalcommits.org/) on the
+# commit subject line. Enable locally with:
+#
+#   git config core.hooksPath .githooks
+#
+# CI runs the same check on the PR title and every commit in the PR (see
+# .github/workflows/commit-lint.yml), so this hook is a fast local pre-check,
+# not the sole enforcement point.
+
+commit_msg_file="$1"
+subject=$(head -n1 "$commit_msg_file")
+
+# Merge commits and rebase-autosquash markers aren't final history; skip them.
+case "$subject" in
+    "Merge "*|"fixup! "*|"squash! "*) exit 0 ;;
+esac
+
+pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-zA-Z0-9_./-]+\))?!?: .{1,100}$'
+
+if ! echo "$subject" | grep -qE "$pattern"; then
+    echo "commit-msg: subject line does not follow Conventional Commits format" >&2
+    echo "  got:      $subject" >&2
+    echo "  expected: <type>(<scope>)?: <description>" >&2
+    echo "  types:    build chore ci docs feat fix perf refactor revert style test" >&2
+    echo "  example:  fix(api): return 404 for unknown table id" >&2
+    exit 1
+fi
