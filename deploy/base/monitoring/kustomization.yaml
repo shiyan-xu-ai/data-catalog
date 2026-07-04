@@ -15,7 +15,9 @@ resources:
   - grafana/dashboard-overview.yaml
   - grafana/dashboard-sweep.yaml
   - grafana/dashboard-ttl.yaml
-  # Alerts (requires Prometheus Operator; additive)
-  - prometheus-rule.yaml
+  # Alert rules ship once, in prometheus/rules-configmap.yaml, loaded by the standalone
+  # Prometheus above. (A PrometheusRule CRD carrying the same rules was dropped to avoid a
+  # second, drift-prone copy; reintroduce one under an overlay if kube-prometheus-stack is
+  # adopted.)
   # ServiceMonitor (requires Prometheus Operator; additive)
   - servicemonitor.yaml

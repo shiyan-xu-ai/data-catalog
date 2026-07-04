@@ -49,6 +49,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Formatting is a cheap, toolchain-only check — run it before the expensive build so a
+      # style-only failure fails fast without compiling the lance/datafusion graph.
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -65,11 +70,34 @@ jobs:
       - name: Install lld
         run: sudo apt-get update && sudo apt-get install -y lld
 
-      # Single pass: `cargo test --all-targets` compiles every target (lib,
-      # the catalog-api bin, and all test binaries) AND runs the tests in one
-      # invocation — so we keep a full-workspace build signal (the bin still
-      # has to compile and link) without the redundant separate `cargo build`
-      # that recompiled/relinked everything a second time. There are no
-      # doctests in this workspace, so --all-targets skips nothing.
+      # Lint gate. `--all-targets` covers lib, bin, and every test target; `-D warnings` makes
+      # any clippy warning fail CI. This compiles the workspace under the clippy driver; the
+      # `cargo test` step below reuses the warmed dependency cache.
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # `cargo test --all-targets` compiles every target (lib, the catalog-api
+      # bin, and all test binaries) AND runs the tests in one invocation. There
+      # are no doctests in this workspace, so --all-targets skips nothing.
       - name: cargo test --workspace
         run: cargo test --workspace --all-targets
+
+  # The static frontend hand-mirrors the serde-serialized API shapes; typechecking + building it
+  # in CI catches drift against those shapes. Lightweight and independent of the Rust build, so
+  # it runs as its own job.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck and build
+        run: bun run build

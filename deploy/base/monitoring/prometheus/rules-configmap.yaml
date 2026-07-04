@@ -1,7 +1,8 @@
 ---
 # Alert rules for the standalone Prometheus deployment (no operator required).
-# The PrometheusRule CRD in ../prometheus-rule.yaml carries the same rules for
-# operator-based deployments; both may coexist.
+# This is the single in-tree source of alert rules, loaded by the standalone Prometheus via
+# `rule_files`. An operator-based deployment would carry these as a PrometheusRule CRD in an
+# overlay; there is deliberately no second in-tree copy to drift from.
 apiVersion: v1
 kind: ConfigMap
 metadata:

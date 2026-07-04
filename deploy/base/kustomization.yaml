@@ -9,5 +9,5 @@ resources:
   - configmap.yaml
   - deployment.yaml
   - service.yaml
-  # Monitoring stack (Prometheus + Grafana + ServiceMonitor + PrometheusRule + dashboards)
+  # Monitoring stack (Prometheus + Grafana + ServiceMonitor + alert rules + dashboards)
   - monitoring/
