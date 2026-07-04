@@ -103,9 +103,11 @@ kustomize build deploy/overlays/prod | kubectl apply -f -
   for the Lease (`coordination.k8s.io` leases get/update/create), and the
   Deployment (2 replicas by default, `CATALOG_LEADER_MODE=kube`,
   `CATALOG_POD_NAME` via the downward API).
-- **Monitoring stack:** apply `deploy/base/monitoring/` (Prometheus + Grafana
-  + ServiceMonitor + PrometheusRule + dashboards). The ServiceMonitor selects
-  the `metrics` named port on the catalog-api Service.
+- **Monitoring stack:** apply `deploy/base/monitoring/` (a standalone
+  Prometheus + Grafana + ServiceMonitor + alert-rules ConfigMap + dashboards).
+  The alert rules are loaded by the standalone Prometheus from the ConfigMap;
+  the ServiceMonitor selects the `metrics` named port on the catalog-api
+  Service.
 - **Image build + push:** build the image from the repo root `Dockerfile`
   and push to your registry; set the image in `deploy/base/deployment.yaml`
   (or patch it in the prod overlay).

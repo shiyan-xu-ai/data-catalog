@@ -40,8 +40,10 @@ RUN mkdir -p catalog-core/src catalog-store/src catalog-api/src && \
 
 RUN cargo fetch --target x86_64-unknown-linux-musl
 
-# Build deps only (the stubs) to warm the cache.
-RUN cargo build --release --target x86_64-unknown-linux-musl --bin catalog-api 2>/dev/null || true
+# Build deps only (the stubs) to warm the cache. `|| true` tolerates the stub bin failing to
+# produce a usable binary; stderr is kept (not sent to /dev/null) so a real dependency compile
+# error is visible in the build log instead of surfacing later as a slow failure.
+RUN cargo build --release --target x86_64-unknown-linux-musl --bin catalog-api || true
 
 # Now copy real source and do the final build.
 COPY catalog-core/src ./catalog-core/src

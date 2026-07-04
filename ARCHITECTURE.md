@@ -296,11 +296,14 @@ once per distinct pattern. Metric names shipped in v1.0.0:
 - Object store: `catalog_s3_operations_total`
 - Runtime: `tokio_*` (tokio-metrics), `process_*` (metrics-process)
 
-`deploy/base/monitoring/` ships Prometheus + Grafana deployments, a
-ServiceMonitor selecting the `metrics` port, a PrometheusRule
-(`NoLeader`, `FreshnessBreach`, `SweepStalled`, `S3Throttling`,
-`TTLDeletesFailed`, `ReadAvailabilityBurn`, `ReadLatencyHigh`), and Grafana
-dashboard ConfigMaps (Overview, Sweep & Convergence, TTL & Storage).
+`deploy/base/monitoring/` ships a standalone Prometheus + Grafana, a
+ServiceMonitor selecting the `metrics` port, alert rules loaded by the
+standalone Prometheus from a ConfigMap (`NoLeader`, `FreshnessBreach`,
+`HydrationNotReady`, `SweepStalled`, `S3Throttling`, `TTLDeletesFailed`,
+`ReadAvailabilityBurn`, `ReadLatencyHigh`), and Grafana dashboard ConfigMaps
+(Overview, Sweep & Convergence, TTL & Storage). The alert rules ship once (the
+ConfigMap); an operator-based deployment would carry them as a PrometheusRule
+CRD in an overlay.
 
 ## Frontend
 

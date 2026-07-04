@@ -135,11 +135,12 @@ internal server, not on the main API router.
 
 ## Monitoring
 
-`deploy/base/monitoring/` ships Prometheus + Grafana deployments, a
-ServiceMonitor selecting the catalog-api `metrics` port, a PrometheusRule
-(`NoLeader`, `FreshnessBreach`, `SweepStalled`, `S3Throttling`,
-`TTLDeletesFailed`, `ReadAvailabilityBurn`, `ReadLatencyHigh`), and Grafana
-dashboard ConfigMaps (Overview, Sweep & Convergence, TTL & Storage). The
+`deploy/base/monitoring/` ships a standalone Prometheus + Grafana, a
+ServiceMonitor selecting the catalog-api `metrics` port, alert rules loaded by
+the standalone Prometheus from a ConfigMap (`NoLeader`, `FreshnessBreach`,
+`HydrationNotReady`, `SweepStalled`, `S3Throttling`, `TTLDeletesFailed`,
+`ReadAvailabilityBurn`, `ReadLatencyHigh`), and Grafana dashboard ConfigMaps
+(Overview, Sweep & Convergence, TTL & Storage). The
 metric names and label cardinality contract are documented in
 `catalog-api/src/metrics.rs`.
 
