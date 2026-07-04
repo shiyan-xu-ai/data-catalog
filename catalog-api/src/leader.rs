@@ -73,10 +73,24 @@ impl LeaderElector for ForcedLeaderElector {
     }
 }
 
+/// What `acquire_or_renew` should do given the lease its `GET` just observed. Pure
+/// classification, no I/O -- kept separate from `acquire_or_renew` so the decision logic is
+/// unit-testable without a k8s API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaseDecision {
+    /// We already hold it: safe to renew with a plain patch, no CAS needed.
+    Renew,
+    /// Absent/expired and not ours: must take it over via an atomic compare-and-swap.
+    Acquire,
+    /// Someone else holds a live lease: back off, report non-leader.
+    BackOff,
+}
+
 /// Acquires/renews a `coordination.k8s.io/v1` Lease. Not a from-scratch reimplementation of
 /// every edge case in kube-rs's own `LeaseLock` — this covers the common path: create the
-/// Lease if absent, take it if unheld/expired, renew it if we already hold it, and back off
-/// (report non-leader) if someone else holds a live lease.
+/// Lease if absent, take it if unheld/expired (atomically, via CAS -- see `LeaseDecision::Acquire`),
+/// renew it if we already hold it, and back off (report non-leader) if someone else holds a
+/// live lease.
 pub struct KubeLeaseElector {
     api: Api<Lease>,
     lease_name: String,
@@ -144,10 +158,24 @@ impl KubeLeaseElector {
             == Some(self.holder_identity.as_str())
     }
 
+    /// What to do given the lease this GET just observed.
+    fn decide(&self, existing: &Lease) -> LeaseDecision {
+        if self.we_hold_it(existing) {
+            LeaseDecision::Renew
+        } else if self.lease_expired(existing) {
+            LeaseDecision::Acquire
+        } else {
+            LeaseDecision::BackOff
+        }
+    }
+
     async fn acquire_or_renew(&self) -> Result<bool> {
         match self.api.get(&self.lease_name).await {
-            Ok(existing) => {
-                if self.we_hold_it(&existing) || self.lease_expired(&existing) {
+            Ok(existing) => match self.decide(&existing) {
+                // We already hold it: only the actual holder legitimately renews here (no
+                // other pod can be renewing the same lease under our identity), so a plain
+                // server-side-apply patch is fine -- no compare-and-swap needed.
+                LeaseDecision::Renew => {
                     let patch = self.renewed_spec();
                     self.api
                         .patch(
@@ -156,13 +184,35 @@ impl KubeLeaseElector {
                             &Patch::Apply(&patch),
                         )
                         .await
-                        .context("patch lease to acquire/renew")?;
+                        .context("patch lease to renew")?;
                     Ok(true)
-                } else {
-                    // Someone else holds a live lease.
-                    Ok(false)
                 }
-            }
+                // Takeover of an expired/unheld lease MUST be an atomic compare-and-swap:
+                // carry the `resourceVersion` this GET just observed into a `replace` (PUT).
+                // If another candidate already won the race and updated the lease first, the
+                // API server rejects our now-stale-resourceVersion PUT with 409 Conflict -- we
+                // lost, report non-leader. `Patch::Apply` (server-side apply) has NO such
+                // precondition and same-manager writes never conflict, so it must never be
+                // used for this branch (that was the split-brain bug: two candidates racing
+                // on an expired lease could both `Patch::Apply` successfully and both become
+                // leader).
+                LeaseDecision::Acquire => {
+                    let mut candidate = self.renewed_spec();
+                    candidate.metadata.resource_version = existing.metadata.resource_version;
+                    match self
+                        .api
+                        .replace(&self.lease_name, &PostParams::default(), &candidate)
+                        .await
+                    {
+                        Ok(_) => Ok(true),
+                        // Someone else already won the race and updated the lease first.
+                        Err(kube::Error::Api(err)) if err.code == 409 => Ok(false),
+                        Err(e) => Err(e).context("replace lease to acquire"),
+                    }
+                }
+                // Someone else holds a live lease.
+                LeaseDecision::BackOff => Ok(false),
+            },
             Err(kube::Error::Api(err)) if err.code == 404 => {
                 let lease = self.new_lease();
                 match self.api.create(&PostParams::default(), &lease).await {
@@ -215,6 +265,82 @@ impl LeaderElector for KubeLeaseElector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `KubeLeaseElector` whose `api` is never actually called -- used to unit-test the
+    /// pure `decide()` classification, which only reads `holder_identity` and the lease
+    /// passed in, with no I/O.
+    fn test_elector(holder_identity: &str) -> KubeLeaseElector {
+        let service = tower::service_fn(|_req: http::Request<kube::client::Body>| async {
+            Err::<http::Response<kube::client::Body>, _>(std::io::Error::other(
+                "dummy client not wired to a backend",
+            ))
+        });
+        let client = Client::new(service, "default");
+        KubeLeaseElector::new(
+            client,
+            "default",
+            "catalog-api-leader",
+            holder_identity,
+            Duration::from_secs(30),
+        )
+    }
+
+    fn lease_with(
+        holder_identity: Option<&str>,
+        renew_seconds_ago: i64,
+        duration_secs: i32,
+    ) -> Lease {
+        let renew_time = k8s_openapi::jiff::Timestamp::now()
+            .checked_sub(k8s_openapi::jiff::Span::new().seconds(renew_seconds_ago))
+            .unwrap();
+        Lease {
+            metadata: kube::api::ObjectMeta {
+                name: Some("catalog-api-leader".into()),
+                resource_version: Some("1".into()),
+                ..Default::default()
+            },
+            spec: Some(LeaseSpec {
+                holder_identity: holder_identity.map(|s| s.to_string()),
+                lease_duration_seconds: Some(duration_secs),
+                renew_time: Some(MicroTime(renew_time)),
+                acquire_time: Some(MicroTime(renew_time)),
+                ..Default::default()
+            }),
+        }
+    }
+
+    // `#[tokio::test]`, not plain `#[test]`: `Client::new` (used by `test_elector`) spawns a
+    // `tower::buffer::Buffer` worker task, which requires a Tokio runtime to exist even
+    // though `decide()` itself performs no I/O.
+
+    #[tokio::test]
+    async fn decide_renews_when_we_already_hold_it_even_if_technically_expired() {
+        let elector = test_elector("pod-a");
+        // We hold it, but haven't renewed in a while -- still ours to renew, not a takeover.
+        let lease = lease_with(Some("pod-a"), 100, 10);
+        assert_eq!(elector.decide(&lease), LeaseDecision::Renew);
+    }
+
+    #[tokio::test]
+    async fn decide_acquires_an_expired_lease_held_by_someone_else() {
+        let elector = test_elector("pod-b");
+        let lease = lease_with(Some("pod-a"), 100, 10);
+        assert_eq!(elector.decide(&lease), LeaseDecision::Acquire);
+    }
+
+    #[tokio::test]
+    async fn decide_backs_off_from_a_live_lease_held_by_someone_else() {
+        let elector = test_elector("pod-b");
+        let lease = lease_with(Some("pod-a"), 1, 30);
+        assert_eq!(elector.decide(&lease), LeaseDecision::BackOff);
+    }
+
+    #[tokio::test]
+    async fn decide_acquires_an_absent_holder_lease() {
+        let elector = test_elector("pod-b");
+        let lease = lease_with(None, 100, 10);
+        assert_eq!(elector.decide(&lease), LeaseDecision::Acquire);
+    }
 
     #[tokio::test]
     async fn forced_leader_reports_fixed_state() {

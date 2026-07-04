@@ -31,3 +31,5 @@ url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+http = "1"
+tower = "0.5"
