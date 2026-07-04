@@ -16,22 +16,18 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use catalog_store::SweepConfig;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStoreExt, PutPayload};
 use tokio::sync::RwLock;
+
+mod common;
 
 async fn write_fake_file(store: &LocalFileSystem, path: &str, content: &[u8]) {
     store
         .put(&ObjPath::from(path), PutPayload::from(content.to_vec()))
         .await
         .expect("write fake file");
-}
-
-fn sweep_config_over(tmp: &std::path::Path) -> SweepConfig {
-    let store = Arc::new(LocalFileSystem::new_with_prefix(tmp).unwrap());
-    SweepConfig::new(store, ObjPath::from(""), tmp.to_str().unwrap().to_string())
 }
 
 #[tokio::test]
@@ -45,7 +41,7 @@ async fn only_leader_writes_registry_and_both_pods_read_latest_state() {
         b"",
     )
     .await;
-    let leader_sweep_cfg = sweep_config_over(leader_root.path());
+    let leader_sweep_cfg = common::sweep_config(leader_root.path());
 
     // Non-leader "pod": sweeps a DIFFERENT root containing tableZ. If its sweep loop ever
     // actually runs (it shouldn't — it's gated on is_leader()), tableZ would leak into the
@@ -58,7 +54,7 @@ async fn only_leader_writes_registry_and_both_pods_read_latest_state() {
         b"",
     )
     .await;
-    let follower_sweep_cfg = sweep_config_over(follower_root.path());
+    let follower_sweep_cfg = common::sweep_config(follower_root.path());
 
     // Shared "_catalog/registry" location both pods write/read against.
     let registry_dir = tempfile::tempdir().unwrap();

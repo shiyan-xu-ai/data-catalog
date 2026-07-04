@@ -66,12 +66,13 @@ pub async fn run_sweep_once(
     .await
 }
 
-/// Shared implementation. `after_read` (test-only) is notified exactly once, immediately
-/// after the registry has been read but before it is written back, while `write_lock` is
-/// still held -- lets a regression test deterministically prove that a concurrent writer
-/// attempting to acquire the same lock is blocked for the entire critical section, not just
-/// part of it. Production callers pass `None`.
-async fn run_sweep_once_inner(
+/// Shared implementation. `after_read` is a **test seam**: when `Some`, it is notified exactly
+/// once immediately after the registry has been read but before it is written back, while
+/// `write_lock` is still held -- letting the mutual-exclusion regression test deterministically
+/// prove a concurrent writer is blocked for the entire critical section. Production callers use
+/// `run_sweep_once` (which passes `None`); this is `pub` only so that regression test can live
+/// in the integration tier (`tests/sweep_loop_test.rs`) rather than inline.
+pub async fn run_sweep_once_inner(
     sweep_cfg: &SweepConfig,
     registry_path: &str,
     leader_state: &LeaderState,
@@ -115,8 +116,9 @@ async fn run_sweep_once_inner(
     if let Some(notify) = &after_read {
         notify.notify_one();
         // Widen the window (test-only): give a concurrent writer racing on `write_lock` a
-        // real chance to attempt (and correctly block on) the lock before this critical
-        // section finishes -- see `sweep_write_and_api_write_are_mutually_exclusive` below.
+        // real chance to attempt (and correctly block on) the lock before this critical section
+        // finishes -- see `sweep_write_and_api_write_are_mutually_exclusive` in
+        // `tests/sweep_loop_test.rs`.
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
@@ -214,20 +216,10 @@ pub fn spawn_sweep_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{api_router, ApiState};
-    use crate::registry_lock::new_registry_write_lock;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use object_store::local::LocalFileSystem;
-    use object_store::path::Path as ObjPath;
-    use std::sync::atomic::AtomicBool;
-    use tower::ServiceExt;
 
-    fn empty_sweep_config(tmp: &std::path::Path) -> SweepConfig {
-        let store = Arc::new(LocalFileSystem::new_with_prefix(tmp).unwrap());
-        SweepConfig::new(store, ObjPath::from(""), tmp.to_str().unwrap().to_string())
-    }
-
+    // Pure unit test for the sweep-due gate. The IO/HTTP tests that exercise `run_sweep_once`
+    // and the sweep-vs-API mutual exclusion live in the integration tier
+    // (`tests/sweep_loop_test.rs`).
     #[test]
     fn sweep_due_fires_immediately_when_never_swept_then_gates_on_the_interval() {
         let now = Instant::now();
@@ -246,197 +238,5 @@ mod tests {
             now,
             interval
         ));
-    }
-
-    #[tokio::test]
-    async fn run_sweep_once_skips_the_write_if_leadership_is_already_lost() {
-        let sweep_root = tempfile::tempdir().unwrap();
-        let sweep_cfg = empty_sweep_config(sweep_root.path());
-        let registry_dir = tempfile::tempdir().unwrap();
-        let registry_path = registry_dir
-            .path()
-            .join("registry.lance")
-            .to_str()
-            .unwrap()
-            .to_string();
-        let write_lock = new_registry_write_lock();
-        let last_sweep_at = new_last_sweep_at();
-
-        // Leadership already false by the time run_sweep_once is called -- simulates the
-        // "lost leadership mid-sweep" window the re-check exists to close.
-        let leader_state: LeaderState = Arc::new(AtomicBool::new(false));
-        run_sweep_once(
-            &sweep_cfg,
-            &registry_path,
-            &leader_state,
-            &write_lock,
-            &last_sweep_at,
-        )
-        .await
-        .expect("sweep-merge should not fail even when the write is skipped");
-
-        // No write ever happened: the registry dataset was never created.
-        assert!(
-            read_registry(&registry_path).await.unwrap().is_none(),
-            "registry should not exist -- the write must have been skipped"
-        );
-        // last_sweep_at must remain None when the write was skipped.
-        assert!(
-            last_sweep_at.lock().await.is_none(),
-            "last_sweep_at must stay None when registry write was skipped"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_sweep_once_writes_when_still_leader_at_write_time() {
-        let sweep_root = tempfile::tempdir().unwrap();
-        let sweep_cfg = empty_sweep_config(sweep_root.path());
-        let registry_dir = tempfile::tempdir().unwrap();
-        let registry_path = registry_dir
-            .path()
-            .join("registry.lance")
-            .to_str()
-            .unwrap()
-            .to_string();
-        let write_lock = new_registry_write_lock();
-        let last_sweep_at = new_last_sweep_at();
-
-        let leader_state: LeaderState = Arc::new(AtomicBool::new(true));
-        run_sweep_once(
-            &sweep_cfg,
-            &registry_path,
-            &leader_state,
-            &write_lock,
-            &last_sweep_at,
-        )
-        .await
-        .expect("sweep-merge-write should succeed");
-
-        assert!(
-            read_registry(&registry_path).await.unwrap().is_some(),
-            "registry should have been written while still leader"
-        );
-        // last_sweep_at must be populated after a successful write.
-        assert!(
-            last_sweep_at.lock().await.is_some(),
-            "last_sweep_at must be set after a successful sweep write"
-        );
-    }
-
-    /// Regression test for the REQUIRED-BEFORE-PHASE-6 hardening item (status.md): before this
-    /// fix, the sweep loop's read-modify-write held NO lock at all, so it could read the
-    /// registry, then (after a concurrent API mutation committed a change in between) write its
-    /// own stale copy back on top, silently reverting the API's write. Now both writers share
-    /// the SAME `RegistryWriteLock`, so their critical sections can never interleave.
-    ///
-    /// This drives the REAL `run_sweep_once` (via the test-only `after_read` pause hook) and the
-    /// REAL `declare_table` HTTP handler (via `api_router`) concurrently against the same
-    /// registry path and the same lock: the sweep reads a stale `owner: None`, then -- while
-    /// still holding the lock -- sleeps; concurrently we fire a `DeclareTable` call that sets
-    /// `owner: raymond` and must block on the same lock until the sweep's write completes. If
-    /// the fix works, `DeclareTable`'s own read only happens AFTER the sweep's write, so its
-    /// write lands last and the owner survives. Without the shared lock, this exact race is the
-    /// one the Phase 5 reviewer traced as a genuine lost update.
-    #[tokio::test]
-    async fn sweep_write_and_api_write_are_mutually_exclusive() {
-        let sweep_root = tempfile::tempdir().unwrap(); // empty: sweep finds no tables on S3
-        let sweep_cfg = empty_sweep_config(sweep_root.path());
-        let registry_dir = tempfile::tempdir().unwrap();
-        let registry_path = registry_dir
-            .path()
-            .join("registry.lance")
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        let seed = vec![TableEntry {
-            id: "smoke_test".to_string(),
-            name: "smoke_test".to_string(),
-            namespace: catalog_core::Namespace::new(["scenario_dataset_export"]),
-            root_location: "s3://bucket/smoke_test".to_string(),
-            owner: None,
-            ttl_policy: None,
-            last_swept: None,
-            versions: Vec::new(),
-            aux_latest: Vec::new(),
-        }];
-        write_registry(&registry_path, &seed).await.unwrap();
-
-        let write_lock = new_registry_write_lock();
-        let leader_state: LeaderState = Arc::new(AtomicBool::new(true));
-        let after_read = Arc::new(tokio::sync::Notify::new());
-
-        let last_sweep_at = new_last_sweep_at();
-        let sweep_task = {
-            let sweep_cfg = sweep_cfg.clone();
-            let registry_path = registry_path.clone();
-            let leader_state = leader_state.clone();
-            let write_lock = write_lock.clone();
-            let after_read = after_read.clone();
-            let last_sweep_at = last_sweep_at.clone();
-            tokio::spawn(async move {
-                run_sweep_once_inner(
-                    &sweep_cfg,
-                    &registry_path,
-                    &leader_state,
-                    &write_lock,
-                    &last_sweep_at,
-                    Some(after_read),
-                )
-                .await
-                .expect("sweep should not fail");
-            })
-        };
-
-        // Wait until the sweep has read the (stale, owner=None) registry and is holding
-        // write_lock through its artificial pause, before firing the racing API mutation.
-        after_read.notified().await;
-
-        let cache = Arc::new(tokio::sync::RwLock::new(seed));
-        let state = ApiState::new(
-            registry_path.clone(),
-            cache,
-            leader_state.clone(),
-            write_lock.clone(),
-            sweep_cfg.clone(),
-            registry_dir
-                .path()
-                .join("ttl_audit.lance")
-                .to_str()
-                .unwrap()
-                .to_string(),
-        );
-        let app = api_router(state);
-        let declare_task = tokio::spawn(async move {
-            app.oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/v1/table/smoke_test")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"owner":"raymond"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-        });
-
-        sweep_task.await.unwrap();
-        let resp = declare_task.await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let final_registry = read_registry(&registry_path)
-            .await
-            .unwrap()
-            .expect("registry exists after the sweep write");
-        let entry = final_registry
-            .iter()
-            .find(|e| e.id == "smoke_test")
-            .expect("table must still be present");
-        assert_eq!(
-            entry.owner.as_deref(),
-            Some("raymond"),
-            "the API-set owner must survive the racing sweep write -- the shared \
-             RegistryWriteLock must prevent the sweep's stale read-then-write from clobbering it"
-        );
     }
 }
