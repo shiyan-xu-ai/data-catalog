@@ -31,12 +31,24 @@
 //! - **Every mutation writes straight to `_catalog/registry`** (the same Lance path the sweep
 //!   loop writes) and then immediately re-populates the shared `RegistryCache` in-process, so
 //!   the change is visible to a subsequent read on the same pod without waiting for the
-//!   periodic refresh tick. A `tokio::sync::Mutex` (`ApiState::write_lock`) serializes
-//!   concurrent API mutations against each other (read-modify-write is not otherwise atomic).
-//!   It does **not** serialize against the independent periodic sweep-loop write -- that
-//!   read-modify-write race (API mutation vs. concurrent sweep write) is the same class of
-//!   registry-write hazard already carried forward in status.md's Open items (no
-//!   storage-layer CAS backstop); not solved in this phase.
+//!   periodic refresh tick. `ApiState::write_lock` is the SAME `RegistryWriteLock` the sweep
+//!   loop's `run_sweep_once` holds across its own read-modify-write (see
+//!   `crate::registry_lock` module docs) -- so an API mutation's
+//!   read-registry/mutate/write-registry critical section can never interleave with either a
+//!   concurrent API mutation or the periodic sweep-loop write. This closes the lost-update
+//!   race a Phase 5 review found (a sweep reading a stale registry, then overwriting a
+//!   concurrently-committed API change) before Phase 6 wires TTL hard-delete to the
+//!   `protected` flag, where a silently-reverted `protect` would otherwise be irreversible.
+//! - **TTL dry-run/apply** (`GET/POST /ext/v1/tables/{id}/ttl/{dryrun,apply}`) compute
+//!   TTL-eligible versions via `catalog_core::ttl_eligible_versions` (per-table `ttl_policy`,
+//!   `protected` always exempt, shape gated to `Full`/`LanceOnly`/`SegOnly`). Dry-run is
+//!   read-only and leader-independent (served from cache, like other GETs). Apply is
+//!   leader-only, recomputes eligibility fresh (never trusts a stale dry-run response),
+//!   physically deletes each eligible version's entire `<table>/<timestamp>/` prefix tree via
+//!   `catalog_store::delete_prefix`, appends a `TtlAuditRecord` per deletion, and removes the
+//!   version from the registry through the same `write_lock`-guarded critical section as
+//!   every other mutation. Idempotent: a version already removed from the registry is simply
+//!   not recomputed as eligible on the next call, so re-applying is a no-op.
 //! - **`/ext/v1/tables` ignores `expand` and always returns full detail, with no pagination.**
 //!   At v1.0.0's admin scale (dozens of tables, hundreds of versions each, served out of an
 //!   in-memory cache) there is no cost problem that expand-filtering or paging would solve;
@@ -51,18 +63,18 @@
 //!   (Phase 9/10): tighten to the frontend's actual deployed origin once it exists.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use catalog_core::{TableEntry, TableVersion, TtlPolicy};
+use catalog_core::{TableEntry, TableVersion, TtlAuditRecord, TtlPolicy};
+use catalog_store::SweepConfig;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex as AsyncMutex;
 
 use crate::leader::{is_leader, LeaderState};
 use crate::registry_cache::RegistryCache;
+use crate::registry_lock::RegistryWriteLock;
 
 /// Numeric error codes, adopted verbatim from design.md §4.1 where they overlap with what
 /// v1.0.0 actually implements. Codes not listed here (e.g. `TableAlreadyExists=5`,
@@ -124,18 +136,33 @@ pub struct ApiState {
     pub registry_path: String,
     pub cache: RegistryCache,
     pub leader_state: LeaderState,
-    /// Serializes concurrent API-driven registry mutations against each other. Does not
-    /// serialize against the independent sweep-loop write -- see module docs.
-    pub write_lock: Arc<AsyncMutex<()>>,
+    /// Serializes concurrent registry read-modify-writes against each other -- shared with
+    /// the sweep loop's own read-modify-write (see `crate::registry_lock` module docs) so
+    /// neither can interleave with the other or with a concurrent API mutation.
+    pub write_lock: RegistryWriteLock,
+    /// Object-store access for TTL hard-delete (`ttl_apply`), built from the same sweep root
+    /// config the sweep loop uses so version `snapshot_path`s resolve to the same storage.
+    pub sweep_cfg: SweepConfig,
+    /// URI of the `_catalog/ttl_audit` Lance table TTL `apply` appends to.
+    pub ttl_audit_path: String,
 }
 
 impl ApiState {
-    pub fn new(registry_path: String, cache: RegistryCache, leader_state: LeaderState) -> Self {
+    pub fn new(
+        registry_path: String,
+        cache: RegistryCache,
+        leader_state: LeaderState,
+        write_lock: RegistryWriteLock,
+        sweep_cfg: SweepConfig,
+        ttl_audit_path: String,
+    ) -> Self {
         Self {
             registry_path,
             cache,
             leader_state,
-            write_lock: Arc::new(AsyncMutex::new(())),
+            write_lock,
+            sweep_cfg,
+            ttl_audit_path,
         }
     }
 }
@@ -401,6 +428,154 @@ async fn ext_protect_version(
     Ok(Json(updated))
 }
 
+// ---------------------------------------------------------------------------
+// TTL engine (design.md §5.7 adapted to timestamp-path versions; findings.md's locked
+// "hard delete, per-table API policy" semantics)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct TtlDryRunResponse {
+    table_id: String,
+    /// TTL-eligible version ids under the table's current `ttl_policy`, as of now.
+    candidates: Vec<String>,
+    /// Sum of `storage_bytes_total` (logical/deduped bytes, see findings.md's Phase 6 carry-
+    /// forward note on `storage_bytes_total` vs. physical footprint) over `candidates`.
+    reclaimable_bytes: u64,
+}
+
+/// `GET /ext/v1/tables/{id}/ttl/dryrun` -- read-only, no leader requirement (any pod can serve
+/// this from its registry cache, like any other GET). Computes candidates fresh from the
+/// cached state every call; never mutates anything.
+async fn ttl_dryrun(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<TtlDryRunResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let cache = state.cache.read().await;
+    let table = cache
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| table_not_found(&id))?;
+    let policy = table.ttl_policy.unwrap_or_default();
+    let eligible =
+        catalog_core::ttl_eligible_versions(&policy, &table.versions, chrono::Utc::now());
+    let reclaimable_bytes = eligible.iter().map(|v| v.storage_bytes_total).sum();
+    let candidates = eligible.into_iter().map(|v| v.version_id.clone()).collect();
+    Ok(Json(TtlDryRunResponse {
+        table_id: id,
+        candidates,
+        reclaimable_bytes,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct TtlApplyResponse {
+    table_id: String,
+    /// Version ids actually hard-deleted by this call.
+    deleted: Vec<String>,
+    reclaimed_bytes: u64,
+}
+
+/// `POST /ext/v1/tables/{id}/ttl/apply` -- leader-only, IRREVERSIBLE hard delete.
+///
+/// Recomputes TTL-eligible versions fresh against the current registry state (never trusts a
+/// stale dry-run response the caller might be holding). For each eligible version: physically
+/// deletes its entire `<table>/<timestamp>/` object-store prefix tree, appends a
+/// `TtlAuditRecord`, and removes it from the in-memory registry -- all inside the single
+/// `write_lock`-guarded critical section shared with every other registry writer (see module
+/// docs). Idempotent: a version already removed from a prior successful apply is simply not
+/// recomputed as eligible, so a repeat call is a no-op, not an error.
+///
+/// Partial-failure judgment call: if a deletion errors partway through the eligible list
+/// (e.g. a transient object-store error), versions successfully deleted BEFORE the error are
+/// still persisted (removed from the registry, audited) rather than rolled back -- an S3
+/// delete cannot be un-done, so recording what actually happened is safer than pretending the
+/// whole call failed atomically. The response in that case is a 500 naming which version(s)
+/// failed; the caller can retry the apply, which will only re-attempt the remaining eligible
+/// versions.
+async fn ttl_apply(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+) -> Result<Json<TtlApplyResponse>, axum::response::Response> {
+    if !is_leader(&state.leader_state) {
+        return Err(not_leader().into_response_pair());
+    }
+
+    let _guard = state.write_lock.lock().await;
+    let mut map = load_registry_map(&state.registry_path).await;
+    let entry = map
+        .get_mut(&id)
+        .ok_or_else(|| table_not_found(&id).into_response_pair())?;
+
+    let policy = entry.ttl_policy.unwrap_or_default();
+    let now = chrono::Utc::now();
+    let eligible_ids: Vec<String> =
+        catalog_core::ttl_eligible_versions(&policy, &entry.versions, now)
+            .into_iter()
+            .map(|v| v.version_id.clone())
+            .collect();
+
+    let mut deleted = Vec::new();
+    let mut reclaimed_bytes = 0u64;
+    let mut audit_records: Vec<TtlAuditRecord> = Vec::new();
+    let mut delete_errors: Vec<String> = Vec::new();
+
+    for vid in &eligible_ids {
+        let Some(pos) = entry.versions.iter().position(|v| &v.version_id == vid) else {
+            continue;
+        };
+        let version = entry.versions[pos].clone();
+        // Defense in depth: never delete a protected version even if eligibility computation
+        // somehow said otherwise (it shouldn't -- `ttl_eligible_versions` already excludes
+        // `protected` versions -- but this is the last line of defense before an irreversible
+        // S3 delete).
+        if version.protected {
+            continue;
+        }
+
+        let prefix = state.sweep_cfg.path_for(&version.snapshot_path);
+        match catalog_store::delete_prefix(state.sweep_cfg.store.as_ref(), &prefix).await {
+            Ok(()) => {
+                audit_records.push(TtlAuditRecord {
+                    table_id: id.clone(),
+                    version_id: vid.clone(),
+                    deleted_at: now,
+                    reclaimed_bytes: version.storage_bytes_total,
+                    policy_snapshot: policy,
+                    actor: "ttl-engine".to_string(),
+                });
+                reclaimed_bytes += version.storage_bytes_total;
+                deleted.push(vid.clone());
+                entry.versions.remove(pos);
+            }
+            Err(e) => delete_errors.push(format!("{vid}: {e}")),
+        }
+    }
+
+    persist_and_refresh_cache(&state, map)
+        .await
+        .map_err(|e| internal_error(e).into_response_pair())?;
+
+    if !audit_records.is_empty() {
+        catalog_core::append_ttl_audit(&state.ttl_audit_path, &audit_records)
+            .await
+            .map_err(|e| internal_error(e).into_response_pair())?;
+    }
+
+    if !delete_errors.is_empty() {
+        return Err(internal_error(anyhow::anyhow!(
+            "some versions failed to delete: {}",
+            delete_errors.join("; ")
+        ))
+        .into_response_pair());
+    }
+
+    Ok(Json(TtlApplyResponse {
+        table_id: id,
+        deleted,
+        reclaimed_bytes,
+    }))
+}
+
 fn internal_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
     error(StatusCode::INTERNAL_SERVER_ERROR, 0, e.to_string())
 }
@@ -454,6 +629,8 @@ pub fn api_router(state: ApiState) -> Router {
             "/ext/v1/tables/:id/versions/:vid/protect",
             put(ext_protect_version),
         )
+        .route("/ext/v1/tables/:id/ttl/dryrun", get(ttl_dryrun))
+        .route("/ext/v1/tables/:id/ttl/apply", post(ttl_apply))
         .route("/metrics", get(metrics))
         .with_state(state)
 }

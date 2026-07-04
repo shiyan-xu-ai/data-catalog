@@ -50,4 +50,46 @@ impl SweepConfig {
             format!("{root_uri}/{rel}")
         }
     }
+
+    /// Inverse of `uri_for`: recover the `ObjectStore`-relative path from a URI previously
+    /// produced by `uri_for` (e.g. a `TableVersion::snapshot_path`), so it can be used for
+    /// LIST/DELETE against `store` (TTL hard-delete).
+    pub fn path_for(&self, uri: &str) -> ObjPath {
+        let root_uri = self.root_uri.trim_end_matches('/');
+        let rel = uri
+            .strip_prefix(root_uri)
+            .unwrap_or(uri)
+            .trim_start_matches('/');
+        let root_str = self.root_path.as_ref().trim_end_matches('/');
+        if rel.is_empty() {
+            self.root_path.clone()
+        } else if root_str.is_empty() {
+            ObjPath::from(rel)
+        } else {
+            ObjPath::from(format!("{root_str}/{rel}"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::local::LocalFileSystem;
+    use std::sync::Arc;
+
+    #[test]
+    fn path_for_is_the_inverse_of_uri_for() {
+        let cfg = SweepConfig::new(
+            Arc::new(LocalFileSystem::new()),
+            ObjPath::from("scenario_dataset_export"),
+            "s3://bucket/scenario_dataset_export".to_string(),
+        );
+        let original = ObjPath::from("scenario_dataset_export/smoke_test/2026-06-26_12-00-00");
+        let uri = cfg.uri_for(&original);
+        assert_eq!(
+            uri,
+            "s3://bucket/scenario_dataset_export/smoke_test/2026-06-26_12-00-00"
+        );
+        assert_eq!(cfg.path_for(&uri), original);
+    }
 }

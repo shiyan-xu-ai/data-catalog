@@ -12,8 +12,10 @@ use catalog_api_lib::leader::{
     self, ForcedLeaderElector, KubeLeaseElector, LeaderElector, LeaderState,
 };
 use catalog_api_lib::registry_cache::{self, RegistryCache};
+use catalog_api_lib::registry_lock::{self, RegistryWriteLock};
 use catalog_api_lib::sweep_config;
 use catalog_api_lib::sweep_loop;
+use catalog_store::SweepConfig;
 
 async fn healthz() -> &'static str {
     "ok"
@@ -29,8 +31,23 @@ async fn debug_is_leader(State(state): State<LeaderState>) -> Json<bool> {
     Json(leader::is_leader(&state))
 }
 
-fn app(registry_cache: RegistryCache, leader_state: LeaderState, registry_path: String) -> Router {
-    let api_state = ApiState::new(registry_path, registry_cache.clone(), leader_state.clone());
+#[allow(clippy::too_many_arguments)]
+fn app(
+    registry_cache: RegistryCache,
+    leader_state: LeaderState,
+    registry_path: String,
+    write_lock: RegistryWriteLock,
+    sweep_cfg: SweepConfig,
+    ttl_audit_path: String,
+) -> Router {
+    let api_state = ApiState::new(
+        registry_path,
+        registry_cache.clone(),
+        leader_state.clone(),
+        write_lock,
+        sweep_cfg,
+        ttl_audit_path,
+    );
     Router::new()
         .route("/healthz", get(healthz))
         .route(
@@ -86,11 +103,17 @@ async fn main() -> anyhow::Result<()> {
         cfg.registry_refresh_interval,
     );
 
+    // Shared with the sweep loop below: the SAME lock guards every writer's
+    // read-registry -> mutate -> write-registry critical section (see `registry_lock`
+    // module docs) so API mutations and the periodic sweep write can never interleave.
+    let write_lock: RegistryWriteLock = registry_lock::new_registry_write_lock();
+
     let sweep_cfg = sweep_config::build_sweep_config(&cfg.sweep_root_uri)?;
     let _sweep_task = sweep_loop::spawn_sweep_loop(
-        sweep_cfg,
+        sweep_cfg.clone(),
         cfg.registry_path.clone(),
         leader_state.clone(),
+        write_lock.clone(),
         cfg.sweep_interval,
     );
 
@@ -99,7 +122,14 @@ async fn main() -> anyhow::Result<()> {
         .expect("failed to bind listener");
     axum::serve(
         listener,
-        app(registry_cache, leader_state, cfg.registry_path.clone()),
+        app(
+            registry_cache,
+            leader_state,
+            cfg.registry_path.clone(),
+            write_lock,
+            sweep_cfg,
+            cfg.ttl_audit_path.clone(),
+        ),
     )
     .await
     .expect("server error");

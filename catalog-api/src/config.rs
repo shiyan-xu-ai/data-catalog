@@ -45,6 +45,8 @@ pub struct AppConfig {
     pub lease_duration: Duration,
     /// URI (plain path or `s3://bucket/prefix`) of the `_catalog/registry` Lance dataset.
     pub registry_path: String,
+    /// URI of the `_catalog/ttl_audit` Lance dataset TTL `apply` appends deletion records to.
+    pub ttl_audit_path: String,
     /// How often non-leader (and leader) pods re-read the registry into their local cache.
     pub registry_refresh_interval: Duration,
     /// URI of the sweep root (e.g. `s3://onroad-perception-datasets/scenario_dataset_export`
@@ -80,6 +82,7 @@ impl AppConfig {
             leader_tick_interval: env_duration_secs("CATALOG_LEADER_TICK_INTERVAL_SECS", 10),
             lease_duration: env_duration_secs("CATALOG_LEASE_DURATION_SECS", 30),
             registry_path: env_or("CATALOG_REGISTRY_PATH", "_catalog/registry"),
+            ttl_audit_path: env_or("CATALOG_TTL_AUDIT_PATH", "_catalog/ttl_audit"),
             registry_refresh_interval: env_duration_secs(
                 "CATALOG_REGISTRY_REFRESH_INTERVAL_SECS",
                 5,

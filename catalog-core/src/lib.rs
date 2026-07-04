@@ -3,10 +3,14 @@
 
 mod apply;
 mod registry;
+mod ttl;
+mod ttl_audit;
 mod types;
 
 pub use apply::apply_sweep_result;
 pub use registry::{read_registry, write_registry};
+pub use ttl::ttl_eligible_versions;
+pub use ttl_audit::{append_ttl_audit, read_ttl_audit};
 pub use types::{
     AuxEntry, AuxFormat, Namespace, TableEntry, TableVersion, TtlAuditRecord, TtlPolicy,
     VersionShape,

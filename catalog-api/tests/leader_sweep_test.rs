@@ -71,18 +71,26 @@ async fn only_leader_writes_registry_and_both_pods_read_latest_state() {
 
     let leader_state: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
     let follower_state: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    // Each "pod" gets its own write_lock here -- they write to the same registry path but
+    // this test never exercises the two-writer locking behavior (that's
+    // `sweep_write_and_api_write_are_mutually_exclusive` in `sweep_loop.rs`); production
+    // wiring in `main.rs` shares one lock across the sweep loop and the REST API.
+    let leader_write_lock = catalog_api_lib::registry_lock::new_registry_write_lock();
+    let follower_write_lock = catalog_api_lib::registry_lock::new_registry_write_lock();
 
     let tick = Duration::from_millis(30);
     let leader_sweep_handle = catalog_api_lib::sweep_loop::spawn_sweep_loop(
         leader_sweep_cfg,
         registry_path.clone(),
         leader_state,
+        leader_write_lock,
         tick,
     );
     let follower_sweep_handle = catalog_api_lib::sweep_loop::spawn_sweep_loop(
         follower_sweep_cfg,
         registry_path.clone(),
         follower_state,
+        follower_write_lock,
         tick,
     );
 

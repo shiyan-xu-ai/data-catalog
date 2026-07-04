@@ -5,5 +5,6 @@ pub mod api;
 pub mod config;
 pub mod leader;
 pub mod registry_cache;
+pub mod registry_lock;
 pub mod sweep_config;
 pub mod sweep_loop;
