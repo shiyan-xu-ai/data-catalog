@@ -8,8 +8,34 @@ on:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    # CI-only build-footprint controls. The lance + datafusion + arrow +
+    # aws-sdk dependency graph is huge; building the whole workspace in the dev
+    # profile with full debuginfo produces multi-GB object files, and the
+    # linker (ld) faults with SIGBUS when the runner exhausts disk/memory
+    # mmapping its output. Stripping debuginfo shrinks object files and the
+    # linked binaries dramatically. These are env-scoped to the CI job only —
+    # they do NOT touch the committed Cargo.toml [profile.*] or the real
+    # (Dockerfile release) build.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
+
+      # ubuntu-latest ships many GB of preinstalled toolchains (Android SDK,
+      # .NET, GHC, CodeQL) we never use. Reclaim them before the build so the
+      # linker has headroom — SIGBUS-on-link is commonly disk-mmap exhaustion.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Show available disk space
+        run: df -h
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
