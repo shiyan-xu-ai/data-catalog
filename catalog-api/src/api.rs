@@ -477,8 +477,6 @@ async fn ttl_dryrun(
         catalog_core::ttl_eligible_versions(&policy, &table.versions, chrono::Utc::now());
     let reclaimable_bytes: u64 = eligible.iter().map(|v| v.storage_bytes_total).sum();
     let candidates = eligible.into_iter().map(|v| v.version_id.clone()).collect();
-    // Update gauge so dashboards show current reclaimable bytes without needing an apply.
-    metrics::set_ttl_reclaimable_bytes(reclaimable_bytes);
     Ok(Json(TtlDryRunResponse {
         table_id: id,
         candidates,
@@ -637,8 +635,8 @@ async fn ttl_apply(
         .into_response_pair());
     }
 
-    // Update the reclaimable-bytes gauge — post-apply, reclaimable drops by what we deleted.
-    metrics::set_ttl_reclaimable_bytes(0);
+    // The reclaimable-bytes gauge is maintained by the sweep from ground truth (leader-only),
+    // so apply does not poke it here — the next sweep reflects the post-delete total.
     metrics::record_ttl_apply(true);
 
     Ok(Json(TtlApplyResponse {

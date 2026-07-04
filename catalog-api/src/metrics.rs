@@ -22,7 +22,8 @@
 //! **Sweep**
 //! - `catalog_sweep_tables_checked_total`   — counter   ()
 //! - `catalog_sweep_cycle_duration_seconds` — histogram ()
-//! - `catalog_snapshot_staleness_seconds`   — gauge     () — seconds since last completed sweep
+//! - `catalog_sweep_table_failures_total`   — counter   () — per-table failures isolated/skipped
+//! - `catalog_snapshot_staleness_seconds`   — gauge     () — since last sweep; leader only, else 0
 //!
 //! **Freshness / hydration**
 //! - `catalog_hydration_ready`              — gauge     (0/1)
@@ -143,7 +144,13 @@ fn register_metric_metadata() {
     describe_gauge!(
         "catalog_snapshot_staleness_seconds",
         Unit::Seconds,
-        "Seconds elapsed since the last successful sweep write."
+        "Seconds elapsed since the last successful sweep write (leader only; 0 on non-leaders)."
+    );
+    describe_counter!(
+        "catalog_sweep_table_failures_total",
+        Unit::Count,
+        "Total per-table sweep failures that were isolated (logged and skipped) rather than \
+         aborting the sweep cycle."
     );
 
     // --- Freshness / hydration ---
@@ -177,7 +184,8 @@ fn register_metric_metadata() {
     describe_gauge!(
         "catalog_ttl_reclaimable_bytes",
         Unit::Bytes,
-        "Logical bytes reclaimable by TTL, updated after each dry-run or apply."
+        "Total logical bytes reclaimable by TTL across all tables, maintained by the sweep \
+         (leader only)."
     );
 
     // --- Object store ---
@@ -225,6 +233,13 @@ pub fn record_sweep_cycle(tables_checked: u64, duration: Duration) {
     metrics::histogram!("catalog_sweep_cycle_duration_seconds").record(duration.as_secs_f64());
 }
 
+/// Record `count` per-table sweep failures that were isolated (skipped) this cycle.
+pub fn record_sweep_failures(count: u64) {
+    if count > 0 {
+        metrics::counter!("catalog_sweep_table_failures_total").increment(count);
+    }
+}
+
 /// Update the snapshot staleness gauge (seconds since last successful sweep write).
 pub fn set_snapshot_staleness(seconds: f64) {
     metrics::gauge!("catalog_snapshot_staleness_seconds").set(seconds);
@@ -257,7 +272,8 @@ pub fn record_ttl_apply(ok: bool) {
     metrics::counter!("catalog_ttl_apply_total", "result" => result).increment(1);
 }
 
-/// Update the reclaimable-bytes gauge (logical bytes; may be set from dry-run or apply).
+/// Set the reclaimable-bytes gauge to the total logical bytes reclaimable across all tables.
+/// Maintained by the sweep loop (leader only) so it is a stable total, not a per-table value.
 pub fn set_ttl_reclaimable_bytes(bytes: u64) {
     metrics::gauge!("catalog_ttl_reclaimable_bytes").set(bytes as f64);
 }
@@ -270,9 +286,11 @@ pub fn record_s3_op(op: &'static str, ok: bool) {
 
 /// Classify a request path into a coarse metric class label.
 ///
-/// Returns one of: `metadata` | `ext` | `ttl` | `debug` | `other`.
+/// Returns one of: `metadata` | `ext` | `ttl` | `other`.
 /// Used as the `class` label on HTTP RED metrics — keeps cardinality bounded
 /// while still separating the main traffic segments the alerts care about.
+/// (The RED middleware only wraps the `/v1` + `/ext` API router, so `/debug` and `/healthz`
+/// never reach here; there is no `debug` class.)
 pub fn route_class(path: &str) -> &'static str {
     if path.starts_with("/ext/v1/tables/") && path.contains("/ttl") {
         "ttl"
@@ -280,8 +298,6 @@ pub fn route_class(path: &str) -> &'static str {
         "ext"
     } else if path.starts_with("/v1") {
         "metadata"
-    } else if path.starts_with("/debug") {
-        "debug"
     } else {
         "other"
     }

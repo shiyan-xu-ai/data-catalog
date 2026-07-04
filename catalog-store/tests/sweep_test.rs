@@ -273,9 +273,14 @@ async fn full_sweep_multiple_tables_multiple_versions() {
     write_lance_dataset(&lance_only_dir.join("dataset.lance")).await;
 
     let cfg = cfg(store, tmp.path());
-    let entries = catalog_store::sweep_root(&cfg).await.unwrap();
+    let outcome = catalog_store::sweep_root(&cfg).await.unwrap();
+    let entries = outcome.tables;
 
     assert_eq!(entries.len(), 2);
+    assert_eq!(
+        outcome.failed_tables, 0,
+        "no table should fail on a clean fixture"
+    );
     let table_f = entries.iter().find(|e| e.id == "tableF").unwrap();
     let table_g = entries.iter().find(|e| e.id == "tableG").unwrap();
 
