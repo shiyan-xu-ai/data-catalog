@@ -1,0 +1,13 @@
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Frontend (future phases)
+node_modules/
+dist/

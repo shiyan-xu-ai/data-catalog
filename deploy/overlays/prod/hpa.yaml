@@ -1,0 +1,62 @@
+---
+# Horizontal Pod Autoscaler for catalog-api (prod only).
+#
+# v1.0.0 uses CPU utilization as the scaling signal — a simple and universally
+# available metric that requires no additional infrastructure.
+#
+# The design targets RPS-based autoscaling via KEDA + Prometheus adapter
+# (CPU is a poor proxy for memory-read work). That requires the KEDA operator
+# and Prometheus adapter to be installed in the cluster. Upgrade to KEDA
+# ScaledObject once those are available:
+#
+#   apiVersion: keda.sh/v1alpha1
+#   kind: ScaledObject
+#   metadata:
+#     name: catalog-api
+#   spec:
+#     scaleTargetRef:
+#       name: catalog-api
+#     minReplicaCount: 3
+#     maxReplicaCount: 10
+#     triggers:
+#       - type: prometheus
+#         metadata:
+#           serverAddress: http://prometheus:9090
+#           metricName: catalog_http_requests_total
+#           query: |
+#             sum(rate(catalog_http_requests_total{class="metadata"}[2m]))
+#           threshold: "100"   # scale out at 100 RPS per replica
+#
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: catalog-api
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: catalog-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Scale out when average CPU across all pods exceeds 70%.
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

@@ -1,0 +1,86 @@
+---
+# Grafana dashboard: Sweep & Convergence.
+# Panels: sweep cycle duration, tables checked per cycle, snapshot staleness.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-sweep
+  namespace: monitoring
+  labels:
+    app: grafana
+    grafana_dashboard: "1"
+data:
+  sweep.json: |
+    {
+      "title": "Catalog — Sweep & Convergence",
+      "uid": "catalog-sweep",
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "30s",
+      "time": {"from": "now-3h", "to": "now"},
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Sweep Cycle Duration p99 (s)",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, rate(catalog_sweep_cycle_duration_seconds_bucket[10m]))",
+              "legendFormat": "p99"
+            },
+            {
+              "expr": "histogram_quantile(0.50, rate(catalog_sweep_cycle_duration_seconds_bucket[10m]))",
+              "legendFormat": "p50"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Tables Checked per Cycle",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "increase(catalog_sweep_tables_checked_total[10m])",
+              "legendFormat": "tables/cycle"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Snapshot Staleness (s)",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+          "targets": [
+            {
+              "expr": "catalog_snapshot_staleness_seconds",
+              "legendFormat": "staleness"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": 0},
+                  {"color": "yellow", "value": 300},
+                  {"color": "red", "value": 900}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "S3 Operations Rate",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+          "targets": [
+            {
+              "expr": "sum(rate(catalog_s3_operations_total[2m])) by (op, result)",
+              "legendFormat": "{{op}} {{result}}"
+            }
+          ]
+        }
+      ]
+    }

@@ -1,0 +1,133 @@
+---
+# PrometheusRule — requires Prometheus Operator. If running without the operator, import
+# the `rules` section into the `rule_files` block of the standalone prometheus ConfigMap
+# instead (see prometheus/configmap.yaml).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: catalog-api-alerts
+  namespace: monitoring
+  labels:
+    app: catalog-api
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: catalog.leader
+      interval: 30s
+      rules:
+        - alert: NoLeader
+          expr: sum(catalog_is_leader) < 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No catalog-api leader"
+            description: >
+              No catalog-api pod reports catalog_is_leader=1. Mutations and sweeps are
+              stalled until a leader is elected. Check lease acquisition logs.
+
+    - name: catalog.freshness
+      interval: 30s
+      rules:
+        - alert: FreshnessBreach
+          expr: catalog_snapshot_staleness_seconds > 900
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Catalog registry snapshot is stale (>15 min)"
+            description: >
+              catalog_snapshot_staleness_seconds={{ $value | printf "%.0f" }}s on
+              pod={{ $labels.pod }}. The leader sweep has not completed a successful write
+              in over 15 minutes. Check for S3 connectivity issues or leader churn.
+
+        - alert: HydrationNotReady
+          expr: min(catalog_hydration_ready) == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "catalog-api pod(s) not hydrated"
+            description: >
+              At least one catalog-api pod reports catalog_hydration_ready=0 for more than
+              5 minutes, meaning it has not yet loaded the registry cache. Read traffic to
+              that pod returns empty/stale results.
+
+    - name: catalog.sweep
+      interval: 60s
+      rules:
+        - alert: SweepStalled
+          expr: increase(catalog_sweep_tables_checked_total[30m]) == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Catalog sweep has stalled (no tables checked in 30 min)"
+            description: >
+              catalog_sweep_tables_checked_total has not increased in the last 30 minutes.
+              The leader sweep loop may have stopped. Check for errors in the leader pod logs.
+
+    - name: catalog.s3
+      interval: 30s
+      rules:
+        - alert: S3Throttling
+          expr: |
+            sum(rate(catalog_s3_operations_total{result="error"}[5m])) /
+            sum(rate(catalog_s3_operations_total[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "S3 operation error rate exceeds 5%"
+            description: >
+              More than 5% of S3 operations are failing. S3 throttling or network partition
+              may be affecting sweep and TTL operations. Check AWS CloudWatch metrics.
+
+    - name: catalog.ttl
+      interval: 60s
+      rules:
+        - alert: TTLDeletesFailed
+          expr: rate(catalog_ttl_deletes_total{result="error"}[10m]) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TTL version deletes are failing"
+            description: >
+              catalog_ttl_deletes_total{result="error"} is increasing. TTL hard-deletes are
+              not completing cleanly. Check for S3 permission errors or object store issues.
+
+    - name: catalog.availability
+      interval: 30s
+      rules:
+        - alert: ReadAvailabilityBurn
+          expr: |
+            (
+              sum(rate(catalog_http_requests_total{status=~"5..", class="metadata"}[5m]))
+              / sum(rate(catalog_http_requests_total{class="metadata"}[5m]))
+            ) > 0.01
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Catalog read availability burn: >1% 5xx on metadata routes"
+            description: >
+              More than 1% of metadata-class HTTP requests are returning 5xx errors over a
+              5-minute window. SLO burn rate is too high. Investigate catalog-api pod logs.
+
+        - alert: ReadLatencyHigh
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum(rate(catalog_http_request_duration_seconds_bucket{class="metadata"}[5m])) by (le)
+            ) > 1.0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Catalog read p99 latency exceeds 1 s"
+            description: >
+              The p99 latency for metadata-class requests (ListTables, DescribeTable) has
+              exceeded 1 second for 5 minutes. This is above the target (design.md §5).
+              Check for registry cache issues or GC pressure.

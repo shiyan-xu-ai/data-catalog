@@ -1,0 +1,21 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Prometheus (standalone, no operator required)
+  - prometheus/rbac.yaml
+  - prometheus/configmap.yaml
+  - prometheus/rules-configmap.yaml
+  - prometheus/deployment.yaml
+  # Grafana
+  - grafana/datasource.yaml
+  - grafana/dashboards-provisioning.yaml
+  - grafana/deployment.yaml
+  - grafana/dashboard-overview.yaml
+  - grafana/dashboard-sweep.yaml
+  - grafana/dashboard-ttl.yaml
+  # Alerts (requires Prometheus Operator; additive)
+  - prometheus-rule.yaml
+  # ServiceMonitor (requires Prometheus Operator; additive)
+  - servicemonitor.yaml

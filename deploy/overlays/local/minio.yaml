@@ -1,0 +1,97 @@
+---
+# In-cluster MinIO — local development only.
+# Provides S3-compatible object storage so catalog-api can use real object_store::aws
+# code paths on a kind cluster without any AWS credentials.
+#
+# MinIO version is pinned to RELEASE.2024-01-18T22-51-28Z which ships conditional-write
+# (If-None-Match: *) support matching S3 semantics. Lance commits depend on this for
+# the atomic CAS behavior that KubeLeaseElector and the registry write path rely on.
+# Upgrade only after running the conformance smoke test (see docs/smoke-test.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: default
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:RELEASE.2024-01-18T22-51-28Z
+          args:
+            - server
+            - /data
+            - --address
+            - ":9000"
+            - --console-address
+            - ":9001"
+          env:
+            - name: MINIO_ROOT_USER
+              value: "minioadmin"
+            - name: MINIO_ROOT_PASSWORD
+              value: "minioadmin"
+          ports:
+            - name: s3
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: default
+  labels:
+    app: minio
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: s3
+    - name: console
+      port: 9001
+      targetPort: console
+
+---
+# Secret holding MinIO (local S3) credentials for catalog-api.
+# In prod/staging these are replaced by IRSA (no Secret needed).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: catalog-api-s3-creds
+  namespace: default
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: "minioadmin"
+  AWS_SECRET_ACCESS_KEY: "minioadmin"

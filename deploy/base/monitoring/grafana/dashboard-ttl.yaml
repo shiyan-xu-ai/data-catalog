@@ -1,0 +1,76 @@
+---
+# Grafana dashboard: TTL & Storage.
+# Panels: TTL apply rate, TTL delete rate, reclaimable bytes, error rate.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-ttl
+  namespace: monitoring
+  labels:
+    app: grafana
+    grafana_dashboard: "1"
+data:
+  ttl.json: |
+    {
+      "title": "Catalog — TTL & Storage",
+      "uid": "catalog-ttl",
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "30s",
+      "time": {"from": "now-6h", "to": "now"},
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "TTL Apply Rate (calls/s)",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(rate(catalog_ttl_apply_total[5m])) by (result)",
+              "legendFormat": "{{result}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "TTL Deletes Rate (versions/s)",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(rate(catalog_ttl_deletes_total[5m])) by (result)",
+              "legendFormat": "{{result}}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Reclaimable Bytes",
+          "gridPos": {"h": 6, "w": 8, "x": 0, "y": 8},
+          "targets": [
+            {
+              "expr": "sum(catalog_ttl_reclaimable_bytes)",
+              "legendFormat": "bytes"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes"
+            }
+          }
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "TTL Delete Error Rate",
+          "gridPos": {"h": 6, "w": 16, "x": 8, "y": 8},
+          "targets": [
+            {
+              "expr": "rate(catalog_ttl_deletes_total{result=\"error\"}[5m])",
+              "legendFormat": "error rate"
+            }
+          ]
+        }
+      ]
+    }

@@ -1,0 +1,47 @@
+---
+# Primary scrape configuration. Scrapes the catalog-api metrics port (9090) via k8s
+# service discovery. No Prometheus Operator required — this ConfigMap is the operator
+# substitute for a standalone Prometheus deployment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - /etc/prometheus/rules/*.yaml
+
+    scrape_configs:
+      # Scrape catalog-api metrics on the internal metrics port (9090).
+      # Targets all pods in any namespace that carry the label app=catalog-api.
+      - job_name: catalog-api
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Keep only pods labelled app=catalog-api.
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: catalog-api
+          # Rewrite port to the internal metrics port.
+          - source_labels: [__address__]
+            action: replace
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '$1:9090'
+            target_label: __address__
+          # Propagate useful pod metadata as labels.
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+      # Self-scrape so Prometheus's own metrics are available.
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
