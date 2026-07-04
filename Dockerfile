@@ -10,10 +10,13 @@
 FROM rust:1.87-slim AS builder
 
 # Install musl cross-compilation target and C linker.
+# protobuf-compiler: lance-encoding's build script compiles .proto files and
+# needs the protoc binary at build time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     musl-tools \
     pkg-config \
     libssl-dev \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup target add x86_64-unknown-linux-musl

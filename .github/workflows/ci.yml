@@ -19,6 +19,12 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
+      # lance-encoding (transitive dep via lance) compiles .proto files in a
+      # build script and requires the protoc binary at build time. The dev box
+      # has it; ubuntu-latest does not.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+
       - name: cargo build --workspace
         run: cargo build --workspace --all-targets
 
