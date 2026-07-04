@@ -493,6 +493,54 @@ split per-component (`lance_core_bytes`, `sidecar_bytes`, `segments_bytes`,
 `other_aux_bytes`) so pre-cutoff versions attribute sidecar bytes correctly
 rather than lumping them into lance-core.
 
+### Real-world example tables (the surveyed layout)
+
+The sweep root `s3://onroad-perception-datasets/scenario_dataset_export/`
+(the configurable default) contains ~65 table directories. The
+representative tables below are the real storage layouts the sweep is
+designed against. Aux directory names and formats vary per table, so
+classification is structural (by directory contents), not name-based.
+
+An annotated example tree for `smoke_test` showing both cutoff layouts:
+
+```
+scenario_dataset_export/
+  smoke_test/
+    2026-06-27_01-37-36/            # a post-cutoff version (current layout)
+      dataset.lance/                # main lance dataset (_versions/ + _transactions/ at root)
+        _versions/  _transactions/  _indices/  data/
+      dataset.sidecar/              # top-level sidecar (post-cutoff placement)
+        _FragmentMetadata/  master_indices/  lance_tags/  lance_tags_intermediate/
+        _asset_replication_segments/  _asset_replication_results/  curated_indices/
+      segments/                     # parquet aux (_SUCCESS + part-*.snappy.parquet)
+    2026-06-25_13-42-42/            # a pre-cutoff version (old layout)
+      dataset.lance/                # sidecar dirs live INSIDE here (inflating lance-core size)
+        _versions/  _transactions/  _indices/  data/
+        _FragmentMetadata/  master_indices/  lance_tags/  lance_tags_intermediate/
+        _asset_replication_segments/  _asset_replication_results/  curated_indices/
+      segments/
+```
+
+The 2026-06-26 boundary is observable in `smoke_test`: the 2026-06-25 version
+carries sidecar directories inside `dataset.lance/` (old layout), while the
+2026-06-27 version has a clean `dataset.lance/` plus a top-level
+`dataset.sidecar/` (current layout).
+
+The representative tables and their characteristics:
+
+| Table | Versions | Notable characteristics |
+|---|---|---|
+| `smoke_test` | 457 | Spans the cutoff cleanly; exercises the full range of version shapes across its history. |
+| `closed_loop_run_purpose_dataset` | 173 | Clean cutoff boundary; carries a `-MISSING-RECONSTRUCTIONS` sibling partial. |
+| `1stage_scenario_dataset_train` | 65 | Post-cutoff versions can be `lance_only_partial` — a `dataset.lance/` containing only nested `index_datasets/` + `tag_datasets/` lances with no `_versions/`/`_transactions/` at its own root. Also uses the hyphen timestamp format (`YYYY-MM-DD-HH-MM-SS`). |
+| `1stage_scenario_dataset_eval` | 39 | Crosses the cutoff and shows the ~2026-06-12 transition dual-write (sidecar both inside `dataset.lance/` and at top-level `dataset.sidecar/`). Aux variety includes nested lance (`scenario_dataset_etl/`, `single_segment.lance/`) and partitioned parquet (`entity_asset_replication_result/`). |
+| `robotaxi` | 10 | Mostly pre-cutoff; aux variety includes CSV (`curated_csv/`, `row_counts/`), demonstrating arbitrary-aux-format handling. |
+
+These tables exercise every sweep code path: the pre/post cutoff layouts, the
+dual-write transition, the `lance_only_partial` nested-lance edge case, the
+hyphen timestamp variance, and the arbitrary aux formats (parquet, lance, csv,
+mixed).
+
 ### Retention / TTL (§5.7) — per-table API policy, hard delete
 
 Design §5.7 described a TTL engine with native-knob-first config writes,

@@ -115,8 +115,10 @@ A layout transition occurred around 2026-06-26:
   otherwise sidecar bytes are read from inside the main lance dir.
 
 The sweep supports both layouts so the full version history is cataloged
-correctly. The real-world layout findings are captured in
-[`docs/design.md`](docs/design.md) ("v1.0.0 as-built" notes).
+correctly. The real-world layout is captured in
+[`docs/design.md`](docs/design.md) ("v1.0.0 as-built" notes), including
+concrete annotated example tables under
+[Real-world example tables (the surveyed layout)](docs/design.md#real-world-example-tables-the-surveyed-layout).
 
 ## The registry
 
