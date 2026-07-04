@@ -51,6 +51,9 @@ jobs:
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: true
+          shared-key: "workspace"
 
       # lance-encoding (transitive dep via lance) compiles .proto files in a
       # build script and requires the protoc binary at build time. The dev box
