@@ -1,3 +1,9 @@
 //! Object-store IO and S3 sweep logic for the data catalog.
-//!
-//! Placeholder; sweep implementation lands in a later phase.
+
+mod config;
+mod format;
+mod sweep;
+
+pub use config::SweepConfig;
+pub use format::{detect_format, recursive_bytes};
+pub use sweep::{sweep_root, sweep_table, sweep_version};

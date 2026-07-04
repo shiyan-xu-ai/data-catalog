@@ -1111,7 +1111,18 @@ dependencies = [
 name = "catalog-store"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "arrow-array",
+ "arrow-schema",
  "catalog-core",
+ "chrono",
+ "futures",
+ "lance",
+ "object_store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
