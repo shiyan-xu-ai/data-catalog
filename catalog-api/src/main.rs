@@ -4,7 +4,9 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::{routing::get, Json, Router};
 use tokio::sync::RwLock;
+use tower_http::cors::CorsLayer;
 
+use catalog_api_lib::api::{api_router, ApiState};
 use catalog_api_lib::config::{AppConfig, LeaderMode};
 use catalog_api_lib::leader::{
     self, ForcedLeaderElector, KubeLeaseElector, LeaderElector, LeaderState,
@@ -27,7 +29,8 @@ async fn debug_is_leader(State(state): State<LeaderState>) -> Json<bool> {
     Json(leader::is_leader(&state))
 }
 
-fn app(registry_cache: RegistryCache, leader_state: LeaderState) -> Router {
+fn app(registry_cache: RegistryCache, leader_state: LeaderState, registry_path: String) -> Router {
+    let api_state = ApiState::new(registry_path, registry_cache.clone(), leader_state.clone());
     Router::new()
         .route("/healthz", get(healthz))
         .route(
@@ -38,6 +41,11 @@ fn app(registry_cache: RegistryCache, leader_state: LeaderState) -> Router {
             "/debug/is_leader",
             get(debug_is_leader).with_state(leader_state),
         )
+        .merge(api_router(api_state))
+        // Permissive CORS for the public /v1 + /ext + /metrics surface: v1.0.0 has no deployed
+        // frontend yet, so there's no concrete origin to allow-list. TODO (Phase 9/10): tighten
+        // to the frontend's actual deployed origin.
+        .layer(CorsLayer::permissive())
 }
 
 async fn build_leader_elector(cfg: &AppConfig) -> anyhow::Result<Arc<dyn LeaderElector>> {
@@ -89,9 +97,12 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
         .expect("failed to bind listener");
-    axum::serve(listener, app(registry_cache, leader_state))
-        .await
-        .expect("server error");
+    axum::serve(
+        listener,
+        app(registry_cache, leader_state, cfg.registry_path.clone()),
+    )
+    .await
+    .expect("server error");
 
     Ok(())
 }
