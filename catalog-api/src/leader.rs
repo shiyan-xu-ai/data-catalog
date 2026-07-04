@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::api::{Api, PostParams};
 use kube::Client;
 use tokio::task::JoinHandle;
 
@@ -159,11 +159,22 @@ impl KubeLeaseElector {
     }
 
     /// What to do given the lease this GET just observed.
+    ///
+    /// Expiry is checked BEFORE ownership: a lease that has expired routes through `Acquire`
+    /// regardless of whose `holder_identity` it still carries. This matters for a "lapsed
+    /// former holder" -- a pod that WAS the holder, then hung/paused for >= lease_duration
+    /// (GC pause, scheduling delay, partition heal) before resuming. Such a pod still sees
+    /// itself as `holder_identity` in the lease it GETs, but its own lease has genuinely
+    /// expired; if it were classified `Renew` here it would take the plain-patch path and
+    /// could clobber a legitimate new holder that already won the lease via the CAS-guarded
+    /// `Acquire` path (see the split-brain bug this fixes, recorded in `acquire_or_renew`'s
+    /// `Renew` branch). Routing every expired lease -- ours or not -- through `Acquire` means
+    /// only a genuinely live, currently-held-by-us lease is ever renewed.
     fn decide(&self, existing: &Lease) -> LeaseDecision {
-        if self.we_hold_it(existing) {
-            LeaseDecision::Renew
-        } else if self.lease_expired(existing) {
+        if self.lease_expired(existing) {
             LeaseDecision::Acquire
+        } else if self.we_hold_it(existing) {
+            LeaseDecision::Renew
         } else {
             LeaseDecision::BackOff
         }
@@ -172,20 +183,32 @@ impl KubeLeaseElector {
     async fn acquire_or_renew(&self) -> Result<bool> {
         match self.api.get(&self.lease_name).await {
             Ok(existing) => match self.decide(&existing) {
-                // We already hold it: only the actual holder legitimately renews here (no
-                // other pod can be renewing the same lease under our identity), so a plain
-                // server-side-apply patch is fine -- no compare-and-swap needed.
+                // We already hold it AND it hasn't expired (see `decide`'s ordering): still
+                // CAS-guarded via `replace` carrying the observed `resourceVersion`, exactly
+                // like `Acquire`. This used to be a plain unconditioned `Patch::Apply` (server-
+                // side apply, single shared field manager, no resourceVersion precondition) --
+                // that was the second split-brain bug: a lapsed former holder whose own lease
+                // had actually expired could still classify as `Renew` under the old
+                // hold-before-expiry ordering and reassert its holder_identity over a
+                // concurrent legitimate takeover, since SSA never conflicts. Now that `decide`
+                // routes every expired lease through `Acquire`, only a genuinely live renewal
+                // by the true current holder reaches this branch -- but it is CAS-guarded
+                // anyway (belt-and-suspenders) so a 409 here (lost to a concurrent write we
+                // didn't expect) makes us step down rather than blindly assume success.
                 LeaseDecision::Renew => {
-                    let patch = self.renewed_spec();
-                    self.api
-                        .patch(
-                            &self.lease_name,
-                            &PatchParams::apply("catalog-api-leader-elect"),
-                            &Patch::Apply(&patch),
-                        )
+                    let mut candidate = self.renewed_spec();
+                    candidate.metadata.resource_version = existing.metadata.resource_version;
+                    match self
+                        .api
+                        .replace(&self.lease_name, &PostParams::default(), &candidate)
                         .await
-                        .context("patch lease to renew")?;
-                    Ok(true)
+                    {
+                        Ok(_) => Ok(true),
+                        // Superseded: someone else already changed the lease. Step down
+                        // instead of assuming our renewal succeeded.
+                        Err(kube::Error::Api(err)) if err.code == 409 => Ok(false),
+                        Err(e) => Err(e).context("replace lease to renew"),
+                    }
                 }
                 // Takeover of an expired/unheld lease MUST be an atomic compare-and-swap:
                 // carry the `resourceVersion` this GET just observed into a `replace` (PUT).
@@ -314,11 +337,20 @@ mod tests {
     // though `decide()` itself performs no I/O.
 
     #[tokio::test]
-    async fn decide_renews_when_we_already_hold_it_even_if_technically_expired() {
+    async fn decide_renews_when_we_hold_it_and_it_has_not_expired() {
         let elector = test_elector("pod-a");
-        // We hold it, but haven't renewed in a while -- still ours to renew, not a takeover.
-        let lease = lease_with(Some("pod-a"), 100, 10);
+        let lease = lease_with(Some("pod-a"), 1, 30);
         assert_eq!(elector.decide(&lease), LeaseDecision::Renew);
+    }
+
+    #[tokio::test]
+    async fn decide_acquires_when_we_hold_it_but_our_own_lease_has_expired() {
+        // Lapsed-former-holder case: we're still `holder_identity`, but our own lease has
+        // expired (we hung/paused >= lease_duration). Expiry must win over "we hold it" so
+        // this routes through the CAS-guarded Acquire path, not the old Renew path.
+        let elector = test_elector("pod-a");
+        let lease = lease_with(Some("pod-a"), 100, 10);
+        assert_eq!(elector.decide(&lease), LeaseDecision::Acquire);
     }
 
     #[tokio::test]

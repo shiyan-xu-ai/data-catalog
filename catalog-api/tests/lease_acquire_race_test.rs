@@ -195,6 +195,59 @@ async fn two_concurrent_acquirers_of_an_expired_lease_cannot_both_win() {
 }
 
 #[tokio::test]
+async fn lapsed_former_holder_renewing_cannot_clobber_a_concurrent_acquirer() {
+    // Second split-brain bug (distinct from the first): the lease's `holder_identity` is
+    // "pod-a" itself, but the lease is EXPIRED -- pod-a WAS the holder, then hung/paused for
+    // >= lease_duration (GC pause, scheduling delay) before resuming. Under the old
+    // hold-before-expiry `decide()` ordering, pod-a would classify this as `Renew` and write
+    // via an unconditioned patch, potentially clobbering pod-b's legitimate CAS-guarded
+    // takeover. This is the exact same fake-backend + Barrier harness as
+    // `two_concurrent_acquirers_of_an_expired_lease_cannot_both_win` -- only the initial
+    // lease's `holder_identity` changes, from a third party ("old-holder") to one of the two
+    // racers ("pod-a") itself.
+    let backend = Arc::new(FakeLeaseBackend {
+        lease: Mutex::new(Some(expired_lease_held_by("pod-a"))),
+        get_barrier: Barrier::new(2),
+    });
+
+    let pod_a = KubeLeaseElector::new(
+        client_for(backend.clone()),
+        NAMESPACE,
+        LEASE_NAME,
+        "pod-a",
+        Duration::from_secs(30),
+    );
+    let pod_b = KubeLeaseElector::new(
+        client_for(backend.clone()),
+        NAMESPACE,
+        LEASE_NAME,
+        "pod-b",
+        Duration::from_secs(30),
+    );
+
+    // pod_a is racing to renew a lease it thinks it holds; pod_b is racing to acquire the
+    // same (actually expired) lease. Exactly one may win.
+    let (a_won, b_won) = tokio::join!(pod_a.tick(), pod_b.tick());
+
+    assert_ne!(
+        a_won, b_won,
+        "exactly one of the lapsed holder's renew and the acquirer's takeover must win, got a={a_won} b={b_won}"
+    );
+    assert!(a_won || b_won, "one of the two racers must win");
+
+    // Only one CAS-guarded write succeeded -- the loser's was genuinely rejected with 409,
+    // not silently coalesced, regardless of which of the two racers won.
+    let final_rv = backend
+        .lease
+        .lock()
+        .await
+        .as_ref()
+        .and_then(|l| l.metadata.resource_version.clone())
+        .unwrap();
+    assert_eq!(final_rv, "2", "only one write should have succeeded");
+}
+
+#[tokio::test]
 async fn two_concurrent_acquirers_of_an_absent_lease_cannot_both_win() {
     // The create-race path (404 -> create, 409 on conflict) was already correct per the
     // reviewer's findings -- this is a confirming regression test, not a new fix.
