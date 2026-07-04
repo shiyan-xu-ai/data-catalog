@@ -7,5 +7,5 @@ mod ttl;
 
 pub use config::SweepConfig;
 pub use format::{detect_format, recursive_bytes};
-pub use sweep::{sweep_root, sweep_table, sweep_version};
+pub use sweep::{sweep_root, sweep_table, sweep_version, SweepOutcome};
 pub use ttl::delete_prefix;

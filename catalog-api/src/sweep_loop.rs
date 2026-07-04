@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use catalog_core::{apply_sweep_result, read_registry, write_registry, TableEntry};
+use catalog_core::{
+    apply_sweep_result, read_registry, ttl_eligible_versions, write_registry, TableEntry,
+};
 use catalog_store::SweepConfig;
 use tokio::task::JoinHandle;
 
@@ -79,12 +81,21 @@ async fn run_sweep_once_inner(
 ) -> Result<()> {
     let cycle_start = Instant::now();
 
-    metrics::record_s3_op("sweep_list", true); // LIST issued to discover tables
-    let swept = catalog_store::sweep_root(sweep_cfg)
-        .await
-        .context("sweep root")?;
+    // Record the discovery LIST outcome AFTER it runs, reflecting the real result rather than
+    // an unconditional success stamped before the call.
+    let swept = match catalog_store::sweep_root(sweep_cfg).await {
+        Ok(outcome) => {
+            metrics::record_s3_op("sweep_list", true);
+            outcome
+        }
+        Err(e) => {
+            metrics::record_s3_op("sweep_list", false);
+            return Err(e).context("sweep root");
+        }
+    };
+    metrics::record_sweep_failures(swept.failed_tables);
 
-    let tables_checked = swept.len() as u64;
+    let tables_checked = swept.tables.len() as u64;
 
     let _guard = write_lock.lock().await;
 
@@ -109,7 +120,7 @@ async fn run_sweep_once_inner(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    for entry in swept {
+    for entry in swept.tables {
         apply_sweep_result(&mut current, entry);
     }
 
@@ -123,6 +134,11 @@ async fn run_sweep_once_inner(
         .await
         .context("write merged registry")?;
 
+    // Maintain the reclaimable-bytes gauge from ground truth here (leader-only), so it is a
+    // stable total across all tables rather than a per-table value clobbered by whichever
+    // dry-run ran last. Cheap: arithmetic over the in-memory versions just written.
+    metrics::set_ttl_reclaimable_bytes(total_reclaimable_bytes(&merged, chrono::Utc::now()));
+
     // Record completion time so the staleness gauge updater can track elapsed seconds.
     *last_sweep_at.lock().await = Some(Instant::now());
 
@@ -132,11 +148,36 @@ async fn run_sweep_once_inner(
     Ok(())
 }
 
+/// Sum of logical reclaimable bytes across all tables under their current TTL policies, as of
+/// `now`. A table with no policy contributes nothing (`ttl_eligible_versions` returns empty).
+fn total_reclaimable_bytes(tables: &[TableEntry], now: chrono::DateTime<chrono::Utc>) -> u64 {
+    tables
+        .iter()
+        .map(|t| {
+            let policy = t.ttl_policy.unwrap_or_default();
+            ttl_eligible_versions(&policy, &t.versions, now)
+                .iter()
+                .map(|v| v.storage_bytes_total)
+                .sum::<u64>()
+        })
+        .sum()
+}
+
+/// Whether a sweep is due: never swept yet (a freshly-elected leader sweeps right away), or at
+/// least `interval` has elapsed since the last successful sweep. Pure so the gating is
+/// unit-testable with synthetic `Instant`s.
+fn sweep_due(last_sweep_at: Option<Instant>, now: Instant, interval: Duration) -> bool {
+    last_sweep_at.is_none_or(|last| now.duration_since(last) >= interval)
+}
+
 /// Spawn the periodic sweep loop. Only runs `run_sweep_once` while `leader_state` reports
-/// leadership at the top of each tick; non-leader pods skip the sweep entirely (no
-/// conflicting/duplicate writes). `run_sweep_once` itself re-checks `leader_state` again right
-/// before writing, in case leadership is lost partway through a long sweep. `write_lock` is
-/// the same lock shared with the REST API mutation handlers (see `run_sweep_once`'s docs).
+/// leadership; non-leader pods skip the sweep entirely (no conflicting/duplicate writes).
+///
+/// The loop polls faster than `interval` and gates the actual sweep on `sweep_due`, so a
+/// newly-elected leader starts sweeping within one poll rather than waiting up to a full
+/// `interval` (default 30 min). `run_sweep_once` itself re-checks `leader_state` again right
+/// before writing, in case leadership is lost partway through a long sweep. `write_lock` is the
+/// same lock shared with the REST API mutation handlers (see `run_sweep_once`'s docs).
 pub fn spawn_sweep_loop(
     sweep_cfg: SweepConfig,
     registry_path: String,
@@ -145,9 +186,14 @@ pub fn spawn_sweep_loop(
     last_sweep_at: LastSweepAt,
     interval: Duration,
 ) -> JoinHandle<()> {
+    // Poll cadence: fast enough to react to a leadership change promptly, but never above the
+    // sweep interval (short intervals in tests keep their original cadence).
+    let poll_interval = interval.min(Duration::from_secs(15));
     tokio::spawn(async move {
         loop {
-            if is_leader(&leader_state) {
+            if is_leader(&leader_state)
+                && sweep_due(*last_sweep_at.lock().await, Instant::now(), interval)
+            {
                 if let Err(e) = run_sweep_once(
                     &sweep_cfg,
                     &registry_path,
@@ -160,7 +206,7 @@ pub fn spawn_sweep_loop(
                     tracing::error!(error = %e, "sweep cycle failed");
                 }
             }
-            tokio::time::sleep(interval).await;
+            tokio::time::sleep(poll_interval).await;
         }
     })
 }
@@ -180,6 +226,26 @@ mod tests {
     fn empty_sweep_config(tmp: &std::path::Path) -> SweepConfig {
         let store = Arc::new(LocalFileSystem::new_with_prefix(tmp).unwrap());
         SweepConfig::new(store, ObjPath::from(""), tmp.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn sweep_due_fires_immediately_when_never_swept_then_gates_on_the_interval() {
+        let now = Instant::now();
+        let interval = Duration::from_secs(60);
+        // Never swept (e.g. a freshly-elected leader): due immediately.
+        assert!(sweep_due(None, now, interval));
+        // Swept recently: not due yet.
+        assert!(!sweep_due(
+            Some(now - Duration::from_secs(30)),
+            now,
+            interval
+        ));
+        // Interval elapsed since the last sweep: due again.
+        assert!(sweep_due(
+            Some(now - Duration::from_secs(90)),
+            now,
+            interval
+        ));
     }
 
     #[tokio::test]

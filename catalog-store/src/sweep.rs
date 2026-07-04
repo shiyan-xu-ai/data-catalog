@@ -3,7 +3,7 @@
 //! aux entries — for both the pre- and post-2026-06-26-cutoff sidecar layouts (see
 //! findings.md).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use arrow_schema::Schema as ArrowSchema;
 use catalog_core::{AuxEntry, Namespace, TableEntry, TableVersion, VersionShape};
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -74,18 +74,44 @@ fn schema_to_json(schema: &lance::datatypes::Schema) -> Result<String> {
     )?)
 }
 
+/// Result of one full sweep pass: the tables that swept cleanly, plus a count of table dirs
+/// that failed and were skipped this cycle (per-table failures are isolated so one bad table
+/// never aborts the whole cycle).
+pub struct SweepOutcome {
+    pub tables: Vec<TableEntry>,
+    pub failed_tables: u64,
+}
+
 /// Sweep the whole configured root: one `TableEntry` per top-level table dir.
-pub async fn sweep_root(cfg: &SweepConfig) -> Result<Vec<TableEntry>> {
+///
+/// The top-level LIST failing aborts the pass (we can't discover tables). But a single table
+/// failing to sweep is isolated: it is logged and skipped (counted in `failed_tables`) so the
+/// rest of the catalog still refreshes, rather than one malformed or transiently-unreadable
+/// table dir aborting the entire cycle and stalling every other table's freshness.
+pub async fn sweep_root(cfg: &SweepConfig) -> Result<SweepOutcome> {
     let listing = cfg.store.list_with_delimiter(Some(&cfg.root_path)).await?;
     let mut tables = Vec::with_capacity(listing.common_prefixes.len());
+    let mut failed_tables = 0u64;
     for table_path in listing.common_prefixes {
-        let table_name = table_path
-            .filename()
-            .context("table dir has no name")?
-            .to_string();
-        tables.push(sweep_table(cfg, &table_name, &table_path).await?);
+        let Some(table_name) = table_path.filename().map(|n| n.to_string()) else {
+            continue;
+        };
+        match sweep_table(cfg, &table_name, &table_path).await {
+            Ok(entry) => tables.push(entry),
+            Err(e) => {
+                failed_tables += 1;
+                tracing::warn!(
+                    table = %table_name,
+                    error = %e,
+                    "sweep: skipping table that failed to sweep this cycle"
+                );
+            }
+        }
     }
-    Ok(tables)
+    Ok(SweepOutcome {
+        tables,
+        failed_tables,
+    })
 }
 
 /// Sweep one table dir: one `TableVersion` per timestamp-path subdir.

@@ -109,24 +109,53 @@ fn spawn_hydration_gauge_updater(cache: RegistryCache) -> tokio::task::JoinHandl
 
 /// Polls `last_sweep_at` every 5 s and updates `catalog_snapshot_staleness_seconds`.
 ///
-/// If a sweep has completed, reports `elapsed.as_secs_f64()` since the last successful write.
-/// If no sweep has completed yet, reports time elapsed since the process started — the gauge
-/// begins climbing from boot so `FreshnessBreach` fires if the first sweep never lands.
+/// Only the leader sweeps, so freshness is a leader-only SLI: while leader, reports seconds
+/// since the last successful write (or since process start if none yet, so the gauge climbs
+/// from boot and `FreshnessBreach` fires if the first sweep never lands). While NOT leader it
+/// reports 0 — otherwise a pod that stepped down would keep reporting its last (growing) value
+/// and trip `FreshnessBreach` even though it is no longer responsible for sweeping.
 fn spawn_staleness_gauge_updater(
     last_sweep_at: catalog_api_lib::sweep_loop::LastSweepAt,
     process_start: std::time::Instant,
+    leader_state: LeaderState,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            let staleness = {
+            let staleness = if leader::is_leader(&leader_state) {
                 let guard = last_sweep_at.lock().await;
                 match *guard {
                     Some(t) => t.elapsed().as_secs_f64(),
                     None => process_start.elapsed().as_secs_f64(),
                 }
+            } else {
+                0.0
             };
             metrics::set_snapshot_staleness(staleness);
             tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+}
+
+/// Periodically runs the Prometheus recorder's upkeep (idle-metric reclamation, histogram
+/// rotation) so exposition memory does not depend solely on scrape cadence.
+fn spawn_metrics_upkeep(app_metrics: AppMetrics) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            app_metrics.handle.run_upkeep();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+}
+
+/// Periodically collects process metrics (RSS, CPU, open fds) into the recorder. `describe()`
+/// only registers metadata; `collect()` is what actually emits the `process_*` samples.
+fn spawn_process_metrics_collector(
+    collector: metrics_process::Collector,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            collector.collect();
+            tokio::time::sleep(Duration::from_secs(10)).await;
         }
     })
 }
@@ -161,8 +190,15 @@ async fn main() -> anyhow::Result<()> {
     // Install the global Prometheus recorder before any metrics::* calls.
     let app_metrics: AppMetrics = metrics::init();
 
-    // Register process metrics descriptors (RSS, CPU, open fds).
-    metrics_process::Collector::default().describe();
+    // Periodically drain the recorder's upkeep queue (histogram bucket rotation etc.), else
+    // memory is bounded only by scrape frequency.
+    let _metrics_upkeep = spawn_metrics_upkeep(app_metrics.clone());
+
+    // Register AND periodically collect process metrics (RSS, CPU, open fds): describing alone
+    // never emits any samples, so the `process_*` series must be collected on an interval.
+    let process_collector = metrics_process::Collector::default();
+    process_collector.describe();
+    let _process_metrics = spawn_process_metrics_collector(process_collector);
 
     let cfg = AppConfig::from_env()?;
 
@@ -201,7 +237,8 @@ async fn main() -> anyhow::Result<()> {
     // Background gauge updaters.
     let _leader_gauge = spawn_leader_gauge_updater(leader_state.clone());
     let _hydration_gauge = spawn_hydration_gauge_updater(registry_cache.clone());
-    let _staleness_gauge = spawn_staleness_gauge_updater(last_sweep_at, process_start);
+    let _staleness_gauge =
+        spawn_staleness_gauge_updater(last_sweep_at, process_start, leader_state.clone());
 
     // Tokio runtime metrics collector.
     let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&tokio::runtime::Handle::current());

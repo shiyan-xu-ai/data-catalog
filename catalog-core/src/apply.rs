@@ -29,12 +29,24 @@ pub fn apply_sweep_result(registry: &mut HashMap<String, TableEntry>, swept: Tab
     }
 }
 
-/// Union incoming versions into `existing`, deduped by `version_id`. A version already
-/// present is never overwritten (immutable snapshot; first observation wins).
+/// Union incoming versions into `existing`, deduped by `version_id`.
+///
+/// A cleanly-classified version is an immutable snapshot: once recorded it is never overwritten,
+/// and a later sweep that transiently fails to classify it (a `partial` re-observation) must
+/// NOT downgrade it. The one exception is upgrading a previously-`partial` version: if an
+/// earlier sweep recorded it as partial (e.g. its dataset failed to open) and a later sweep
+/// classifies it cleanly, replace it so it stops being permanently stuck partial (and therefore
+/// permanently TTL-ineligible). The API-set `protected` flag is preserved across that upgrade.
 fn merge_versions(existing: &mut Vec<TableVersion>, incoming: Vec<TableVersion>) {
     for v in incoming {
-        if !existing.iter().any(|e| e.version_id == v.version_id) {
-            existing.push(v);
+        match existing.iter_mut().find(|e| e.version_id == v.version_id) {
+            None => existing.push(v),
+            Some(existing_v) if existing_v.partial && !v.partial => {
+                let was_protected = existing_v.protected;
+                *existing_v = v;
+                existing_v.protected = was_protected;
+            }
+            Some(_) => {}
         }
     }
 }
@@ -196,5 +208,43 @@ mod tests {
             .find(|v| v.version_id == "2026-01-02T00-00-00")
             .unwrap();
         assert!(stored.partial);
+    }
+
+    #[test]
+    fn partial_upgrades_to_clean_but_clean_never_downgrades_and_protected_survives() {
+        let mut registry = HashMap::new();
+
+        // First sweep observes the version as partial (e.g. its dataset failed to open), and it
+        // is protected via the API.
+        let mut partial = version("2026-01-01T00-00-00", true, VersionShape::LanceOnlyPartial);
+        partial.protected = true;
+        apply_sweep_result(&mut registry, table_with_versions(vec![partial]));
+
+        // Later sweep classifies the same version cleanly: it must upgrade, keeping `protected`.
+        let clean = version("2026-01-01T00-00-00", false, VersionShape::Full);
+        apply_sweep_result(&mut registry, table_with_versions(vec![clean]));
+        let v = &registry.get("t1").unwrap().versions[0];
+        assert_eq!(
+            v.shape,
+            VersionShape::Full,
+            "partial must upgrade to clean classification"
+        );
+        assert!(!v.partial);
+        assert!(
+            v.protected,
+            "API-set protected flag must survive the upgrade"
+        );
+
+        // A later sweep that transiently re-observes it as partial must NOT downgrade the clean
+        // version back to partial.
+        let regressed = version("2026-01-01T00-00-00", true, VersionShape::LanceOnlyPartial);
+        apply_sweep_result(&mut registry, table_with_versions(vec![regressed]));
+        let v = &registry.get("t1").unwrap().versions[0];
+        assert_eq!(
+            v.shape,
+            VersionShape::Full,
+            "a clean version must never be downgraded"
+        );
+        assert!(!v.partial);
     }
 }

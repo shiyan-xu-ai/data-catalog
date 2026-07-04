@@ -36,6 +36,17 @@ monitoring.
 root (`CATALOG_SWEEP_ROOT_URI`, default
 `s3://onroad-perception-datasets/scenario_dataset_export`).
 
+The leader-only sweep loop polls faster than `CATALOG_SWEEP_INTERVAL_SECS` and
+gates each pass on time-since-last-sweep, so a newly-elected leader starts
+sweeping within one poll instead of waiting a full interval. A single table
+failing to sweep is isolated — logged, counted in
+`catalog_sweep_table_failures_total`, and skipped — rather than aborting the
+whole cycle and stalling every other table's freshness. A version first seen as
+`partial` (e.g. its dataset momentarily failed to open) is upgraded in place
+once a later sweep classifies it cleanly, so it does not stay permanently
+partial (and permanently TTL-ineligible); a clean version is never downgraded
+by a later transient partial re-observation.
+
 ### Discovery
 
 The sweep lists the root for table directories, then for each table lists
@@ -257,7 +268,9 @@ once per distinct pattern. Metric names shipped in v1.0.0:
 
 - HTTP RED: `catalog_http_requests_total`, `catalog_http_request_duration_seconds`
 - Sweep: `catalog_sweep_tables_checked_total`, `catalog_sweep_cycle_duration_seconds`,
-  `catalog_snapshot_staleness_seconds`
+  `catalog_sweep_table_failures_total`, `catalog_snapshot_staleness_seconds`
+  (leader-gated: reports 0 on non-leaders so a stepped-down pod can't trip
+  `FreshnessBreach`)
 - Freshness: `catalog_hydration_ready`
 - Leader: `catalog_is_leader`, `catalog_leader_transitions_total`
 - TTL: `catalog_ttl_deletes_total`, `catalog_ttl_apply_total`, `catalog_ttl_reclaimable_bytes`
