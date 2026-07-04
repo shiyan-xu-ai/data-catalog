@@ -440,3 +440,82 @@ Design comfortably covers ~10k tables and 10k QPS. At **~100k+ tables**, sweep t
 6. **FRI remap scheduling** — FRI defers work; without a periodic remap policy, read amplification accumulates.
 7. **Cardinality governance** — table-scoped facts are API/`_catalog` queries, never Prometheus labels (enforced in review).
 8. **Operation-history module** — `lance-history` (§5.10) is vendored until upstreamed; track the Lance PR and drop the vendored copy on merge. Operation history is `partial` for versions whose transaction files were pruned before the catalog first observed the table (durable going forward); tables should ideally be registered at creation so history is complete from v1.
+
+---
+
+## v1.0.0 as-built notes
+
+The following notes record where the v1.0.0 implementation concretizes or
+deviates from the design above. The design is the long-term vision; v1.0.0
+made specific choices for the shipped subset. These notes are appended
+rather than rewriting the original design intent.
+
+### Version management (§5.6) — timestamp-path snapshots, not Lance-native versions
+
+Design §5.6 assumed Lance-native manifest versions (tag CRUD, `RestoreTable`,
+schema diff, etc. backed by Lance history). v1.0.0 instead models versions
+as **timestamp-path snapshot siblings**: each version is a directory
+`<table>/<YYYY-MM-DD_HH-MM-SS>/` (or `<table>/<YYYY-MM-DD-HH-MM-SS>/` — name
+variance handled) containing an independent Lance dataset copy plus its aux
+directories. The version id is the ISO8601 normalization of the parsed
+timestamp. There is no Lance-manifest-level versioning relationship between
+siblings — each timestamp directory is an independent snapshot. Tag CRUD,
+`RestoreTable`, and schema-diff-between-versions are not implemented in
+v1.0.0 (deferred).
+
+### Pre+post 2026-06-26 cutoff aux layout
+
+Design §3 assumed a single storage layout. v1.0.0 supports two real-world
+layouts that differ by a cutoff around 2026-06-26:
+
+- **Pre-cutoff** (< 2026-06-26): sidecar directories
+  (`_FragmentMetadata/`, `master_indices/`, `lance_tags/`,
+  `lance_tags_intermediate/`, `_asset_replication_segments/`,
+  `_asset_replication_results/`, `curated_indices/`) live **inside**
+  `dataset.lance/`, alongside the lance-core directories (`_versions/`,
+  `_transactions/`, `_indices/`, `data/`). This inflates `dataset.lance/`'s
+  size with sidecar content.
+- **Post-cutoff** (>= 2026-06-26): sidecar directories move to a top-level
+  `dataset.sidecar/`; `dataset.lance/` is clean (lance-core only).
+- **Transition** (~2026-06-12): sidecar content is duplicated both inside
+  `dataset.lance/` and at top-level `dataset.sidecar/` (dual-write). The
+  sweep deduplicates: when a top-level `dataset.sidecar/` is present it is
+  preferred; otherwise sidecar bytes are read from inside `dataset.lance/`.
+
+The main lance directory name also varies: `dataset.lance/` for most tables,
+`dataset/` for some. v1.0.0 detects the main lance directory by the presence
+of `_versions/` + `_transactions/` at its root, not by name.
+
+Aux directory formats are arbitrary (parquet, lance, csv, mixed, unknown) —
+the format is detected per-directory, and the directory name is recorded as
+the `role` with no ontology layer in v1.0.0. The storage byte totals are
+split per-component (`lance_core_bytes`, `sidecar_bytes`, `segments_bytes`,
+`other_aux_bytes`) so pre-cutoff versions attribute sidecar bytes correctly
+rather than lumping them into lance-core.
+
+### Retention / TTL (§5.7) — per-table API policy, hard delete
+
+Design §5.7 described a TTL engine with native-knob-first config writes,
+lineage-aware retention, and reclaimable-bytes/rollback-horizon dry-run.
+v1.0.0 concretizes this to a per-table API policy with hard-delete semantics:
+
+- The TTL policy is set per table via the REST API
+  (`PUT /v1/table/:id` with `ttl_policy`), not via Lance table config
+  (`lance.auto_cleanup.*` targets Lance-native versions, not timestamp-path
+  snapshots).
+- A version is eligible only if it fails *both* set thresholds
+  (`keep_last_n` AND `max_age_days`; within either => kept), is not
+  `protected`, and passes the shape safety gate (`full`/`lance_only`/
+  `seg_only` only; `lance_only_partial`/`empty` refused).
+- `apply` hard-deletes the entire `<table>/<timestamp>/` prefix tree from S3
+  (irreversible), appends a `TtlAuditRecord` per deletion to
+  `_catalog/ttl_audit`, and removes the version from the registry.
+  Lineage-aware retention (never reap a version referenced as a job input)
+  is not implemented in v1.0.0 (deferred alongside lineage).
+- Dry-run returns candidate versions + `reclaimable_bytes` (logical/deduped
+  size, not physical footprint — see the TTL runbook for the caveat).
+- `protected` flag exempts a version from TTL (API-set).
+
+The full TTL safety guidance (including the non-atomic audit-vs-registry
+write caveat and the partial-failure no-rollback behavior) is in
+[`docs/RUNBOOK-TTL.md`](RUNBOOK-TTL.md).
