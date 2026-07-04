@@ -1,0 +1,33 @@
+---
+# Local overlay config: in-cluster MinIO endpoints + debug logging + fast sweep.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: catalog-api-config
+  namespace: default
+data:
+  # Leader election — use real kube Lease so KubeLeaseElector is exercised on kind.
+  CATALOG_LEADER_MODE: "kube"
+  CATALOG_LEASE_NAMESPACE: "default"
+  CATALOG_LEASE_NAME: "catalog-api-leader"
+
+  # MinIO in-cluster S3 endpoint. The AWS SDK needs this to talk to MinIO instead of AWS.
+  AWS_ENDPOINT_URL: "http://minio:9000"
+  # MinIO requires path-style (http://host/bucket/key), not virtual-host style.
+  AWS_S3_FORCE_PATH_STYLE: "true"
+  # MinIO does not enforce region but the SDK requires a non-empty value.
+  AWS_DEFAULT_REGION: "us-east-1"
+
+  # Storage paths pointing at the local MinIO bucket.
+  CATALOG_REGISTRY_PATH: "s3://catalog-data/_catalog/registry"
+  CATALOG_TTL_AUDIT_PATH: "s3://catalog-data/_catalog/ttl_audit"
+  CATALOG_SWEEP_ROOT_URI: "s3://catalog-data/scenario_dataset_export"
+
+  # Fast sweep for local iteration: run every 30 s instead of 30 min.
+  CATALOG_SWEEP_INTERVAL_SECS: "30"
+
+  # Refresh cache every 5 s (same as base; keeping explicit for clarity).
+  CATALOG_REGISTRY_REFRESH_INTERVAL_SECS: "5"
+
+  # Debug logging for local dev.
+  RUST_LOG: "debug,lance=info,object_store=info"

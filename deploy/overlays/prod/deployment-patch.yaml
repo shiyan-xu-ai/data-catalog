@@ -1,0 +1,21 @@
+---
+# Prod: 3 base replicas (HPA will scale from here); full resource allocation.
+# Zone anti-affinity and maxSurge=1 rolling update are inherited from base.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-api
+  namespace: default
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: catalog-api
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"

@@ -1,0 +1,20 @@
+---
+# Staging: 2 replicas, moderate resources.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-api
+  namespace: default
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: catalog-api
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"

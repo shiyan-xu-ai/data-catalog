@@ -1,0 +1,98 @@
+---
+# One-shot Job that creates the MinIO buckets and writes fixture data into them.
+#
+# The fixture creates two lance tables under the sweep root so the catalog-api sweep
+# has something to discover on first boot:
+#
+#   catalog-data/scenario_dataset_export/
+#     smoke_test/
+#       2024-01-01_00-00-00/       ← version 1 (old, eligible for TTL)
+#         dataset.lance/
+#           _versions/  _transactions/  data/
+#     closed_loop_run/
+#       2024-06-01_00-00-00/       ← version 1
+#         dataset.lance/
+#           _versions/  _transactions/  data/
+#       2024-06-15_00-00-00/       ← version 2
+#         dataset.lance/
+#           _versions/  _transactions/  data/
+#
+# The directory structure is recognized by the sweep as post-cutoff Lance tables.
+# The fixture does NOT write real Lance metadata (no Arrow schema), so the sweep
+# will classify these as LanceOnlyShape or LanceOnlyPartial (no readable stats) —
+# sufficient to exercise discovery, version listing, and TTL eligibility checking.
+# A full smoke (sweep→registry→/healthz→TTL apply) can be run with the procedure in
+# docs/smoke-test.md once the kind cluster is up.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: catalog-fixture-init
+  namespace: default
+  labels:
+    app: catalog-fixture-init
+spec:
+  # Run once on deploy; a new Job is created on each `tilt up` via kustomize re-apply.
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: catalog-fixture-init
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        # Wait for MinIO to be ready before creating buckets.
+        - name: wait-for-minio
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until wget -q -O /dev/null http://minio:9000/minio/health/ready; do
+                echo "waiting for MinIO..."
+                sleep 2
+              done
+              echo "MinIO ready."
+      containers:
+        - name: fixture-init
+          image: quay.io/minio/mc:RELEASE.2024-01-18T02-43-20Z
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: "minioadmin"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "minioadmin"
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+
+              # Configure mc to talk to the in-cluster MinIO.
+              mc alias set local http://minio:9000 minioadmin minioadmin
+
+              # Create the catalog data bucket if it doesn't exist.
+              mc mb --ignore-existing local/catalog-data
+
+              SWEEP_ROOT="local/catalog-data/scenario_dataset_export"
+
+              # Helper: create a minimal lance directory stub at a given path.
+              # Writes a placeholder file inside each of the three lance-core dirs
+              # so the sweep's directory-presence detection works.
+              write_lance_stub() {
+                PREFIX="$1"
+                echo "placeholder" | mc pipe "${PREFIX}/_versions/placeholder"
+                echo "placeholder" | mc pipe "${PREFIX}/_transactions/placeholder"
+                echo "placeholder" | mc pipe "${PREFIX}/data/placeholder"
+              }
+
+              # ── smoke_test table ────────────────────────────────────────────
+              # One old version (2024-01-01) → eligible for TTL in tests.
+              write_lance_stub "${SWEEP_ROOT}/smoke_test/2024-01-01_00-00-00/dataset.lance"
+
+              # ── closed_loop_run table ───────────────────────────────────────
+              # Two versions so the sweep sees version history.
+              write_lance_stub "${SWEEP_ROOT}/closed_loop_run/2024-06-01_00-00-00/dataset.lance"
+              write_lance_stub "${SWEEP_ROOT}/closed_loop_run/2024-06-15_00-00-00/dataset.lance"
+
+              echo "Fixture data written successfully."
+              mc ls --recursive "${SWEEP_ROOT}"
