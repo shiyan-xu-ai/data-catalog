@@ -116,8 +116,7 @@ A layout transition occurred around 2026-06-26:
 
 The sweep supports both layouts so the full version history is cataloged
 correctly. The real-world layout findings are captured in
-[`docs/design.md`](docs/design.md) ("v1.0.0 as-built" notes) and in
-[`.planning/data-catalog-v1/findings.md`](.planning/data-catalog-v1/findings.md).
+[`docs/design.md`](docs/design.md) ("v1.0.0 as-built" notes).
 
 ## The registry
 
