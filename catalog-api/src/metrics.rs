@@ -44,10 +44,36 @@
 //! - `tokio_*`    via tokio-metrics (worker count, poll time, steal count …)
 //! - `process_*`  via metrics-process (RSS, CPU, open fds)
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+
+/// Intern a route pattern string to a `&'static str` for use as a metric label value.
+///
+/// The set of distinct matched-path patterns is small and fixed (one per registered route),
+/// so each distinct pattern is leaked at most once and reused for every subsequent request
+/// with the same pattern. This avoids the per-request `Box::leak` that would otherwise grow
+/// the heap unboundedly over a long-running server's lifetime, without changing label
+/// cardinality (the metrics recorder keys each series on label *value* content, so every
+/// interned copy of a given pattern collapses onto the same time series).
+pub fn intern_route(s: &str) -> &'static str {
+    static INTERNED: OnceLock<std::sync::Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let map = INTERNED.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    if let Some(existing) = guard.get(s) {
+        existing
+    } else {
+        // Leak one allocation per distinct route pattern. The set of patterns is bounded and
+        // small (one per registered route), so this is a fixed, finite cost -- not the
+        // unbounded per-request leak the previous `Box::leak` in `red_middleware` produced.
+        let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
+        guard.insert(s.to_string(), leaked);
+        leaked
+    }
+}
 
 /// Handle to the global Prometheus recorder. Call `.render()` to produce the text-format
 /// exposition string for `GET /metrics`.

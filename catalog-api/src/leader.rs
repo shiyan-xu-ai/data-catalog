@@ -78,7 +78,10 @@ impl LeaderElector for ForcedLeaderElector {
 /// unit-testable without a k8s API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeaseDecision {
-    /// We already hold it: safe to renew with a plain patch, no CAS needed.
+    /// We already hold a live (non-expired) lease: renew it. Like `Acquire`, the renew
+    /// path is CAS-guarded via `Api::replace` carrying the observed `resourceVersion`
+    /// (see `acquire_or_renew`'s `Renew` branch) -- a 409 here means another pod already
+    /// updated the lease and we step down rather than assume success.
     Renew,
     /// Absent/expired and not ours: must take it over via an atomic compare-and-swap.
     Acquire,

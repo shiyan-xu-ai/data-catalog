@@ -629,14 +629,13 @@ async fn red_middleware(
 ) -> axum::response::Response {
     let start = Instant::now();
 
-    // Leak the matched-path string to get a `'static` str for use as a metric label value.
-    // The set of distinct matched paths is small and fixed (one per registered route), so
-    // leaking is safe and does not grow memory unboundedly.
+    // Intern the matched-path pattern to a `&'static str` for use as a metric label value.
+    // Each distinct route pattern is leaked at most once (via `metrics::intern_route`); repeat
+    // requests with the same pattern reuse the same `&'static str`, so this does not grow the
+    // heap per request. The label value is the route *pattern* (e.g. `/v1/table/:id`), not the
+    // concrete URI, so label cardinality stays bounded regardless of table IDs.
     let route: &'static str = match matched_path {
-        Some(mp) => {
-            let boxed: Box<str> = mp.as_str().into();
-            Box::leak(boxed)
-        }
+        Some(mp) => crate::metrics::intern_route(mp.as_str()),
         None => "unknown",
     };
 
