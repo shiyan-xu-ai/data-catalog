@@ -171,7 +171,26 @@ always demotes before another can legitimately take over. `is_leader` is
 re-checked immediately before the registry write, so a demotion mid-sweep skips
 the write. `CATALOG_LEADER_TICK_INTERVAL_SECS` must be less than
 `CATALOG_LEASE_DURATION_SECS` (validated at startup); a
-`catalog_leader_transitions_total` counter records each acquire/loss edge.
+`catalog_leader_transitions_total` counter records each acquire/loss edge. On a
+graceful shutdown the leader relinquishes its lease (a resourceVersion-guarded
+delete), so a successor takes over promptly instead of waiting a full
+`lease_duration` for the lease to expire.
+
+## Startup and shutdown
+
+Both HTTP servers (the public API and the internal metrics/health server) drain
+in-flight requests on `SIGTERM`/Ctrl-C via graceful shutdown before the process
+exits; the leader additionally relinquishes its lease on the way out. The
+internal metrics server is bound synchronously at startup, so a bind failure
+fails startup rather than being swallowed in a detached task that would leave
+the process running without `/metrics`. Duration config values
+(`*_SECS`) are validated at load: a set-but-unparseable value or `0` is a hard
+startup error, not a silent fallback.
+
+Health endpoints: `/healthz` (liveness) returns `ok` from boot; `/readyz`
+(readiness, on the API port) returns `503` until the pod has completed its first
+successful registry read, so it is not sent traffic while serving an unhydrated
+cache. The same hydration signal drives the `catalog_hydration_ready` gauge.
 
 A shared `RegistryWriteLock` (`catalog-api/src/registry_lock.rs`,
 `Arc<tokio::sync::Mutex<()>>`) serializes the read-modify-write critical

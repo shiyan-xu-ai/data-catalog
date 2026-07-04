@@ -69,10 +69,13 @@ spec:
             periodSeconds: 15
             failureThreshold: 3
 
+          # Readiness gates on hydration: /readyz (on the API port) returns 503 until the pod
+          # has completed its first registry read, so it isn't sent traffic while serving an
+          # unhydrated cache. Liveness/startup stay on /healthz (alive-from-boot).
           readinessProbe:
             httpGet:
-              path: /healthz
-              port: metrics
+              path: /readyz
+              port: api
             initialDelaySeconds: 5
             periodSeconds: 10
             failureThreshold: 2

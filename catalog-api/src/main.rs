@@ -1,8 +1,10 @@
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::{routing::get, Json, Router};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -14,14 +16,26 @@ use catalog_api_lib::leader::{
     self, ForcedLeaderElector, KubeLeaseElector, LeaderElector, LeaderState,
 };
 use catalog_api_lib::metrics::{self, AppMetrics};
-use catalog_api_lib::registry_cache::{self, RegistryCache};
+use catalog_api_lib::registry_cache::{self, Hydrated, RegistryCache};
 use catalog_api_lib::registry_lock::{self, RegistryWriteLock};
+use catalog_api_lib::shutdown::shutdown_signal;
 use catalog_api_lib::sweep_config;
 use catalog_api_lib::sweep_loop;
 use catalog_store::SweepConfig;
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// Readiness probe: 200 once the pod has completed at least one successful registry read (so it
+/// serves a cache that reflects storage), 503 before that. Distinct from `/healthz` (liveness),
+/// which is `ok` from boot — a fresh pod that hasn't hydrated yet is alive but not ready.
+async fn readyz(State(hydrated): State<Hydrated>) -> StatusCode {
+    if hydrated.load(Ordering::SeqCst) {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// Internal debug endpoint: inspect the currently cached registry state. Not part of the
@@ -37,6 +51,7 @@ async fn debug_is_leader(State(state): State<LeaderState>) -> Json<bool> {
 #[allow(clippy::too_many_arguments)]
 fn app(
     registry_cache: RegistryCache,
+    hydrated: Hydrated,
     leader_state: LeaderState,
     registry_path: String,
     write_lock: RegistryWriteLock,
@@ -53,6 +68,7 @@ fn app(
     );
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz).with_state(hydrated))
         .route(
             "/debug/registry",
             get(debug_registry).with_state(registry_cache),
@@ -96,12 +112,12 @@ fn spawn_leader_gauge_updater(leader_state: LeaderState) -> tokio::task::JoinHan
     })
 }
 
-/// Polls registry cache every 5 s and sets the `catalog_hydration_ready` gauge.
-fn spawn_hydration_gauge_updater(cache: RegistryCache) -> tokio::task::JoinHandle<()> {
+/// Polls the hydration flag every 5 s and sets the `catalog_hydration_ready` gauge. Uses the
+/// same signal as `/readyz` (first successful registry read), so gauge and probe agree.
+fn spawn_hydration_gauge_updater(hydrated: Hydrated) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            let ready = !cache.read().await.is_empty();
-            metrics::set_hydration_ready(ready);
+            metrics::set_hydration_ready(hydrated.load(Ordering::SeqCst));
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     })
@@ -204,17 +220,19 @@ async fn main() -> anyhow::Result<()> {
 
     let leader_state: LeaderState = Arc::new(AtomicBool::new(false));
     let elector = build_leader_elector(&cfg).await?;
-    let _leader_task = leader::run_leader_election(
-        elector,
+    let leader_task = leader::run_leader_election(
+        elector.clone(),
         leader_state.clone(),
         cfg.leader_tick_interval,
         cfg.lease_duration,
     );
 
     let registry_cache: RegistryCache = Arc::new(RwLock::new(Vec::new()));
+    let hydrated: Hydrated = Arc::new(AtomicBool::new(false));
     let _refresh_task = registry_cache::spawn_refresh(
         cfg.registry_path.clone(),
         registry_cache.clone(),
+        hydrated.clone(),
         cfg.registry_refresh_interval,
     );
 
@@ -236,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Background gauge updaters.
     let _leader_gauge = spawn_leader_gauge_updater(leader_state.clone());
-    let _hydration_gauge = spawn_hydration_gauge_updater(registry_cache.clone());
+    let _hydration_gauge = spawn_hydration_gauge_updater(hydrated.clone());
     let _staleness_gauge =
         spawn_staleness_gauge_updater(last_sweep_at, process_start, leader_state.clone());
 
@@ -244,26 +262,40 @@ async fn main() -> anyhow::Result<()> {
     let runtime_monitor = tokio_metrics::RuntimeMonitor::new(&tokio::runtime::Handle::current());
     let _tokio_metrics = spawn_tokio_metrics_collector(runtime_monitor);
 
-    // Internal server: /metrics + /healthz on a separate network-policy-restricted port.
+    // Internal server: /metrics + /healthz on a separate network-policy-restricted port. Bound
+    // synchronously here so a bind failure fails startup instead of being swallowed in a task.
     let _internal_task =
-        internal_server::spawn_internal_server(cfg.metrics_bind_addr.clone(), app_metrics);
+        internal_server::spawn_internal_server(cfg.metrics_bind_addr.clone(), app_metrics).await?;
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
-        .expect("failed to bind listener");
+        .with_context(|| format!("bind api server to {}", cfg.bind_addr))?;
     axum::serve(
         listener,
         app(
             registry_cache,
-            leader_state,
+            hydrated,
+            leader_state.clone(),
             cfg.registry_path.clone(),
             write_lock,
             sweep_cfg,
             cfg.ttl_audit_path.clone(),
         ),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
-    .expect("server error");
+    .context("api server error")?;
+
+    // The server has drained on SIGTERM/Ctrl-C. Stop the election loop (so it won't renew) and,
+    // if we were the leader, relinquish the lease so a successor takes over promptly instead of
+    // waiting a full lease_duration for expiry.
+    leader_task.abort();
+    if leader::is_leader(&leader_state) {
+        if let Err(e) = elector.relinquish().await {
+            tracing::warn!(error = %e, "failed to relinquish lease on shutdown");
+        }
+    }
+    tracing::info!("shutdown complete");
 
     Ok(())
 }
