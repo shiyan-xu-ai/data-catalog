@@ -1,10 +1,13 @@
-//! Idempotent merge of freshly-swept table state into the registry.
+//! Idempotent reconciliation of freshly-swept table state into the registry.
 //!
-//! Timestamp-path versions are immutable snapshots: once a `version_id` is recorded it is
-//! never overwritten. Applying the same sweep result twice, or applying results for several
-//! versions in any order, converges to the same final state (union of all versions seen,
-//! deduped by `version_id`). `owner`/`ttl_policy` are API-assigned only — sweep never touches
-//! them.
+//! A sweep lists every timestamp directory currently on S3 for a table, so the swept version set
+//! is the complete current truth for that table (and the sweep only reconciles tables that swept
+//! cleanly). `apply_sweep_result` therefore reconciles the registry to the swept set: versions
+//! still on S3 are kept/added, and versions absent from the sweep have been removed from S3 and
+//! are dropped from the registry too, so an out-of-band deletion (or a TTL apply) is reflected
+//! rather than leaving a phantom entry. Applying the same swept set twice is a no-op.
+//! `owner`/`ttl_policy` are API-assigned only — the sweep never touches them, and a version's
+//! API-set `protected` flag is carried across re-observation.
 
 use std::collections::HashMap;
 
@@ -29,26 +32,31 @@ pub fn apply_sweep_result(registry: &mut HashMap<String, TableEntry>, swept: Tab
     }
 }
 
-/// Union incoming versions into `existing`, deduped by `version_id`.
-///
-/// A cleanly-classified version is an immutable snapshot: once recorded it is never overwritten,
-/// and a later sweep that transiently fails to classify it (a `partial` re-observation) must
-/// NOT downgrade it. The one exception is upgrading a previously-`partial` version: if an
-/// earlier sweep recorded it as partial (e.g. its dataset failed to open) and a later sweep
-/// classifies it cleanly, replace it so it stops being permanently stuck partial (and therefore
-/// permanently TTL-ineligible). The API-set `protected` flag is preserved across that upgrade.
+/// Reconcile `existing` to the freshly-swept version set `incoming` (the complete current S3
+/// truth for the table). Versions in `incoming` are kept/added; versions absent from it were
+/// removed from S3 and are dropped. For a version that persists across the sweep the API-set
+/// `protected` flag is carried forward, and a previously clean classification is not downgraded
+/// if this sweep transiently re-observed the version as `partial` (a momentary open failure must
+/// not lose good data); a previously `partial` version is upgraded once a sweep classifies it
+/// cleanly, so it doesn't stay permanently partial (and permanently TTL-ineligible).
 fn merge_versions(existing: &mut Vec<TableVersion>, incoming: Vec<TableVersion>) {
-    for v in incoming {
-        match existing.iter_mut().find(|e| e.version_id == v.version_id) {
-            None => existing.push(v),
-            Some(existing_v) if existing_v.partial && !v.partial => {
-                let was_protected = existing_v.protected;
-                *existing_v = v;
-                existing_v.protected = was_protected;
-            }
-            Some(_) => {}
-        }
-    }
+    let reconciled = incoming
+        .into_iter()
+        .map(
+            |v| match existing.iter().find(|e| e.version_id == v.version_id) {
+                // Keep the previously-clean version if this sweep re-observed it as partial.
+                // (`prev` already carries the API-set `protected` flag.)
+                Some(prev) if !prev.partial && v.partial => prev.clone(),
+                // Otherwise take the freshly-swept version, preserving `protected`.
+                Some(prev) => TableVersion {
+                    protected: prev.protected,
+                    ..v
+                },
+                None => v,
+            },
+        )
+        .collect();
+    *existing = reconciled;
 }
 
 /// Recompute `aux_latest` from the version with the lexicographically-greatest `version_id`
@@ -146,68 +154,43 @@ mod tests {
         assert_eq!(after_second.versions.len(), 1);
     }
 
-    #[test]
-    fn versions_applied_out_of_order_converge_to_same_state() {
-        let v1 = version("2026-01-01T00-00-00", false, VersionShape::Full);
-        let v2 = version("2026-01-02T00-00-00", false, VersionShape::Full);
-
-        let mut in_order = HashMap::new();
-        apply_sweep_result(&mut in_order, table_with_versions(vec![v1.clone()]));
-        apply_sweep_result(&mut in_order, table_with_versions(vec![v2.clone()]));
-
-        let mut out_of_order = HashMap::new();
-        apply_sweep_result(&mut out_of_order, table_with_versions(vec![v2.clone()]));
-        apply_sweep_result(&mut out_of_order, table_with_versions(vec![v1.clone()]));
-
-        let mut in_order_entry = in_order.remove("t1").unwrap();
-        let mut out_of_order_entry = out_of_order.remove("t1").unwrap();
-        in_order_entry
+    /// Sorted version ids currently recorded for table `t1`.
+    fn version_ids(registry: &HashMap<String, TableEntry>) -> Vec<String> {
+        let mut ids: Vec<String> = registry
+            .get("t1")
+            .unwrap()
             .versions
-            .sort_by(|a, b| a.version_id.cmp(&b.version_id));
-        out_of_order_entry
-            .versions
-            .sort_by(|a, b| a.version_id.cmp(&b.version_id));
-
-        assert_eq!(in_order_entry, out_of_order_entry);
-        assert_eq!(in_order_entry.versions.len(), 2);
-        // aux_latest derives from the chronologically-latest version regardless of apply order.
-        assert_eq!(in_order_entry.aux_latest, v2.aux);
+            .iter()
+            .map(|v| v.version_id.clone())
+            .collect();
+        ids.sort();
+        ids
     }
 
     #[test]
-    fn partial_shape_is_not_silently_dropped_when_merged_with_existing_state() {
+    fn reconciles_to_the_swept_set_adding_and_removing_versions() {
         let mut registry = HashMap::new();
-        apply_sweep_result(
-            &mut registry,
-            table_with_versions(vec![version(
-                "2026-01-01T00-00-00",
-                false,
-                VersionShape::Full,
-            )]),
+        let v1 = version("2026-01-01T00-00-00", false, VersionShape::Full);
+        let v2 = version("2026-01-02T00-00-00", false, VersionShape::Full);
+        let v3 = version("2026-01-03T00-00-00", false, VersionShape::Full);
+
+        // First sweep observes v1 + v2.
+        apply_sweep_result(&mut registry, table_with_versions(vec![v1.clone(), v2]));
+        assert_eq!(
+            version_ids(&registry),
+            vec!["2026-01-01T00-00-00", "2026-01-02T00-00-00"]
         );
 
-        let partial = version("2026-01-02T00-00-00", true, VersionShape::SegOnly);
-        apply_sweep_result(&mut registry, table_with_versions(vec![partial.clone()]));
-
-        let entry = registry.get("t1").unwrap();
-        let stored = entry
-            .versions
-            .iter()
-            .find(|v| v.version_id == "2026-01-02T00-00-00")
-            .unwrap();
-        assert!(stored.partial);
-        assert_eq!(stored.shape, VersionShape::SegOnly);
-
-        // Re-applying the same partial version must not flip it back or drop it.
-        apply_sweep_result(&mut registry, table_with_versions(vec![partial]));
-        let entry = registry.get("t1").unwrap();
-        assert_eq!(entry.versions.len(), 2);
-        let stored = entry
-            .versions
-            .iter()
-            .find(|v| v.version_id == "2026-01-02T00-00-00")
-            .unwrap();
-        assert!(stored.partial);
+        // Next sweep observes only v1 + v3: v2 was removed from S3 (dropped) and v3 is new
+        // (added). The registry reconciles to the swept set, and aux_latest tracks the new
+        // chronologically-latest version.
+        let v3_aux = v3.aux.clone();
+        apply_sweep_result(&mut registry, table_with_versions(vec![v1, v3]));
+        assert_eq!(
+            version_ids(&registry),
+            vec!["2026-01-01T00-00-00", "2026-01-03T00-00-00"]
+        );
+        assert_eq!(registry.get("t1").unwrap().aux_latest, v3_aux);
     }
 
     #[test]
