@@ -104,7 +104,8 @@ async fn main() -> anyhow::Result<()> {
     // On Cloud Run the AWS keys come from Secret Manager (no ambient AWS credential); locally
     // this is a no-op and env/MinIO credentials are used. Fetched once, shared by both stores.
     let aws_opts = fetch_aws_secret_opts().await?;
-    let sweep_cfg = build_sweep_config(&cfg.sweep_root_uri, &aws_opts)?;
+    let sweep_cfg =
+        build_sweep_config(&cfg.sweep_root_uri, &aws_opts)?.with_concurrency(cfg.sweep_concurrency);
     let meta = build_meta_store(&cfg.meta_base_uri, &aws_opts)?;
     let catalog = Catalog::new(cfg.registry_path.clone(), meta.clone(), cfg.cache_ttl);
 

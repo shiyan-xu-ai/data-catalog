@@ -20,7 +20,14 @@ pub struct SweepConfig {
     pub store: Arc<dyn ObjectStore>,
     pub root_path: ObjPath,
     pub root_uri: String,
+    /// How many versions sweep concurrently (in-flight LISTs + dataset opens). The sweep is
+    /// S3-latency-bound, so wall time ≈ `versions / concurrency`.
+    pub concurrency: usize,
 }
+
+/// Default in-flight version sweeps. S3-class stores comfortably serve far more concurrent
+/// requests than this; the cap bounds memory (one version's object list in flight per slot).
+pub const DEFAULT_SWEEP_CONCURRENCY: usize = 16;
 
 impl SweepConfig {
     pub fn new(
@@ -32,7 +39,14 @@ impl SweepConfig {
             store,
             root_path,
             root_uri: root_uri.into(),
+            concurrency: DEFAULT_SWEEP_CONCURRENCY,
         }
+    }
+
+    /// Override the version-sweep concurrency (clamped to at least 1).
+    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency.max(1);
+        self
     }
 
     /// Build the full URI lance needs to open the dataset at `full_path`, a full
