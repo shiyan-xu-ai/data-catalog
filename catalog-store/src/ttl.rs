@@ -4,25 +4,28 @@
 //! idempotent.
 
 use anyhow::Result;
-use futures::TryStreamExt;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, ObjectStoreExt};
+use object_store::ObjectStore;
 
-/// Recursively delete every object under `prefix`. LIST-then-delete-each rather than a bulk
-/// API: `object_store::ObjectStore` exposes `delete_stream` for a caller-supplied stream of
-/// paths, but not a single "delete everything under this prefix" call, so we materialize the
-/// listing first (bounded by one version's object count, not the whole table).
+/// Recursively delete every object under `prefix` (a table version's `<table>/<timestamp>/`
+/// tree). `object_store` has no single "delete everything under this prefix" call, so we LIST
+/// the prefix (bounded by one version's object count, not the whole table) and hand the paths to
+/// `delete_stream`, which batches into bulk deletes (S3 issues 1000-key `DeleteObjects` requests;
+/// other stores delete concurrently) rather than one sequential await per object. `NotFound` is
+/// tolerated so re-applying TTL against an already-deleted version stays idempotent.
 pub async fn delete_prefix(store: &dyn ObjectStore, prefix: &ObjPath) -> Result<()> {
-    let mut stream = store.list(Some(prefix));
+    let mut listing = store.list(Some(prefix));
     let mut paths = Vec::new();
-    while let Some(meta) = stream.try_next().await? {
+    while let Some(meta) = listing.try_next().await? {
         paths.push(meta.location);
     }
-    for path in paths {
-        match store.delete(&path).await {
-            Ok(()) => {}
-            // Idempotent re-apply: another delete (or a prior partially-applied call) may
-            // already have removed this object.
+
+    let locations = stream::iter(paths.into_iter().map(Ok)).boxed();
+    let mut deletes = store.delete_stream(locations);
+    while let Some(result) = deletes.next().await {
+        match result {
+            Ok(_) => {}
             Err(object_store::Error::NotFound { .. }) => {}
             Err(e) => return Err(e.into()),
         }

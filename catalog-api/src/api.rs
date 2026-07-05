@@ -115,20 +115,14 @@ fn table_not_found(id: &str) -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
-#[derive(Debug, Serialize)]
-struct NotLeaderResponse {
-    message: &'static str,
-}
-
 /// Standard response for a mutation attempted on a non-leader pod: 503, no cross-pod
-/// forwarding in v1.0.0 (see module docs).
-fn not_leader() -> (StatusCode, Json<NotLeaderResponse>) {
-    (
+/// forwarding in v1.0.0 (see module docs). Uses the shared `ErrorResponse` envelope so every
+/// error this API returns has the same shape; `error_code` 0 marks a non-spec operational error.
+fn not_leader() -> (StatusCode, Json<ErrorResponse>) {
+    error(
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(NotLeaderResponse {
-            message:
-                "this pod is not the current leader; retry (a leader pod will accept the write)",
-        }),
+        0,
+        "this pod is not the current leader; retry (a leader pod will accept the write)",
     )
 }
 
@@ -553,7 +547,8 @@ async fn ttl_apply(
     let mut deleted = Vec::new();
     let mut reclaimed_bytes = 0u64;
     let mut audit_records: Vec<TtlAuditRecord> = Vec::new();
-    let mut delete_errors: Vec<String> = Vec::new();
+    // Version ids whose delete failed this call (raw errors are logged, not returned).
+    let mut failed_versions: Vec<String> = Vec::new();
 
     for vid in &eligible_ids {
         let Some(pos) = entry.versions.iter().position(|v| &v.version_id == vid) else {
@@ -571,11 +566,16 @@ async fn ttl_apply(
         // A snapshot_path that doesn't resolve under the sweep root is a hard error, not a
         // silent success: without a valid prefix we cannot delete anything, so keep the version
         // in the registry and report it rather than removing it while its bytes remain on S3.
+        // A snapshot_path that doesn't resolve under the sweep root is a hard error, not a
+        // silent success: without a valid prefix we cannot delete anything, so keep the version
+        // in the registry and report it rather than removing it while its bytes remain on S3.
+        // The raw error is logged; only the (caller-owned) version id goes into the response.
         let prefix = match state.sweep_cfg.path_for(&version.snapshot_path) {
             Ok(prefix) => prefix,
             Err(e) => {
                 metrics::record_ttl_delete(false);
-                delete_errors.push(format!("{vid}: unresolvable snapshot path: {e}"));
+                tracing::error!(table = %id, version = %vid, error = %e, "ttl delete: unresolvable snapshot path");
+                failed_versions.push(vid.clone());
                 continue;
             }
         };
@@ -598,7 +598,8 @@ async fn ttl_apply(
             Err(e) => {
                 metrics::record_ttl_delete(false);
                 metrics::record_s3_op("ttl_delete", false);
-                delete_errors.push(format!("{vid}: {e}"));
+                tracing::error!(table = %id, version = %vid, error = %e, "ttl delete failed");
+                failed_versions.push(vid.clone());
             }
         }
     }
@@ -626,12 +627,15 @@ async fn ttl_apply(
         internal_error(e).into_response_pair()
     })?;
 
-    if !delete_errors.is_empty() {
+    if !failed_versions.is_empty() {
         metrics::record_ttl_apply(false);
-        return Err(internal_error(anyhow::anyhow!(
-            "some versions failed to delete: {}",
-            delete_errors.join("; ")
-        ))
+        // Name the versions that failed (caller-owned ids, safe to return) so the caller can
+        // retry them; the underlying errors were logged per-version above.
+        return Err(error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            0,
+            format!("failed to delete versions: {}", failed_versions.join(", ")),
+        )
         .into_response_pair());
     }
 
@@ -646,8 +650,16 @@ async fn ttl_apply(
     }))
 }
 
+/// Map an internal failure to a 500. The full error (which may carry object-store paths,
+/// backtraces, or other internal detail) is logged, not returned to the client -- the response
+/// body is a fixed generic message so nothing internal leaks over the wire.
 fn internal_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
-    error(StatusCode::INTERNAL_SERVER_ERROR, 0, e.to_string())
+    tracing::error!(error = %e, "request failed with an internal error");
+    error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        0,
+        "internal server error",
+    )
 }
 
 /// Tower/axum middleware that records HTTP RED metrics (`catalog_http_requests_total` and

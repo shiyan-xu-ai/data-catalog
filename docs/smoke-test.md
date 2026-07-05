@@ -56,10 +56,11 @@ curl -s http://localhost:8080/v1/table/smoke_test | python3 -m json.tool
 # Dry-run TTL for smoke_test (no policy set yet — expect empty eligible list)
 curl -s "http://localhost:8080/ext/v1/tables/smoke_test/ttl/dryrun" | python3 -m json.tool
 
-# Set a TTL policy (keep last 5, max age 0 s = delete everything beyond keep_count)
+# Set a TTL policy (keep last 1; max_age_days unset => every version beyond the newest is
+# eligible). Note the field is `max_age_days` (age in days), not `max_age_secs`.
 curl -s -X PUT http://localhost:8080/v1/table/smoke_test \
   -H 'Content-Type: application/json' \
-  -d '{"ttl_policy": {"keep_last_n": 1, "max_age_secs": null}}' \
+  -d '{"ttl_policy": {"keep_last_n": 1, "max_age_days": null}}' \
   | python3 -m json.tool
 
 # Dry-run again — smoke_test has 1 version so nothing should be eligible
