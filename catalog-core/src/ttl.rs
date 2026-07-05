@@ -94,6 +94,8 @@ mod tests {
             num_fragments: Some(1),
             schema_json: None,
             num_indices: Some(0),
+            lance_version: None,
+            writer_version: None,
             aux: Vec::<AuxEntry>::new(),
             swept_at: ts,
         }

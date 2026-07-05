@@ -108,6 +108,12 @@ pub struct TableVersion {
     pub schema_json: Option<String>,
     #[serde(default)]
     pub num_indices: Option<u64>,
+    /// Lance-internal manifest version of the opened dataset (from its manifest; no extra IO).
+    #[serde(default)]
+    pub lance_version: Option<u64>,
+    /// Writer that produced the dataset, as `<library>/<version>` (from its manifest).
+    #[serde(default)]
+    pub writer_version: Option<String>,
     #[serde(default)]
     pub aux: Vec<AuxEntry>,
     pub swept_at: DateTime<Utc>,

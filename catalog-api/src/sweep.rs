@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use catalog_core::{read_registry, write_registry, TableEntry, TableVersion};
-use catalog_store::{MetaStore, SweepConfig, TableMeta, VersionDirRef};
+use catalog_store::{deep_for, MetaStore, SweepConfig, TableMeta, VersionDirRef};
 use futures::StreamExt;
 use object_store::path::Path as ObjPath;
 use serde::Serialize;
@@ -47,6 +47,13 @@ pub struct SweepReport {
     pub versions_swept: u64,
     /// Versions copied from the prior snapshot without any S3 traffic (immutable + clean).
     pub versions_carried: u64,
+    /// Objects enumerated across all version LISTs this pass.
+    pub objects_listed: u64,
+    /// Cumulative time spent in version LISTs (across concurrent sweeps, so it can exceed
+    /// `duration_secs`). With `open_secs`, shows where sweep time actually goes.
+    pub list_secs: f64,
+    /// Cumulative time spent opening Lance datasets + extracting stats.
+    pub open_secs: f64,
     pub duration_secs: f64,
 }
 
@@ -57,6 +64,8 @@ struct TablePlan {
     table_path: ObjPath,
     carried: Vec<TableVersion>,
     work: Vec<VersionDirRef>,
+    /// The table's latest listed version id — drives `DeepStats::Latest` gating.
+    latest_id: Option<String>,
 }
 
 /// Run one sweep over the registered tables. See the module docs for the execution shape.
@@ -113,6 +122,7 @@ pub async fn run_sweep(
     for (table_id, dirs) in discovery {
         match dirs {
             Ok(dirs) => {
+                let latest_id = dirs.iter().map(|d| d.version_id.clone()).max();
                 let (carried, work) =
                     partition_carry_forward(dirs, prior.get(&table_id), registered.get(&table_id));
                 versions_carried += carried.len() as u64;
@@ -121,6 +131,7 @@ pub async fn run_sweep(
                     table_id,
                     carried,
                     work,
+                    latest_id,
                 });
             }
             Err(e) => {
@@ -148,6 +159,9 @@ pub async fn run_sweep(
     }
 
     let mut versions_swept = 0u64;
+    let mut objects_listed = 0u64;
+    let mut list_secs = 0f64;
+    let mut open_secs = 0f64;
     let mut last_write = Instant::now();
 
     // Tables with no pending work (all carried / empty) complete immediately.
@@ -160,19 +174,28 @@ pub async fn run_sweep(
         }
     }
 
-    let work_items: Vec<(String, VersionDirRef)> = plans
+    let work_items: Vec<(String, VersionDirRef, bool)> = plans
         .iter()
-        .flat_map(|p| p.work.iter().map(|d| (p.table_id.clone(), d.clone())))
+        .flat_map(|p| {
+            p.work.iter().map(|d| {
+                let deep = deep_for(
+                    sweep_cfg.deep_stats,
+                    p.latest_id.as_deref() == Some(d.version_id.as_str()),
+                );
+                (p.table_id.clone(), d.clone(), deep)
+            })
+        })
         .collect();
 
     let mut results = futures::stream::iter(work_items)
-        .map(|(table_id, dir)| async move {
+        .map(|(table_id, dir, deep)| async move {
             let res = catalog_store::sweep_version(
                 sweep_cfg,
                 &dir.path,
                 dir.timestamp,
                 dir.version_id,
                 now,
+                deep,
             )
             .await;
             (table_id, res)
@@ -181,9 +204,15 @@ pub async fn run_sweep(
 
     while let Some((table_id, res)) = results.next().await {
         match res {
-            Ok(v) => {
+            Ok(s) => {
                 versions_swept += 1;
-                fresh.get_mut(&table_id).expect("planned table").push(v);
+                objects_listed += s.objects;
+                list_secs += s.list_ms as f64 / 1000.0;
+                open_secs += s.open_ms as f64 / 1000.0;
+                fresh
+                    .get_mut(&table_id)
+                    .expect("planned table")
+                    .push(s.version);
             }
             Err(e) => {
                 if table_failed.insert(table_id.clone()) {
@@ -249,6 +278,9 @@ pub async fn run_sweep(
         failed_tables,
         versions_swept,
         versions_carried,
+        objects_listed,
+        list_secs,
+        open_secs,
         duration_secs: started.elapsed().as_secs_f64(),
     };
     tracing::info!(
@@ -256,6 +288,9 @@ pub async fn run_sweep(
         failed_tables = report.failed_tables,
         versions_swept = report.versions_swept,
         versions_carried = report.versions_carried,
+        objects_listed = report.objects_listed,
+        list_secs = report.list_secs,
+        open_secs = report.open_secs,
         duration_secs = report.duration_secs,
         "sweep complete"
     );

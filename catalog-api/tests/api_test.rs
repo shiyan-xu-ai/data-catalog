@@ -48,6 +48,8 @@ fn fixture_version(id: &str) -> TableVersion {
         num_fragments: Some(1),
         schema_json: None,
         num_indices: Some(0),
+        lance_version: None,
+        writer_version: None,
         aux: vec![AuxEntry {
             name: "segments".to_string(),
             path: format!("s3://bucket/smoke_test/{id}/segments"),
@@ -394,6 +396,8 @@ fn ttl_fixture_version(
         num_fragments: None,
         schema_json: None,
         num_indices: None,
+        lance_version: None,
+        writer_version: None,
         aux: Vec::new(),
         swept_at: ts,
     }

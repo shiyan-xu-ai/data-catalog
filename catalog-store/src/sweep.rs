@@ -13,6 +13,8 @@
 //! (`SweepConfig::concurrency`), so a table's wall time is ~`versions / concurrency`, not a
 //! serial walk of 10+ requests per version.
 
+use std::time::Instant;
+
 use anyhow::Result;
 use arrow_schema::Schema as ArrowSchema;
 use catalog_core::{AuxEntry, Namespace, TableEntry, TableVersion, VersionShape};
@@ -23,7 +25,7 @@ use lance::Dataset;
 use object_store::path::Path as ObjPath;
 use object_store::ObjectMeta;
 
-use crate::config::SweepConfig;
+use crate::config::{DeepStats, SweepConfig};
 use crate::format::{bytes_under, children, detect_format, is_lance_shaped, DirListing};
 
 /// Sidecar directory names that, pre-cutoff, live *inside* the main lance dir instead of
@@ -125,6 +127,15 @@ pub async fn sweep_root(cfg: &SweepConfig) -> Result<SweepOutcome> {
     })
 }
 
+/// Whether this version gets the deep (extra-IO) Lance stats under `mode`.
+pub fn deep_for(mode: DeepStats, is_latest: bool) -> bool {
+    match mode {
+        DeepStats::All => true,
+        DeepStats::Latest => is_latest,
+        DeepStats::None => false,
+    }
+}
+
 /// One timestamp-path version directory discovered under a table dir: the parsed identity
 /// plus the object-store path to sweep. Produced by [`list_version_dirs`]; consumed by
 /// [`sweep_version`] — split so callers (e.g. the API's global sweep queue) can decide which
@@ -170,9 +181,17 @@ pub async fn sweep_table(
 ) -> Result<TableEntry> {
     let dirs = list_version_dirs(cfg, table_path).await?;
     let now = Utc::now();
+    let latest_id = dirs.iter().map(|d| d.version_id.clone()).max();
 
     let mut versions: Vec<TableVersion> = futures::stream::iter(dirs)
-        .map(|d| async move { sweep_version(cfg, &d.path, d.timestamp, d.version_id, now).await })
+        .map(|d| {
+            let deep = deep_for(cfg.deep_stats, latest_id.as_deref() == Some(&d.version_id));
+            async move {
+                sweep_version(cfg, &d.path, d.timestamp, d.version_id, now, deep)
+                    .await
+                    .map(|s| s.version)
+            }
+        })
         .buffer_unordered(cfg.concurrency)
         .try_collect()
         .await?;
@@ -200,24 +219,60 @@ struct OpenedDataset {
     num_fragments: Option<u64>,
     schema_json: Option<String>,
     num_indices: Option<u64>,
+    lance_version: Option<u64>,
+    writer_version: Option<String>,
 }
 
-async fn try_open_dataset(cfg: &SweepConfig, path: &ObjPath) -> Option<OpenedDataset> {
+/// Open the main lance dataset and extract stats, preferring the already-fetched manifest over
+/// additional IO:
+/// - `row_count` comes from the manifest's per-fragment row counts (a pure in-memory sum) when
+///   every fragment's count is known; `count_rows()` — which may read deletion files — runs only
+///   as a fallback, and only when `deep` is set.
+/// - `num_fragments`, schema, the lance manifest version, and the writer version are free
+///   manifest reads.
+/// - `load_indices` (extra index-metadata IO) runs only when `deep` is set.
+///
+/// The open itself always runs regardless of `deep`, so openability — and therefore
+/// shape/`partial` classification — is identical in every mode.
+async fn try_open_dataset(cfg: &SweepConfig, path: &ObjPath, deep: bool) -> Option<OpenedDataset> {
     let uri = cfg.uri_for(path);
     let dataset = Dataset::open(&uri).await.ok()?;
-    let row_count = dataset.count_rows(None).await.ok().map(|n| n as u64);
+    let manifest = dataset.manifest();
+
+    let all_fragment_rows_known = manifest.fragments.iter().all(|f| f.num_rows().is_some());
+    let row_count = if all_fragment_rows_known {
+        Some(manifest.summary().total_rows)
+    } else if deep {
+        dataset.count_rows(None).await.ok().map(|n| n as u64)
+    } else {
+        None
+    };
+
     let num_fragments = Some(dataset.count_fragments() as u64);
     let schema_json = schema_to_json(dataset.schema()).ok();
-    let num_indices = dataset
-        .load_indices()
-        .await
-        .ok()
-        .map(|idx| idx.len() as u64);
+    let lance_version = Some(manifest.version);
+    let writer_version = manifest
+        .writer_version
+        .as_ref()
+        .map(|w| format!("{}/{}", w.library, w.version));
+
+    let num_indices = if deep {
+        dataset
+            .load_indices()
+            .await
+            .ok()
+            .map(|idx| idx.len() as u64)
+    } else {
+        None
+    };
+
     Some(OpenedDataset {
         row_count,
         num_fragments,
         schema_json,
         num_indices,
+        lance_version,
+        writer_version,
     })
 }
 
@@ -241,20 +296,37 @@ fn aux_entry_for(
     }
 }
 
+/// One swept version plus where its wall time went, so a sweep can report the LIST-vs-Lance
+/// split instead of leaving slow tables a mystery.
+pub struct SweptVersion {
+    pub version: TableVersion,
+    /// Objects enumerated by the version's recursive LIST.
+    pub objects: u64,
+    /// Time spent in the recursive LIST (paginated; ∝ object count).
+    pub list_ms: u64,
+    /// Time spent opening the Lance dataset + extracting stats (∝ manifest/index complexity).
+    pub open_ms: u64,
+}
+
 /// Sweep one timestamp-path version dir: classify its shape, split storage bytes into
 /// lance-core/sidecar/segments/other-aux, and collect aux entries.
 ///
 /// All of the above comes from ONE recursive LIST of the version dir; the only additional IO
-/// is the Lance dataset open for row/schema/index stats.
+/// is the Lance dataset open for row/schema/index stats (see [`try_open_dataset`] for what
+/// `deep` gates).
 pub async fn sweep_version(
     cfg: &SweepConfig,
     ts_path: &ObjPath,
     timestamp: DateTime<Utc>,
     version_id: String,
     swept_at: DateTime<Utc>,
-) -> Result<TableVersion> {
+    deep: bool,
+) -> Result<SweptVersion> {
     // The single LIST: every object under this version, with key/size/etag.
+    let list_started = Instant::now();
     let objects: Vec<ObjectMeta> = cfg.store.list(Some(ts_path)).try_collect().await?;
+    let list_ms = list_started.elapsed().as_millis() as u64;
+    let mut open_ms = 0u64;
     let top = children(&objects, ts_path);
 
     let mut top_sidecar: Option<ObjPath> = None;
@@ -307,11 +379,15 @@ pub async fn sweep_version(
     let mut num_fragments = None;
     let mut schema_json = None;
     let mut num_indices = None;
+    let mut lance_version = None;
+    let mut writer_version = None;
     let shape;
     let partial;
 
     if let Some((_main_name, main_path, main_listing)) = &main_dir {
-        let opened = try_open_dataset(cfg, main_path).await;
+        let open_started = Instant::now();
+        let opened = try_open_dataset(cfg, main_path, deep).await;
+        open_ms = open_started.elapsed().as_millis() as u64;
 
         for core_name in LANCE_CORE_NAMES {
             if main_listing.subdirs.iter().any(|d| d == core_name) {
@@ -370,6 +446,8 @@ pub async fn sweep_version(
                 num_fragments = o.num_fragments;
                 schema_json = o.schema_json;
                 num_indices = o.num_indices;
+                lance_version = o.lance_version;
+                writer_version = o.writer_version;
                 shape = if top_segments.is_some() {
                     VersionShape::Full
                 } else {
@@ -438,23 +516,41 @@ pub async fn sweep_version(
 
     let storage_bytes_total = lance_core_bytes + sidecar_bytes + segments_bytes + other_aux_bytes;
 
-    Ok(TableVersion {
-        version_id,
-        timestamp,
-        snapshot_path: cfg.uri_for(ts_path),
-        shape,
-        partial,
-        protected: false,
-        storage_bytes_total,
-        lance_core_bytes,
-        sidecar_bytes,
-        segments_bytes,
-        other_aux_bytes,
-        row_count,
-        num_fragments,
-        schema_json,
-        num_indices,
-        aux,
-        swept_at,
+    let objects_count = objects.len() as u64;
+    tracing::debug!(
+        version = %version_id,
+        path = %ts_path,
+        objects = objects_count,
+        list_ms,
+        open_ms,
+        deep,
+        "swept version"
+    );
+
+    Ok(SweptVersion {
+        version: TableVersion {
+            version_id,
+            timestamp,
+            snapshot_path: cfg.uri_for(ts_path),
+            shape,
+            partial,
+            protected: false,
+            storage_bytes_total,
+            lance_core_bytes,
+            sidecar_bytes,
+            segments_bytes,
+            other_aux_bytes,
+            row_count,
+            num_fragments,
+            schema_json,
+            num_indices,
+            lance_version,
+            writer_version,
+            aux,
+            swept_at,
+        },
+        objects: objects_count,
+        list_ms,
+        open_ms,
     })
 }

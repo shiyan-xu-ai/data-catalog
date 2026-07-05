@@ -34,6 +34,8 @@ fn sample_entry(id: &str) -> TableEntry {
         num_fragments: Some(2),
         schema_json: Some(r#"{"fields":[]}"#.to_string()),
         num_indices: Some(1),
+        lance_version: None,
+        writer_version: None,
         aux: aux.clone(),
         swept_at: ts,
     };

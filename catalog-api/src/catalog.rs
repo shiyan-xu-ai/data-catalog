@@ -172,6 +172,8 @@ mod tests {
             num_fragments: None,
             schema_json: None,
             num_indices: None,
+            lance_version: None,
+            writer_version: None,
             aux: vec![],
             swept_at: chrono::Utc::now(),
         }
