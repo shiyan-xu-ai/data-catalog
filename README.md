@@ -93,6 +93,67 @@ cd frontend && bun run dev
 # open http://localhost:5173 — the Vite dev proxy forwards /v1 and /ext to :8080
 ```
 
+### Testing against a real bucket
+
+To browse real production tables locally instead of a local fixture root, point
+`CATALOG_SWEEP_ROOT_URI` at the real bucket. `onroad-perception-datasets` is an
+**OCI bucket accessed via its S3-compat API**, not real AWS S3 — this needs an
+explicit endpoint override and OCI's static access key/secret (the `oci.phx`
+AWS CLI profile), not an SSO role.
+
+Use `export` (not per-command var prefixes) so the settings persist across the
+register/sweep calls below, in one shell:
+
+```sh
+# 1. kill any previously-running instance first — env is only read at startup,
+#    so a running process won't pick up new exports.
+pkill -f 'target/debug/catalog-api'
+
+# 2. export everything in this shell.
+eval "$(AWS_PROFILE=oci.phx aws configure export-credentials --profile oci.phx --format env)"
+export AWS_ENDPOINT_URL=https://idskhu5vqvtl.compat.objectstorage.us-phoenix-1.oraclecloud.com
+export AWS_VIRTUAL_HOSTED_STYLE_REQUEST=false
+export AWS_DEFAULT_REGION=us-phoenix-1
+export CATALOG_SWEEP_ROOT_URI=s3://onroad-perception-datasets/scenario_dataset_export
+export CATALOG_META_BASE_URI=memory
+export CATALOG_REGISTRY_PATH=/tmp/catalog/registry.lance
+export CATALOG_TTL_AUDIT_PATH=/tmp/catalog/ttl_audit.lance
+
+# 3. verify BEFORE starting — must print the oracle endpoint, or the server
+#    will silently fall back to real AWS S3 and fail to find the bucket there.
+env | grep AWS_ENDPOINT_URL
+
+# 4. start it in this same shell.
+cargo run -p catalog-api
+```
+
+Then, in another shell, register + sweep exactly the table(s) you want (only
+registered tables are ever swept — see [State model](#state-model-s3-is-the-sole-store)):
+
+```sh
+curl -X PUT localhost:8080/v1/table/<real-table-name>
+curl -X POST localhost:8080/internal/jobs/sweep
+curl localhost:8080/v1/table/<real-table-name>   # real versions come back
+```
+
+**Safety:** `CATALOG_META_BASE_URI=memory` means registering a table writes
+nothing to the bucket, and the sweep itself only ever does `LIST`/`GET` — never
+run `POST .../ttl/apply` against this (see [RUNBOOK-TTL.md](docs/RUNBOOK-TTL.md)); it hard-deletes real data.
+
+**Troubleshooting:**
+- `Address already in use (os error 98)` — a previous run is still listening on
+  8080; `pkill -f 'target/debug/catalog-api'` and restart.
+- Sweep error mentioning `s3.us-east-1.amazonaws.com` or `Received redirect
+  without LOCATION` — the request went to real AWS instead of the OCI
+  endpoint, meaning `AWS_ENDPOINT_URL` wasn't set in the process that's
+  running. Re-run step 3 above to confirm, then fully restart (step 1) with all
+  vars exported in the *same* shell you launch `cargo run` from — a different
+  terminal tab won't have them.
+- Always set `CATALOG_REGISTRY_PATH`/`CATALOG_TTL_AUDIT_PATH` explicitly (e.g.
+  under `/tmp`). Left at their defaults (`_catalog/registry`, relative to the
+  working directory), a run from the repo root writes a Lance dataset into the
+  checkout itself.
+
 ## Configuration
 
 All configuration is env-var driven (see `catalog-api/src/config.rs` for the
