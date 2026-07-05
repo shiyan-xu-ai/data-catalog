@@ -190,6 +190,63 @@ async fn declare_table_writes_owner_to_overlay_and_is_visible_immediately() {
 }
 
 #[tokio::test]
+async fn bare_put_registers_a_table_with_no_body_and_rejects_malformed_json() {
+    let (app, _r, _s) = test_app(vec![], vec![]).await;
+
+    // A bare PUT (no body, no content-type) registers the table with no owner/policy — the
+    // primary "add this table to the allowlist" action must not require a JSON envelope.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/table/just_registered")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["id"], "just_registered");
+    assert!(json["owner"].is_null());
+
+    // It is now registered (an overlay-only stub) and shows in the listing.
+    let json = body_json(get(&app, "/v1/tables").await).await;
+    assert_eq!(json["tables"], serde_json::json!(["just_registered"]));
+
+    // A present-but-malformed JSON body is a 400 (not silently ignored).
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/table/whatever")
+                .header("content-type", "application/json")
+                .body(Body::from("{not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // An id with a character the object store would percent-encode is refused (400) rather than
+    // silently registered under a mangled overlay filename that the sweep would never find. The
+    // id is URL-encoded in the request path; axum decodes it before the handler sees it.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/table/bad%23id") // -> "bad#id" after decode
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn declare_table_on_unknown_id_materializes_an_overlay_only_stub() {
     let (app, _r, _s) = test_app(vec![], vec![]).await;
 

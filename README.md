@@ -4,11 +4,13 @@ A Lance data catalog service: an S3-native metadata catalog for Lance tables,
 written in Rust (axum, the `lance` crate, `object_store`). It runs as a single
 stateless container on Applied's Apps Platform (Cloud Run).
 
-The service sweeps an S3 root, discovers timestamp-path versioned Lance tables,
-and records per-version metadata (shape, storage size split by component, row
-count, schema, aux entries) into a Lance-backed registry under `_catalog/`. A
-REST API exposes the catalog (basic ops + an enriched `/ext` listing) and a
-per-table TTL engine that hard-deletes old versions under an explicit API
+The catalog is a curated allowlist: an operator registers the tables to track
+(`PUT /v1/table/:id`), and the sweep records per-version metadata (shape, storage
+size split by component, row count, schema, aux entries) for exactly those
+registered tables — from an S3 root of timestamp-path versioned Lance tables —
+into a Lance-backed registry under `_catalog/`. Unregistered tables on S3 are
+ignored. A REST API exposes the catalog (basic ops + an enriched `/ext` listing)
+and a per-table TTL engine that hard-deletes old versions under an explicit API
 policy. A minimal static SPA (vanilla TS + Vite) is served from the same origin
 as the API for browsing and TTL operations.
 
@@ -21,9 +23,10 @@ There is no database and no cross-instance coordinator (no leader election, no
 lock). All catalog state lives on S3, split by how it is produced:
 
 - **Derived state** — versions, shapes, byte splits, row counts, schemas, aux.
-  A pure function of immutable S3 content, so any full sweep can regenerate it.
-  The sweep writes the whole `_catalog/registry` Lance dataset **last-wins**,
-  with no coordination: concurrent or double-fired sweeps are safe.
+  A pure function of immutable S3 content, so any sweep can regenerate it. The
+  sweep re-derives the registered tables and writes the whole `_catalog/registry`
+  Lance dataset **last-wins**, with no coordination: concurrent or double-fired
+  sweeps are safe.
 - **Authored state** — per-table `owner` + `ttl_policy` and per-version
   `protected`. The only human-mutated data, stored as one small JSON object per
   table at `_catalog/meta/<table_id>.json` and updated with object-store
@@ -39,8 +42,8 @@ Cargo workspace with three crates:
 
 - `catalog-core` — shared types (`TableEntry`, `TableVersion`, `TtlPolicy`,
   `TtlAuditRecord`, `AuxEntry`, `Namespace`, `VersionShape`, `AuxFormat`), the
-  Lance registry reader/writer, the sweep-result reconcile, and the TTL
-  eligibility computation.
+  Lance registry reader/writer, `aux_latest` derivation, and the TTL eligibility
+  computation.
 - `catalog-store` — object-store IO, the S3 sweep (discovery, timestamp-path
   version classification, shape detection, per-component size split, aux format
   detection, pre+post cutoff layout handling), the TTL hard-delete helper, and
@@ -69,11 +72,15 @@ CATALOG_TTL_AUDIT_PATH=/tmp/catalog/ttl_audit.lance \
 CATALOG_META_BASE_URI=memory \
 CATALOG_WEBUI_DIR=frontend/dist \
 cargo run -p catalog-api
-# then, in another shell:
-curl -s -X POST localhost:8080/internal/jobs/sweep   # run one sweep
-curl -s localhost:8080/v1/tables                     # list discovered tables
-open http://localhost:8080/                          # the SPA
+# then, in another shell — register a table, then sweep it:
+curl -s -X PUT localhost:8080/v1/table/<table-dir-name>   # register (a dir under the sweep root)
+curl -s -X POST localhost:8080/internal/jobs/sweep        # sweep the registered tables
+curl -s localhost:8080/v1/tables                          # list registered tables
+open http://localhost:8080/                               # the SPA
 ```
+
+Nothing is swept until a table is registered — the sweep only processes
+registered tables.
 
 `CATALOG_META_BASE_URI=memory` uses a non-persistent in-memory overlay, which is
 fine for a quick local run. Persisting authored state needs an S3/MinIO overlay
@@ -125,8 +132,8 @@ table by S3's conditional writes.
 - `GET /v1/namespaces/:id` — describe a namespace (id is `.`-joined path).
 - `GET /v1/tables` — list table ids.
 - `GET /v1/table/:id` — describe a table (full `TableEntry`).
-- `PUT /v1/table/:id` — declare/update a table (set `owner`/`ttl_policy`; idempotent).
-- `DELETE /v1/table/:id` — deregister (clears the authored overlay; a table still present on S3 stays cataloged via the derived snapshot).
+- `PUT /v1/table/:id` — register a table (set `owner`/`ttl_policy`; idempotent). Registering adds it to the swept set; its versions appear on the next sweep.
+- `DELETE /v1/table/:id` — deregister (deletes the authored overlay). The table leaves the swept set and the next sweep drops its derived entry. S3 data is untouched.
 - `GET /ext/v1/tables?expand=...` — enriched listing (full detail; no pagination).
 - `GET /ext/v1/tables/:id/versions/:vid` — single version detail.
 - `PUT /ext/v1/tables/:id/versions/:vid/protect` — set/clear a version's TTL-exempt `protected` flag.
