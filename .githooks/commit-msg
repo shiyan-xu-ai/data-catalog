@@ -4,9 +4,9 @@
 #
 #   git config core.hooksPath .githooks
 #
-# CI runs the same check on the PR title and every commit in the PR (see
-# .github/workflows/commit-lint.yml), so this hook is a fast local pre-check,
-# not the sole enforcement point.
+# CI (see .github/workflows/commit-lint.yml) only checks the PR title, since
+# that's what a squash-merge turns into the final commit message; this hook
+# checks the same format per-commit locally, for a clean pre-squash history.
 
 commit_msg_file="$1"
 subject=$(head -n1 "$commit_msg_file")

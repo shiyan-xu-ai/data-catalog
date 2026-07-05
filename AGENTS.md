@@ -31,8 +31,8 @@ Cargo workspace with three crates:
 
 ## Commit messages
 
-Commit subjects (and PR titles — PRs are squash-merged, so the PR title
-becomes the final commit message) must follow [Conventional Commits](https://www.conventionalcommits.org/):
+PR titles must follow [Conventional Commits](https://www.conventionalcommits.org/)
+(PRs are squash-merged, so the PR title becomes the final commit message):
 
 ```
 <type>(<scope>)?: <description>
@@ -41,9 +41,11 @@ becomes the final commit message) must follow [Conventional Commits](https://www
 Types: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`,
 `revert`, `style`, `test`. Example: `fix(api): return 404 for unknown table id`.
 
-This is enforced in CI (`.github/workflows/commit-lint.yml`) against both the
-PR title and every commit in the PR. Enable the matching local pre-commit
-check with:
+This is enforced in CI (`.github/workflows/commit-lint.yml`) against the PR
+title only — individual commits on a branch are free-form and get squashed
+away on merge. Commit subjects are still encouraged to follow the same format
+(it makes for a clean history pre-squash); enable a local pre-commit check
+with:
 
 ```
 git config core.hooksPath .githooks
