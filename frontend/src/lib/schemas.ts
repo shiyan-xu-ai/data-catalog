@@ -47,6 +47,8 @@ export const tableVersionSchema = z.object({
   num_fragments: z.number().nullable().default(null),
   schema_json: z.string().nullable().default(null),
   num_indices: z.number().nullable().default(null),
+  lance_version: z.number().nullable().default(null),
+  writer_version: z.string().nullable().default(null),
   aux: z.array(auxEntrySchema).default([]),
   swept_at: z.string(),
 });

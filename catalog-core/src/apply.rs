@@ -48,6 +48,8 @@ mod tests {
             num_fragments: Some(1),
             schema_json: None,
             num_indices: Some(0),
+            lance_version: None,
+            writer_version: None,
             aux: vec![AuxEntry {
                 name: "segments".to_string(),
                 path: format!("s3://bucket/table/{id}/segments"),

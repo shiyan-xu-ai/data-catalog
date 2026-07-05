@@ -23,11 +23,43 @@ pub struct SweepConfig {
     /// How many versions sweep concurrently (in-flight LISTs + dataset opens). The sweep is
     /// S3-latency-bound, so wall time ≈ `versions / concurrency`.
     pub concurrency: usize,
+    /// Which versions get the expensive Lance stats. See [`DeepStats`].
+    pub deep_stats: DeepStats,
 }
 
 /// Default in-flight version sweeps. S3-class stores comfortably serve far more concurrent
 /// requests than this; the cap bounds memory (one version's object list in flight per slot).
 pub const DEFAULT_SWEEP_CONCURRENCY: usize = 16;
+
+/// Which versions get the expensive Lance stats (`load_indices`, and the `count_rows` fallback
+/// when the manifest doesn't fully carry row counts). The dataset OPEN itself always runs —
+/// shape/`partial` classification (and therefore TTL safety semantics) are identical in every
+/// mode; skipping deep stats only leaves `num_indices` (and rarely `row_count`) as `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeepStats {
+    /// Deep stats for every version (the historical behavior).
+    #[default]
+    All,
+    /// Deep stats only for each table's latest version; older immutable versions keep
+    /// manifest-derived stats (rows/fragments/schema) but skip index loading.
+    Latest,
+    /// Deep stats for no version.
+    None,
+}
+
+impl std::str::FromStr for DeepStats {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "all" => Ok(Self::All),
+            "latest" => Ok(Self::Latest),
+            "none" => Ok(Self::None),
+            other => Err(anyhow!(
+                "invalid deep-stats mode {other:?}: expected all, latest, or none"
+            )),
+        }
+    }
+}
 
 impl SweepConfig {
     pub fn new(
@@ -40,12 +72,19 @@ impl SweepConfig {
             root_path,
             root_uri: root_uri.into(),
             concurrency: DEFAULT_SWEEP_CONCURRENCY,
+            deep_stats: DeepStats::default(),
         }
     }
 
     /// Override the version-sweep concurrency (clamped to at least 1).
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency.max(1);
+        self
+    }
+
+    /// Override which versions get the expensive Lance stats.
+    pub fn with_deep_stats(mut self, deep_stats: DeepStats) -> Self {
+        self.deep_stats = deep_stats;
         self
     }
 

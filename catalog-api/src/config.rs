@@ -57,6 +57,8 @@ pub struct AppConfig {
     pub cache_ttl: Duration,
     /// How many versions the sweep processes concurrently (in-flight LISTs + Lance opens).
     pub sweep_concurrency: usize,
+    /// Which versions get the expensive Lance stats (`all` | `latest` | `none`).
+    pub sweep_deep_stats: catalog_store::DeepStats,
     /// Directory holding the built frontend (`dist/`). Served at `/` when it contains an
     /// `index.html`; absent → API-only.
     pub webui_dir: String,
@@ -84,6 +86,10 @@ impl AppConfig {
                 "CATALOG_SWEEP_CONCURRENCY",
                 catalog_store::DEFAULT_SWEEP_CONCURRENCY,
             )?,
+            sweep_deep_stats: match std::env::var("CATALOG_SWEEP_DEEP_STATS") {
+                Ok(v) => v.parse()?,
+                Err(_) => catalog_store::DeepStats::default(),
+            },
             webui_dir: env_or("CATALOG_WEBUI_DIR", "frontend/dist"),
         })
     }

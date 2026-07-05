@@ -185,6 +185,7 @@ authoritative source). Defaults suit local dev / tests.
 | `CATALOG_SWEEP_ROOT_URI` | `s3://onroad-perception-datasets/scenario_dataset_export` | Sweep root (S3 URI or local filesystem path). |
 | `CATALOG_CACHE_TTL_SECS` | `5` | How long the merged read view is served before it revalidates against storage. |
 | `CATALOG_SWEEP_CONCURRENCY` | `16` | How many versions the sweep processes concurrently (in-flight LISTs + Lance dataset opens). |
+| `CATALOG_SWEEP_DEEP_STATS` | `all` | Which versions get the extra-IO Lance stats (`load_indices`, and the `count_rows` fallback when a manifest lacks per-fragment row counts): `all`, `latest` (each table's newest version only), or `none`. Shape/TTL-safety classification is identical in every mode; skipped versions just report `num_indices: null`. |
 | `CATALOG_WEBUI_DIR` | `frontend/dist` | Directory of the built SPA to serve at `/`. Absent → API-only. |
 | `CATALOG_SECRET_PREFIX` | `K_SERVICE` | Secret Manager name prefix for AWS credentials (Cloud Run sets `K_SERVICE` to the service name). |
 

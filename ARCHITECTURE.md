@@ -97,8 +97,17 @@ maximizes useful concurrency:
   sidecar/segments/other-aux), aux entries, format detection, and fingerprint are
   all derived in memory from a single recursive LIST of its timestamp directory
   (`catalog-store/src/format.rs` helpers are pure functions over that object
-  list). The only other per-version IO is opening the main Lance dataset for
-  row-count/schema/fragment/index stats.
+  list). The only other per-version IO is opening the main Lance dataset.
+- **Manifest-first Lance stats.** The one manifest the open fetches is milked for
+  everything it carries: row count (Σ per-fragment counts — `count_rows()`, which
+  can read deletion files, runs only as a fallback when a fragment's count is
+  unknown), fragment count, schema, the lance manifest version, and the writer
+  version. `load_indices` (extra index-metadata IO) is gated by
+  `CATALOG_SWEEP_DEEP_STATS` (`all`/`latest`/`none`); the open itself always runs,
+  so shape/`partial` classification — and therefore TTL safety semantics — are
+  identical in every mode. The sweep report breaks out cumulative LIST time vs
+  Lance-open time (`list_secs`/`open_secs`/`objects_listed`), so a slow table
+  shows *why* it is slow.
 - **The unit of work is the version, not the table.** All registered tables'
   version dirs are discovered first (one delimiter LIST per table, concurrently),
   then every pending version from every table feeds one global

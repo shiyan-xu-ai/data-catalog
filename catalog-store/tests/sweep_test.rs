@@ -82,9 +82,18 @@ async fn full_shape_post_cutoff() {
     let v = &entry.versions[0];
     assert_eq!(v.shape, VersionShape::Full);
     assert!(!v.partial);
+    // row_count is manifest-derived (Σ fragment rows) — no count_rows IO for datasets whose
+    // manifests carry per-fragment counts.
     assert_eq!(v.row_count, Some(3));
     assert_eq!(v.num_fragments, Some(1));
     assert!(v.schema_json.is_some());
+    // Manifest metadata surfaced at zero extra IO.
+    assert!(v.lance_version.is_some(), "lance manifest version recorded");
+    assert!(
+        v.writer_version.as_deref().is_some_and(|w| w.contains('/')),
+        "writer recorded as library/version, got {:?}",
+        v.writer_version
+    );
     assert!(v.lance_core_bytes > 0, "lance_core_bytes should be > 0");
     assert!(v.sidecar_bytes > 0, "sidecar_bytes should be > 0");
     assert!(v.segments_bytes > 0, "segments_bytes should be > 0");
@@ -347,4 +356,43 @@ async fn unknown_top_level_dir_is_accounted_not_dropped() {
         .find(|a| a.name == "mystery_outputs")
         .expect("the unknown dir must surface as an aux entry");
     assert_eq!(mystery.storage_bytes, v.other_aux_bytes);
+}
+
+/// Deep-stats gating: `Latest` gives the expensive index load only to each table's newest
+/// version; `None` to no version. In every mode the dataset still OPENS, so shape/`partial`
+/// (the TTL safety inputs) and the manifest-derived stats (rows/fragments/schema/writer) are
+/// identical — only `num_indices` degrades to `None` on the skipped versions.
+#[tokio::test]
+async fn deep_stats_latest_and_none_gate_only_the_index_load() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
+    write_lance_dataset(&tmp.path().join("t/2026-06-01_00-00-00/dataset.lance")).await;
+    write_lance_dataset(&tmp.path().join("t/2026-06-02_00-00-00/dataset.lance")).await;
+
+    let latest_mode =
+        cfg(store.clone(), tmp.path()).with_deep_stats(catalog_store::DeepStats::Latest);
+    let entry = catalog_store::sweep_table(&latest_mode, "t", &ObjPath::from("t"))
+        .await
+        .unwrap();
+    assert_eq!(entry.versions.len(), 2);
+    let (old, new) = (&entry.versions[0], &entry.versions[1]);
+    for v in [old, new] {
+        assert_eq!(v.shape, VersionShape::LanceOnly);
+        assert!(!v.partial, "openability check runs in every mode");
+        assert!(v.row_count.is_some(), "row_count stays manifest-derived");
+        assert!(v.schema_json.is_some());
+        assert!(v.lance_version.is_some());
+    }
+    assert!(old.num_indices.is_none(), "non-latest skips the index load");
+    assert!(new.num_indices.is_some(), "latest keeps deep stats");
+
+    let none_mode = cfg(store, tmp.path()).with_deep_stats(catalog_store::DeepStats::None);
+    let entry = catalog_store::sweep_table(&none_mode, "t", &ObjPath::from("t"))
+        .await
+        .unwrap();
+    assert!(entry.versions.iter().all(|v| v.num_indices.is_none()));
+    assert!(entry
+        .versions
+        .iter()
+        .all(|v| !v.partial && v.row_count.is_some()));
 }
