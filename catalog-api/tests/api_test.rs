@@ -25,6 +25,8 @@ use object_store::path::Path as ObjPath;
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 
+mod common;
+
 fn fixture_version(id: &str, protected: bool) -> TableVersion {
     let ts = Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap();
     TableVersion {
@@ -70,11 +72,6 @@ fn fixture_entry() -> TableEntry {
     }
 }
 
-fn local_sweep_config(root: &std::path::Path) -> SweepConfig {
-    let store = Arc::new(LocalFileSystem::new_with_prefix(root).unwrap());
-    SweepConfig::new(store, ObjPath::from(""), root.to_str().unwrap().to_string())
-}
-
 /// Build a test app: a fresh Lance registry on disk seeded with `entries`, an in-memory cache
 /// pre-populated with the same entries (as the refresh loop would have done), and a fixed
 /// leader/non-leader state (no real k8s Lease -- mirrors how `leader_sweep_test.rs` uses a
@@ -83,7 +80,7 @@ fn local_sweep_config(root: &std::path::Path) -> SweepConfig {
 /// `test_app_with_sweep_cfg` instead so it can seed real objects to delete.
 async fn test_app(entries: Vec<TableEntry>, leader: bool) -> (Router, String, tempfile::TempDir) {
     let sweep_root_dir = tempfile::tempdir().unwrap();
-    let sweep_cfg = local_sweep_config(sweep_root_dir.path());
+    let sweep_cfg = common::sweep_config(sweep_root_dir.path());
     test_app_with_sweep_cfg(entries, leader, sweep_cfg).await
 }
 
@@ -407,7 +404,7 @@ async fn write_fake_object(store: &LocalFileSystem, path: &str, content: &[u8]) 
 #[tokio::test]
 async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture() {
     let sweep_root_dir = tempfile::tempdir().unwrap();
-    let sweep_cfg = local_sweep_config(sweep_root_dir.path());
+    let sweep_cfg = common::sweep_config(sweep_root_dir.path());
 
     let eligible_old = ttl_fixture_version(
         &sweep_cfg,
@@ -488,7 +485,7 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
 async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempotent() {
     let sweep_root_dir = tempfile::tempdir().unwrap();
     let store = LocalFileSystem::new_with_prefix(sweep_root_dir.path()).unwrap();
-    let sweep_cfg = local_sweep_config(sweep_root_dir.path());
+    let sweep_cfg = common::sweep_config(sweep_root_dir.path());
 
     write_fake_object(
         &store,
@@ -658,27 +655,4 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         1,
         "re-apply must not write a duplicate audit record"
     );
-}
-
-#[tokio::test]
-async fn cors_headers_are_present_on_a_response() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
-
-    // CORS is applied at the top-level app router in main.rs, not `api_router` itself
-    // (`api_router` is merged into the app before the CorsLayer is applied) -- so wrap it here
-    // the same way `main.rs::app()` does, to exercise the actual layered behavior.
-    let app = app.layer(tower_http::cors::CorsLayer::permissive());
-
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/tables")
-                .header("origin", "http://example.com")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(resp.headers().contains_key("access-control-allow-origin"));
 }

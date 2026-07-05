@@ -13,12 +13,11 @@ use catalog_api_lib::metrics;
 use catalog_api_lib::registry_cache::RegistryCache;
 use catalog_api_lib::registry_lock;
 use catalog_core::{Namespace, TableEntry};
-use catalog_store::SweepConfig;
 use http_body_util::BodyExt;
-use object_store::local::LocalFileSystem;
-use object_store::path::Path as ObjPath;
 use tokio::sync::RwLock;
 use tower::ServiceExt;
+
+mod common;
 
 /// Install the global recorder once per test binary (panics if called more than once per
 /// process, so this test module owns the recorder).
@@ -137,11 +136,6 @@ async fn get_healthz_returns_ok() {
 // RED middleware tests
 // ---------------------------------------------------------------------------
 
-fn local_sweep_cfg(root: &std::path::Path) -> SweepConfig {
-    let store = Arc::new(LocalFileSystem::new_with_prefix(root).unwrap());
-    SweepConfig::new(store, ObjPath::from(""), root.to_str().unwrap().to_string())
-}
-
 /// Build a minimal API router seeded with one table entry, wired as leader.
 async fn test_api_router() -> (axum::Router, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -169,7 +163,7 @@ async fn test_api_router() -> (axum::Router, tempfile::TempDir) {
     let leader: LeaderState = Arc::new(AtomicBool::new(true));
     let write_lock = registry_lock::new_registry_write_lock();
     let sweep_root = tempfile::tempdir().unwrap();
-    let sweep_cfg = local_sweep_cfg(sweep_root.path());
+    let sweep_cfg = common::sweep_config(sweep_root.path());
     let ttl_audit_path = dir
         .path()
         .join("ttl_audit.lance")
