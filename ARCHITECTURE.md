@@ -47,6 +47,15 @@ once a later sweep classifies it cleanly, so it does not stay permanently
 partial (and permanently TTL-ineligible); a clean version is never downgraded
 by a later transient partial re-observation.
 
+Because a table's sweep lists every timestamp directory on S3, the swept set is
+the complete current truth for that table, so the merge reconciles rather than
+only adds: a version no longer present on S3 (removed out of band, or by a TTL
+apply) is dropped from the registry too, keeping it in sync with storage and
+bounding registry growth. Reconciliation only runs for tables that swept
+cleanly, so a table that transiently failed to sweep (and is skipped) never has
+its versions removed. The API-set `protected` flag is carried across
+re-observation.
+
 ### Discovery
 
 The sweep lists the root for table directories, then for each table lists
