@@ -50,7 +50,7 @@ shape wasn't cleanly classified.
 **Never run `POST .../ttl/apply` without first running
 `GET .../ttl/dryrun` for the same table and reviewing the candidate list.**
 
-1. **Dry-run** (read-only, any pod):
+1. **Dry-run** (read-only):
 
    ```sh
    curl -s "http://localhost:8080/ext/v1/tables/<id>/ttl/dryrun" | python3 -m json.tool
@@ -66,7 +66,7 @@ shape wasn't cleanly classified.
    by an apply under the table's current policy, as of now. If the list is
    empty, an apply is a no-op.
 
-2. **Apply** (leader-only, irreversible):
+2. **Apply** (irreversible):
 
    ```sh
    curl -s -X POST "http://localhost:8080/ext/v1/tables/<id>/ttl/apply" | python3 -m json.tool
@@ -80,26 +80,31 @@ shape wasn't cleanly classified.
 
    `deleted` is the list of version ids actually hard-deleted by this call.
 
-### Apply is leader-only
+### Any instance can apply
 
-A non-leader pod returns `503 Service Unavailable` for `POST .../ttl/apply`.
-Clients retry; any pod behind the same Service will eventually hit the leader.
-There is no cross-pod forwarding in v1.0.0.
+There is no leader and no lock: any instance serves an apply. Correctness under
+a concurrent `protect` comes from a conditional overlay write (ETag CAS), not
+mutual exclusion — see below.
 
-### Apply recomputes eligibility fresh
+### Apply recomputes eligibility fresh against the overlay
 
 The apply endpoint never trusts the dry-run response the caller might be
-holding. It recomputes eligibility against the current registry state inside
-the `write_lock`-guarded critical section, so a stale dry-run cannot cause an
-unintended deletion. Re-applying after a successful apply is a no-op: a
-version already removed from the registry is not recomputed as eligible.
+holding. It recomputes eligibility against the *fresh* authored overlay
+(policy + protected) inside the conditional write that stamps the `deleting`
+markers, so a stale dry-run cannot cause an unintended deletion, and a `protect`
+that raced in since the read forces a retry that excludes the newly-protected
+version.
 
-### Idempotent re-apply
+### Idempotent re-apply (the `deleting` marker)
 
-TTL apply is idempotent by design. If a previous apply deleted some versions
-and was then interrupted, re-running apply will only re-attempt the remaining
-eligible versions. A version already deleted from S3 (and removed from the
-registry) is not recomputed as eligible, so it is not re-attempted.
+TTL apply is idempotent by design. When a version's S3 prefix is deleted, its
+`deleting` marker is kept in the overlay as a tombstone: it hides the version
+from reads immediately (the derived snapshot still lists it until the next sweep
+reconciles it out) and excludes it from the recomputed eligible set. So
+re-applying — whether after a success or after an interruption — only re-attempts
+versions that are still eligible (a failed delete's marker is cleared so its
+retry re-attempts it); an already-deleted version is never re-deleted. The next
+sweep removes the version from the snapshot and clears the stale marker.
 
 ## Reading the audit log
 
@@ -149,14 +154,14 @@ curl -s -X PUT "http://localhost:8080/ext/v1/tables/<id>/versions/<vid>/protect"
   -d '{"protected": true}' | python3 -m json.tool
 ```
 
-This is a leader-only write. Protected versions are excluded from eligibility
-in dry-run and apply, and are additionally skipped as a last line of defense
-in the delete loop. Clear with `{"protected": false}`.
+This writes the version id into the table's authored overlay (ETag CAS).
+Protected versions are excluded from eligibility in dry-run and apply. Clear
+with `{"protected": false}`.
 
 ## Known caveats
 
 These are documented in-scope behaviors an operator must understand. They are
-not bugs; they are inherent to the v1.0.0 design and are called out here so
+not bugs; they are inherent to the design and are called out here so
 they are not surprising during an incident or audit.
 
 ### (a) `reclaimable_bytes` is logical/deduped size, not physical footprint
@@ -182,45 +187,42 @@ not summed into any byte total (only subdirectories are recursed). This is a
 ~zero undercount in practice for standard Lance 8.0.0 layouts, but is a latent
 undercount if a future layout drops a file at the dataset root.
 
-### (b) The TTL apply audit-vs-registry write is not atomic across the two Lance tables
+### (b) The TTL apply audit write is not atomic with the S3 delete or the overlay markers
 
 `ttl_apply` does, per eligible version: delete the S3 prefix and collect an
-audit record for it. Then *after* the loop, in order: `append_ttl_audit` (the
-audit write, a Lance `Append`) **first**, then `persist_and_refresh_cache`
-(the registry write, a Lance `Overwrite`) that removes the deleted versions.
-These are two separate non-atomic Lance writes.
+audit record for it. Then *after* the loop, in order: `append_ttl_audit` (a
+Lance `Append`) **first**, then a conditional overlay write (CAS #2) that clears
+the markers of any *failed* deletes and keeps the succeeded ones as tombstones.
+These are separate, non-atomic writes.
 
-The audit is written **before** the registry removal deliberately. If the
-process crashes between the two writes, the deletions are already recorded in
-the durable audit log, but the registry still lists the (already-deleted)
-versions. That is self-healing: the next apply recomputes those versions as
-eligible, re-issues the delete (a NotFound no-op — the objects are already
-gone), removes them from the registry, and appends a **duplicate** audit
-record. So the residual failure mode is a possible *duplicate* audit entry on
-crash + retry, never a *lost* one.
+The audit is written **before** the marker CAS deliberately. If the process
+crashes between the S3 delete and the audit write, the version is gone from S3
+but not yet audited; that is self-healing because the version still carries its
+`deleting` marker (stamped by CAS #1 before the delete), and the derived
+snapshot still lists it until the next sweep — so a re-apply recomputes it,
+re-issues the delete (a NotFound no-op — the objects are already gone), and
+appends the audit record then. The residual failure mode is a possible
+*duplicate* audit entry on crash + retry, never a *lost* one.
 
-This ordering is the deliberate safer choice: the audit log is the only
-durable evidence that an irreversible hard-delete happened, so audit
-completeness is prioritized over audit dedup. (The audit write also uses Lance
-`Append`, not a read-all-then-`Overwrite` rewrite, so a transient read error
-can never truncate prior audit history.) True atomicity across the two Lance
-tables would need a transaction spanning both, which is out of scope for
-v1.0.0.
+This ordering is the deliberate safer choice: the audit log is the only durable
+evidence that an irreversible hard-delete happened, so audit completeness is
+prioritized over audit dedup. (The audit write uses Lance `Append`, not a
+read-all-then-`Overwrite` rewrite, so a transient read error can never truncate
+prior audit history.)
 
 **Operational implication:** the audit log never *under*-records a completed
 delete, but may contain a duplicate record for a version whose apply was
 interrupted and retried. When reconciling, de-duplicate audit records by
-`(table_id, version_id)`. The registry remains the source of truth for "what
-versions exist"; the audit log is the durable history of deletions.
+`(table_id, version_id)`. The audit log is the durable history of deletions.
 
 ### (c) Partial-failure behavior (no rollback, by design)
 
 If a deletion errors partway through the eligible list (e.g. a transient
 object-store error on one version's prefix), versions successfully deleted
-*before* the error are still persisted (removed from the registry, audited) —
-they are **not** rolled back. An S3 delete cannot be un-done, so recording
-what actually happened is safer than pretending the whole call failed
-atomically.
+*before* the error are still audited and keep their `deleting` tombstone — they
+are **not** rolled back. An S3 delete cannot be un-done, so recording what
+actually happened is safer than pretending the whole call failed atomically. The
+failed version's marker is cleared so a retry re-attempts it.
 
 In the partial-failure case the apply endpoint returns a `500` naming which
 version(s) failed. The caller can retry the apply, which will only re-attempt

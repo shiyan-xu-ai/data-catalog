@@ -1,0 +1,33 @@
+name = "lance-catalog"
+
+# AWS credentials for S3 come from Secret Manager (there is no ambient AWS
+# credential on Cloud Run). Set them with:
+#   apps-platform app secret set AWS_ACCESS_KEY_ID <id>
+#   apps-platform app secret set AWS_SECRET_ACCESS_KEY <key>
+enable_secrets = true
+
+# S3 is the sole store; no managed database or bucket mount is used.
+enable_mysql = false
+enable_postgres = false
+enable_gcs_fuse = false
+
+[cloudrun]
+port = 8080
+cpu = "1"
+memory = "1Gi"
+# Enable only if the S3 bucket policy allowlists a fixed source IP; the static
+# egress IPs per environment are in the platform docs.
+use_static_egress_ip = false
+
+[cloudrun.env_vars]
+# Non-secret runtime config. Adjust bucket names / region per environment.
+AWS_DEFAULT_REGION = "us-east-1"
+CATALOG_SWEEP_ROOT_URI = "s3://onroad-perception-datasets-staging/scenario_dataset_export"
+CATALOG_REGISTRY_PATH = "s3://catalog-staging-data/_catalog/registry"
+CATALOG_TTL_AUDIT_PATH = "s3://catalog-staging-data/_catalog/ttl_audit"
+CATALOG_META_BASE_URI = "s3://catalog-staging-data/_catalog/meta"
+RUST_LOG = "info"
+
+[metadata]
+owner = "shiyan.xu@applied.co"
+description = "S3-native metadata catalog for Lance tables"

@@ -1,0 +1,23 @@
+# Keep the build context small and hermetic: everything the image needs is
+# rebuilt inside the Dockerfile stages.
+.git
+.gitignore
+.dockerignore
+.gcloudignore
+
+# Rust build output (rebuilt in the builder stage).
+target
+**/*.rs.bk
+
+# Frontend deps + build output (reinstalled/rebuilt in the frontend stage).
+node_modules
+frontend/node_modules
+frontend/dist
+dist
+
+# Planning / editor / OS cruft.
+.planning
+.claude
+.vscode
+.idea
+.DS_Store

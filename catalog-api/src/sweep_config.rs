@@ -1,15 +1,14 @@
-//! Build a `catalog_store::SweepConfig` from a root URI: `s3://bucket/prefix` in prod (via
-//! IRSA/env credentials), or a plain filesystem path for local dev and tests.
+//! Build a `catalog_store::SweepConfig` from a root URI: `s3://bucket/prefix` in prod, or a plain
+//! filesystem path for local dev and tests.
 //!
-//! For `s3://` URIs the object store is built with `object_store::parse_url_opts` feeding in
-//! every `AWS_*` environment variable recognized by `AmazonS3ConfigKey`. This is what makes the
-//! local overlay's MinIO endpoint (`AWS_ENDPOINT_URL`), static credentials, `AWS_ALLOW_HTTP`,
-//! and path-style flag actually reach the S3 client — a bare `parse_url` (empty opts) builds the
-//! client via `AmazonS3Builder::new()`/`Default`, which reads NO environment, so the overlay's
-//! config would be silently dropped and the sweep would target real AWS instead of MinIO.
-//! In prod no `AWS_*` endpoint env is set and IRSA supplies credentials through the standard
-//! chain, so the env-derived options map is empty (or only sets region) and the client resolves
-//! real S3 as before.
+//! For `s3://` URIs the object store is built with `object_store::parse_url_opts` feeding in every
+//! `AWS_*` environment variable recognized by `AmazonS3ConfigKey`, plus any credentials the caller
+//! hydrated from Secret Manager (see [`crate::secrets`]). The env vars are what make the local
+//! overlay's MinIO endpoint (`AWS_ENDPOINT_URL`), `AWS_ALLOW_HTTP`, and path-style flag reach the
+//! S3 client — a bare `parse_url` (empty opts) builds the client via `AmazonS3Builder::new()`,
+//! which reads NO environment, so that config would be silently dropped. On Cloud Run the access
+//! keys come from Secret Manager (there is no ambient AWS credential) and region/endpoint come
+//! from plain `[cloudrun].env_vars`.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -50,11 +49,18 @@ fn aws_s3_opts_from_env() -> Vec<(String, String)> {
     opts
 }
 
-pub fn build_sweep_config(root_uri: &str) -> Result<SweepConfig> {
+/// The full S3 option set: `AWS_*` env vars plus any credentials hydrated from Secret Manager
+/// (`extra`, appended last so a Secret Manager value wins on the rare key overlap).
+fn s3_opts(extra: &[(String, String)]) -> Vec<(String, String)> {
+    let mut opts = aws_s3_opts_from_env();
+    opts.extend(extra.iter().cloned());
+    opts
+}
+
+pub fn build_sweep_config(root_uri: &str, extra_opts: &[(String, String)]) -> Result<SweepConfig> {
     if root_uri.contains("://") {
         let url = url::Url::parse(root_uri).context("parse sweep root URI")?;
-        let opts = aws_s3_opts_from_env();
-        let (store, path) = object_store::parse_url_opts(&url, opts)
+        let (store, path) = object_store::parse_url_opts(&url, s3_opts(extra_opts))
             .context("build object store for sweep root")?;
         Ok(SweepConfig::new(
             Arc::from(store),
@@ -70,6 +76,36 @@ pub fn build_sweep_config(root_uri: &str) -> Result<SweepConfig> {
             root_uri.to_string(),
         ))
     }
+}
+
+/// Build the authored-overlay [`MetaStore`] from `uri`. Because the overlay is mutated with
+/// conditional writes (ETag CAS), the backing store must support them:
+/// - `memory` — an `InMemory` store (dev / local without MinIO / tests; NOT persistent).
+/// - `s3://bucket/prefix` — S3 or a MinIO-compatible endpoint (production, local dev). AWS_*
+///   env is applied exactly as for the sweep store.
+///
+/// A plain filesystem path is rejected: `object_store`'s `LocalFileSystem` does not implement
+/// `PutMode::Update`, so overlay mutations would fail at runtime.
+pub fn build_meta_store(
+    uri: &str,
+    extra_opts: &[(String, String)],
+) -> Result<catalog_store::MetaStore> {
+    if uri == "memory" {
+        return Ok(catalog_store::MetaStore::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            ObjPath::from(""),
+        ));
+    }
+    if uri.contains("://") {
+        let url = url::Url::parse(uri).context("parse overlay base URI")?;
+        let (store, path) = object_store::parse_url_opts(&url, s3_opts(extra_opts))
+            .context("build object store for overlay")?;
+        return Ok(catalog_store::MetaStore::new(Arc::from(store), path));
+    }
+    anyhow::bail!(
+        "CATALOG_META_BASE_URI must be `memory` or an s3://... URI (LocalFileSystem does not \
+         support the conditional writes the overlay needs), got {uri:?}"
+    )
 }
 
 #[cfg(test)]
