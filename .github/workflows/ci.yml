@@ -100,8 +100,13 @@ jobs:
       # lance-encoding (transitive dep via lance) compiles .proto files in a
       # build script and requires the protoc binary at build time. The dev box
       # has it; ubuntu-latest does not.
+      # repo-token authenticates the action's GitHub release lookup — without it
+      # the unauthenticated call shares the runner IP's 60 req/hr quota and
+      # intermittently fails with "API rate limit exceeded".
       - name: Install protoc
         uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       # lld linker for the RUSTFLAGS=-fuse-ld=lld above. Must precede cargo.
       - name: Install lld
