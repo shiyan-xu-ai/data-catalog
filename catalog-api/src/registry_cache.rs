@@ -82,25 +82,41 @@ mod tests {
             Duration::from_millis(20),
         );
 
-        // Nothing written yet: cache stays empty, but a successful read (registry-absent) still
-        // marks the pod hydrated (storage reachable, empty-but-ready).
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Nothing written yet, but a successful read (registry-absent) still marks the pod
+        // hydrated. Poll with a deadline rather than a fixed sleep so this is robust under slow
+        // CI scheduling (a fixed 50ms wait against the 20ms refresh interval was flaky).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !hydrated.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "refresh loop never completed a read to mark the pod hydrated"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Nothing has been written yet, so the cache must still be empty.
         assert!(cache.read().await.is_empty());
-        assert!(
-            hydrated.load(Ordering::SeqCst),
-            "a successful registry-absent read must mark the pod hydrated"
-        );
 
-        // Write the registry "out of band" (as the leader's sweep loop would).
+        // Write the registry "out of band" (as the leader's sweep loop would), then poll until
+        // the refresh loop picks it up.
         catalog_core::write_registry(&path, &[sample_entry("t1")])
             .await
             .unwrap();
 
-        // Wait for at least one refresh tick to pick it up.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let cached = cache.read().await;
-        assert_eq!(cached.len(), 1);
-        assert_eq!(cached[0].id, "t1");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            {
+                let cached = cache.read().await;
+                if cached.len() == 1 {
+                    assert_eq!(cached[0].id, "t1");
+                    break;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "refresh loop never picked up the out-of-band registry write"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
 
         handle.abort();
     }
