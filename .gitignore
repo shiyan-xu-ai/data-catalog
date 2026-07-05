@@ -8,6 +8,6 @@ Cargo.lock.bak
 *.swp
 .DS_Store
 
-# Frontend (future phases)
+# Frontend build output and deps
 node_modules/
 dist/

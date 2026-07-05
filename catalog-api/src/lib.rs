@@ -1,13 +1,11 @@
-//! `catalog-api` library: config, leader election, sweep loop, and registry-cache modules,
-//! shared between the `catalog-api` binary and its integration tests.
+//! `catalog-api` library: config, the merged read model, the sweep, and API routing, shared
+//! between the `catalog-api` binary and its integration tests.
 
 pub mod api;
+pub mod catalog;
 pub mod config;
-pub mod internal_server;
-pub mod leader;
-pub mod metrics;
-pub mod registry_cache;
-pub mod registry_lock;
+pub mod secrets;
 pub mod shutdown;
+pub mod sweep;
 pub mod sweep_config;
-pub mod sweep_loop;
+pub mod webui;

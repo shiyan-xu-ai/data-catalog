@@ -22,17 +22,12 @@ serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 object_store.workspace = true
-async-trait.workspace = true
-kube.workspace = true
-k8s-openapi.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["json", "env-filter", "fmt"] }
 url.workspace = true
-tower-http = { version = "0.6", features = ["cors"] }
-metrics.workspace = true
-metrics-exporter-prometheus.workspace = true
-tokio-metrics.workspace = true
-metrics-process.workspace = true
+tower-http = { version = "0.6", features = ["fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile.workspace = true

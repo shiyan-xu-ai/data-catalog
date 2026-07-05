@@ -1,0 +1,21 @@
+# Files not uploaded to Cloud Build. The container is built from the Dockerfile,
+# so build artifacts, VCS, and local dev cruft are excluded.
+.git/
+.gitignore
+.gcloudignore
+
+# Rust build output (rebuilt inside the Docker builder stage).
+target/
+**/*.rs.bk
+
+# Frontend build output + deps (rebuilt inside the Docker frontend stage).
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+
+# Planning / editor cruft.
+.planning/
+.vscode/
+.idea/
+.DS_Store

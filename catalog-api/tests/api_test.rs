@@ -1,33 +1,35 @@
 //! Integration tests for the public REST API (`catalog-api/src/api.rs`), driven straight
-//! against the axum `Router` via `tower::ServiceExt::oneshot` -- no real TCP listener needed,
-//! matching the level `axum::Router` test utilities operate at (Phase 4's
-//! `leader_sweep_test.rs` drives loop code directly rather than binding a socket; this test
-//! does the analogous thing for the HTTP layer).
+//! against the axum `Router` via `tower::ServiceExt::oneshot` -- no real TCP listener needed.
+//!
+//! The app is wired the way `main.rs` wires it: a derived registry snapshot on disk (written by
+//! the sweep in production, seeded here) plus an authored overlay ([`catalog_store::MetaStore`])
+//! backed by `InMemory` -- object-store conditional writes (ETag CAS) are the whole point of the
+//! overlay, and `LocalFileSystem` doesn't implement them, so the overlay must be `InMemory` in
+//! tests while the sweep/TTL data path stays on `LocalFileSystem`.
 
-use std::sync::atomic::AtomicBool;
+use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use catalog_api_lib::api::{api_router, ApiState};
-use catalog_api_lib::leader::LeaderState;
-use catalog_api_lib::registry_cache::RegistryCache;
-use catalog_api_lib::registry_lock;
+use catalog_api_lib::catalog::Catalog;
 use catalog_core::{
     AuxEntry, AuxFormat, Namespace, TableEntry, TableVersion, TtlPolicy, VersionShape,
 };
-use catalog_store::SweepConfig;
+use catalog_store::{MetaStore, SweepConfig, TableMeta};
 use chrono::{TimeZone, Utc};
 use http_body_util::BodyExt;
 use object_store::local::LocalFileSystem;
+use object_store::memory::InMemory;
 use object_store::path::Path as ObjPath;
-use tokio::sync::RwLock;
 use tower::ServiceExt;
 
 mod common;
 
-fn fixture_version(id: &str, protected: bool) -> TableVersion {
+fn fixture_version(id: &str) -> TableVersion {
     let ts = Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap();
     TableVersion {
         version_id: id.to_string(),
@@ -35,7 +37,8 @@ fn fixture_version(id: &str, protected: bool) -> TableVersion {
         snapshot_path: format!("s3://bucket/smoke_test/{id}"),
         shape: VersionShape::Full,
         partial: false,
-        protected,
+        // Derived snapshot never carries protection; it comes from the overlay at merge time.
+        protected: false,
         storage_bytes_total: 100,
         lance_core_bytes: 60,
         sidecar_bytes: 0,
@@ -58,7 +61,7 @@ fn fixture_version(id: &str, protected: bool) -> TableVersion {
 }
 
 fn fixture_entry() -> TableEntry {
-    let version = fixture_version("2026-06-26T12:00:00Z", false);
+    let version = fixture_version("2026-06-26T12:00:00Z");
     TableEntry {
         id: "smoke_test".to_string(),
         name: "smoke_test".to_string(),
@@ -72,24 +75,28 @@ fn fixture_entry() -> TableEntry {
     }
 }
 
-/// Build a test app: a fresh Lance registry on disk seeded with `entries`, an in-memory cache
-/// pre-populated with the same entries (as the refresh loop would have done), and a fixed
-/// leader/non-leader state (no real k8s Lease -- mirrors how `leader_sweep_test.rs` uses a
-/// plain `AtomicBool` in place of `KubeLeaseElector`). The `ApiState`'s `sweep_cfg` points at a
-/// throwaway, never-populated sweep root -- fine for every test except TTL `apply`, which uses
-/// `test_app_with_sweep_cfg` instead so it can seed real objects to delete.
-async fn test_app(entries: Vec<TableEntry>, leader: bool) -> (Router, String, tempfile::TempDir) {
-    let sweep_root_dir = tempfile::tempdir().unwrap();
-    let sweep_cfg = common::sweep_config(sweep_root_dir.path());
-    test_app_with_sweep_cfg(entries, leader, sweep_cfg).await
+/// Build a test app: a fresh Lance registry snapshot on disk seeded with `entries` (the derived
+/// state the sweep produces) plus an `InMemory` authored overlay seeded with `overlays` (the
+/// owner/ttl_policy/protected the API mutates). `cache_ttl` is zero so every read revalidates
+/// against storage -- read-your-writes is deterministic without depending on cache timing. The
+/// `sweep_cfg` points at a throwaway, never-populated sweep root, fine for every test except TTL
+/// `apply`, which uses `test_app_with_sweep_cfg` so it can seed real objects to delete.
+async fn test_app(
+    entries: Vec<TableEntry>,
+    overlays: Vec<(&str, TableMeta)>,
+) -> (Router, tempfile::TempDir, tempfile::TempDir) {
+    let sweep_dir = tempfile::tempdir().unwrap();
+    let sweep_cfg = common::sweep_config(sweep_dir.path());
+    let (app, _ttl_audit, reg_dir) = test_app_with_sweep_cfg(entries, overlays, sweep_cfg).await;
+    (app, reg_dir, sweep_dir)
 }
 
 /// Like `test_app`, but the caller supplies (and keeps alive) the `SweepConfig` wired into
-/// `ApiState` -- needed by the TTL `apply` tests, which must seed real objects into the same
-/// object store `ttl_apply` will delete from.
+/// `ApiState` -- needed by the TTL `apply` test, which seeds real objects into the same object
+/// store `ttl_apply` deletes from. Returns the audit-log path so the test can read it back.
 async fn test_app_with_sweep_cfg(
     entries: Vec<TableEntry>,
-    leader: bool,
+    overlays: Vec<(&str, TableMeta)>,
     sweep_cfg: SweepConfig,
 ) -> (Router, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -109,18 +116,14 @@ async fn test_app_with_sweep_cfg(
         .unwrap()
         .to_string();
 
-    let cache: RegistryCache = Arc::new(RwLock::new(entries));
-    let leader_state: LeaderState = Arc::new(AtomicBool::new(leader));
-    let write_lock = registry_lock::new_registry_write_lock();
-    let state = ApiState::new(
-        registry_path.clone(),
-        cache,
-        leader_state,
-        write_lock,
-        sweep_cfg,
-        ttl_audit_path,
-    );
-    (api_router(state), registry_path, dir)
+    let meta = MetaStore::new(Arc::new(InMemory::new()), ObjPath::from("_catalog/meta"));
+    for (id, tm) in overlays {
+        meta.mutate_meta(id, |m| *m = tm.clone()).await.unwrap();
+    }
+
+    let catalog = Catalog::new(registry_path, meta.clone(), Duration::ZERO);
+    let state = ApiState::new(catalog, meta, sweep_cfg, ttl_audit_path.clone());
+    (api_router(state), ttl_audit_path, dir)
 }
 
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
@@ -128,19 +131,18 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+async fn get(app: &Router, uri: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn list_tables_returns_identifier_strings() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/tables")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let resp = get(&app, "/v1/tables").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["tables"], serde_json::json!(["smoke_test"]));
@@ -148,40 +150,23 @@ async fn list_tables_returns_identifier_strings() {
 
 #[tokio::test]
 async fn describe_table_returns_full_detail_and_404s_for_unknown_id() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
 
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/v1/table/smoke_test")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let resp = get(&app, "/v1/table/smoke_test").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["id"], "smoke_test");
     assert_eq!(json["versions"].as_array().unwrap().len(), 1);
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/table/does_not_exist")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let resp = get(&app, "/v1/table/does_not_exist").await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let json = body_json(resp).await;
     assert_eq!(json["error_code"], 4);
 }
 
 #[tokio::test]
-async fn declare_table_sets_owner_and_is_visible_on_subsequent_describe() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
+async fn declare_table_writes_owner_to_overlay_and_is_visible_immediately() {
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
 
     let resp = app
         .clone()
@@ -196,28 +181,17 @@ async fn declare_table_sets_owner_and_is_visible_on_subsequent_describe() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert_eq!(json["owner"], "raymond");
+    assert_eq!(body_json(resp).await["owner"], "raymond");
 
-    // Subsequent DescribeTable on the SAME app instance sees the change immediately -- the
-    // handler refreshes the in-process cache synchronously after the write, rather than
-    // waiting on the periodic refresh loop (which isn't running at all in this test).
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/table/smoke_test")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let json = body_json(resp).await;
+    // Read-your-writes on the same instance: the handler invalidates the cache after the overlay
+    // write, so the next read merges the fresh overlay.
+    let json = body_json(get(&app, "/v1/table/smoke_test").await).await;
     assert_eq!(json["owner"], "raymond");
 }
 
 #[tokio::test]
-async fn declare_table_on_unknown_id_creates_a_stub_entry() {
-    let (app, _path, _dir) = test_app(vec![], true).await;
+async fn declare_table_on_unknown_id_materializes_an_overlay_only_stub() {
+    let (app, _r, _s) = test_app(vec![], vec![]).await;
 
     let resp = app
         .clone()
@@ -235,30 +209,26 @@ async fn declare_table_on_unknown_id_creates_a_stub_entry() {
     let json = body_json(resp).await;
     assert_eq!(json["id"], "brand_new_table");
     assert_eq!(json["owner"], "raymond");
+    // No sweep has observed it yet: the stub has authored state but no derived versions.
     assert_eq!(json["versions"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
-async fn mutation_on_a_non_leader_pod_is_rejected_with_503() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], false).await;
+async fn deregister_clears_authored_overlay_but_keeps_the_derived_entry() {
+    // A table present on S3 (derived snapshot) with an authored owner overlaid on top.
+    let overlay = (
+        "smoke_test",
+        TableMeta {
+            owner: Some("raymond".into()),
+            ..Default::default()
+        },
+    );
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![overlay]).await;
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/v1/table/smoke_test")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"owner":"raymond"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-}
-
-#[tokio::test]
-async fn deregister_table_removes_it_and_subsequent_describe_404s() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
+    assert_eq!(
+        body_json(get(&app, "/v1/table/smoke_test").await).await["owner"],
+        "raymond"
+    );
 
     let resp = app
         .clone()
@@ -273,10 +243,17 @@ async fn deregister_table_removes_it_and_subsequent_describe_404s() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
+    // The derived entry survives (S3 truth is unchanged); only the authored fields are cleared.
+    let json = body_json(get(&app, "/v1/table/smoke_test").await).await;
+    assert_eq!(json["id"], "smoke_test");
+    assert!(json["owner"].is_null());
+
+    // Deregistering a table that isn't cataloged at all is a 404.
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/v1/table/smoke_test")
+                .method("DELETE")
+                .uri("/v1/table/never_existed")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -286,48 +263,25 @@ async fn deregister_table_removes_it_and_subsequent_describe_404s() {
 }
 
 #[tokio::test]
-async fn ext_list_tables_returns_enriched_data_with_versions_and_aux() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
+async fn ext_get_version_returns_detail_and_404s_for_unknown_version() {
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/ext/v1/tables?expand=versions,stats,aux")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let resp = get(
+        &app,
+        "/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z",
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    let tables = json.as_array().unwrap();
-    assert_eq!(tables.len(), 1);
-    let versions = tables[0]["versions"].as_array().unwrap();
-    assert_eq!(versions.len(), 1);
-    assert!(!versions[0]["aux"].as_array().unwrap().is_empty());
+    assert_eq!(body_json(resp).await["version_id"], "2026-06-26T12:00:00Z");
+
+    let resp = get(&app, "/ext/v1/tables/smoke_test/versions/nope").await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body_json(resp).await["error_code"], 11);
 }
 
 #[tokio::test]
-async fn ext_get_version_returns_single_version_detail() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
-
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert_eq!(json["version_id"], "2026-06-26T12:00:00Z");
-}
-
-#[tokio::test]
-async fn protect_endpoint_sets_the_flag_and_is_visible_via_version_detail() {
-    let (app, _path, _dir) = test_app(vec![fixture_entry()], true).await;
+async fn protect_endpoint_writes_the_flag_to_the_overlay_and_it_merges_into_the_view() {
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
 
     let resp = app
         .clone()
@@ -342,33 +296,28 @@ async fn protect_endpoint_sets_the_flag_and_is_visible_via_version_detail() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert_eq!(json["protected"], true);
+    assert_eq!(body_json(resp).await["protected"], true);
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z")
-                .body(Body::empty())
-                .unwrap(),
+    let json = body_json(
+        get(
+            &app,
+            "/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z",
         )
-        .await
-        .unwrap();
-    let json = body_json(resp).await;
+        .await,
+    )
+    .await;
     assert_eq!(json["protected"], true);
 }
 
 /// Build a TTL fixture `TableVersion` whose `snapshot_path` resolves (via `sweep_cfg.uri_for`)
 /// to `<table>/<ts_dir>` in `sweep_cfg`'s backing object store -- so `ttl_apply`'s
-/// `path_for(snapshot_path)` round-trips back to the real prefix a test may have seeded
-/// objects under.
+/// `path_for(snapshot_path)` round-trips back to the real prefix a test seeded objects under.
 fn ttl_fixture_version(
     sweep_cfg: &SweepConfig,
     table: &str,
     ts_dir: &str,
     days_ago: i64,
     shape: VersionShape,
-    protected: bool,
 ) -> TableVersion {
     let ts = Utc::now() - chrono::Duration::days(days_ago);
     let snapshot_path = sweep_cfg.uri_for(&ObjPath::from(format!("{table}/{ts_dir}")));
@@ -378,7 +327,7 @@ fn ttl_fixture_version(
         snapshot_path,
         shape,
         partial: !matches!(shape, VersionShape::Full),
-        protected,
+        protected: false,
         storage_bytes_total: 10,
         lance_core_bytes: 10,
         sidecar_bytes: 0,
@@ -390,6 +339,20 @@ fn ttl_fixture_version(
         num_indices: None,
         aux: Vec::new(),
         swept_at: ts,
+    }
+}
+
+/// The overlay a TTL test seeds: the authored policy plus the protected version id. `eligible_under`
+/// reads the policy and protection from the fresh overlay, so both must live here, not on the
+/// derived snapshot entry.
+fn ttl_overlay(protected: &str) -> TableMeta {
+    TableMeta {
+        ttl_policy: Some(TtlPolicy {
+            keep_last_n: Some(1),
+            max_age_days: Some(30),
+        }),
+        protected: BTreeSet::from([protected.to_string()]),
+        ..Default::default()
     }
 }
 
@@ -412,7 +375,6 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         "2020-01-01T00-00-00",
         2000,
         VersionShape::Full,
-        false,
     );
     let recent = ttl_fixture_version(
         &sweep_cfg,
@@ -420,7 +382,6 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         "2026-07-01T00-00-00",
         1,
         VersionShape::Full,
-        false,
     );
     let protected_old = ttl_fixture_version(
         &sweep_cfg,
@@ -428,7 +389,6 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         "2020-06-01T00-00-00",
         1900,
         VersionShape::Full,
-        true,
     );
     let partial_old = ttl_fixture_version(
         &sweep_cfg,
@@ -436,7 +396,6 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         "2019-01-01T00-00-00",
         2500,
         VersionShape::LanceOnlyPartial,
-        false,
     );
 
     let entry = TableEntry {
@@ -445,10 +404,7 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         namespace: Namespace::new(["ns"]),
         root_location: "whatever".to_string(),
         owner: None,
-        ttl_policy: Some(TtlPolicy {
-            keep_last_n: Some(1),
-            max_age_days: Some(30),
-        }),
+        ttl_policy: None,
         last_swept: None,
         versions: vec![
             eligible_old.clone(),
@@ -458,22 +414,16 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         ],
         aux_latest: Vec::new(),
     };
+    let overlay = ("t1", ttl_overlay(&protected_old.version_id));
 
-    let (app, _path, _dir) = test_app_with_sweep_cfg(vec![entry], true, sweep_cfg).await;
+    let (app, _ttl_audit, _dir) =
+        test_app_with_sweep_cfg(vec![entry], vec![overlay], sweep_cfg).await;
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/ext/v1/tables/t1/ttl/dryrun")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let resp = get(&app, "/ext/v1/tables/t1/ttl/dryrun").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     // Only `eligible_old` clears both thresholds; `recent` is within keep_last_n, `protected_old`
-    // is exempt regardless of policy, and `partial_old`'s shape fails the safety gate.
+    // is exempt via the overlay, and `partial_old`'s shape fails the safety gate.
     assert_eq!(
         json["candidates"],
         serde_json::json!([eligible_old.version_id])
@@ -482,7 +432,7 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
 }
 
 #[tokio::test]
-async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempotent() {
+async fn ttl_apply_deletes_objects_writes_audit_hides_version_and_is_idempotent() {
     let sweep_root_dir = tempfile::tempdir().unwrap();
     let store = LocalFileSystem::new_with_prefix(sweep_root_dir.path()).unwrap();
     let sweep_cfg = common::sweep_config(sweep_root_dir.path());
@@ -512,7 +462,6 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         "2020-01-01T00-00-00",
         2000,
         VersionShape::Full,
-        false,
     );
     let recent = ttl_fixture_version(
         &sweep_cfg,
@@ -520,7 +469,6 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         "2026-07-01T00-00-00",
         1,
         VersionShape::Full,
-        false,
     );
     let protected_old = ttl_fixture_version(
         &sweep_cfg,
@@ -528,7 +476,6 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         "2020-06-01T00-00-00",
         1900,
         VersionShape::Full,
-        true,
     );
 
     let entry = TableEntry {
@@ -537,23 +484,15 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         namespace: Namespace::new(["ns"]),
         root_location: "whatever".to_string(),
         owner: None,
-        ttl_policy: Some(TtlPolicy {
-            keep_last_n: Some(1),
-            max_age_days: Some(30),
-        }),
+        ttl_policy: None,
         last_swept: None,
         versions: vec![eligible_old.clone(), recent.clone(), protected_old.clone()],
         aux_latest: Vec::new(),
     };
+    let overlay = ("t1", ttl_overlay(&protected_old.version_id));
 
-    let (app, _registry_path, dir) =
-        test_app_with_sweep_cfg(vec![entry], true, sweep_cfg.clone()).await;
-    let ttl_audit_path = dir
-        .path()
-        .join("ttl_audit.lance")
-        .to_str()
-        .unwrap()
-        .to_string();
+    let (app, ttl_audit_path, _dir) =
+        test_app_with_sweep_cfg(vec![entry], vec![overlay], sweep_cfg.clone()).await;
 
     let resp = app
         .clone()
@@ -573,8 +512,7 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         serde_json::json!([eligible_old.version_id])
     );
 
-    // The deleted version's objects are gone; the kept and protected versions' objects
-    // remain untouched.
+    // The deleted version's objects are gone; the kept and protected versions' objects remain.
     let deleted_prefix = sweep_cfg.path_for(&eligible_old.snapshot_path).unwrap();
     let deleted_bytes = catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &deleted_prefix)
         .await
@@ -597,18 +535,9 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         "protected version's objects must never be deleted"
     );
 
-    // Registry no longer lists the deleted version; protected/kept versions remain.
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/v1/table/t1")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let json = body_json(resp).await;
+    // View no longer lists the deleted version (hidden by the `deleting` tombstone until the next
+    // sweep reconciles it out of the snapshot); protected/kept versions remain.
+    let json = body_json(get(&app, "/v1/table/t1").await).await;
     let mut version_ids: Vec<String> = json["versions"]
         .as_array()
         .unwrap()
@@ -631,7 +560,7 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
     assert_eq!(audit[0].version_id, eligible_old.version_id);
     assert_eq!(audit[0].actor, "ttl-engine");
 
-    // Idempotent: re-applying finds nothing eligible (already deleted) -- no-op, not an error.
+    // Idempotent: re-applying finds nothing eligible (the `deleting` marker excludes it) -- no-op.
     let resp = app
         .oneshot(
             Request::builder()
@@ -643,8 +572,10 @@ async fn ttl_apply_deletes_objects_writes_audit_removes_version_and_is_idempoten
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    assert_eq!(json["deleted"], serde_json::json!(Vec::<String>::new()));
+    assert_eq!(
+        body_json(resp).await["deleted"],
+        serde_json::json!(Vec::<String>::new())
+    );
 
     let audit_after = catalog_core::read_ttl_audit(&ttl_audit_path)
         .await

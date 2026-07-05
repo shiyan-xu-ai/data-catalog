@@ -1,84 +1,89 @@
 # Data Catalog
 
 A Lance data catalog service: an S3-native metadata catalog for Lance tables,
-written in Rust (axum + tower, the `lance` crate, `object_store`, `kube-rs`).
+written in Rust (axum, the `lance` crate, `object_store`). It runs as a single
+stateless container on Applied's Apps Platform (Cloud Run).
 
-The service periodically sweeps an S3 root, discovers timestamp-path versioned
-Lance tables, and records per-version metadata (shape, storage size split by
-component, row count, schema, aux entries) into a Lance-backed registry under
-`_catalog/`. A REST API exposes the catalog (basic ops + an enriched `/ext`
-listing) and a per-table TTL engine that hard-deletes old versions under an
-explicit API policy. A minimal static SPA (vanilla TS + Vite) is served from
-S3 + CloudFront for browsing and TTL operations. Prometheus + Grafana
-monitoring manifests ship in-repo.
+The service sweeps an S3 root, discovers timestamp-path versioned Lance tables,
+and records per-version metadata (shape, storage size split by component, row
+count, schema, aux entries) into a Lance-backed registry under `_catalog/`. A
+REST API exposes the catalog (basic ops + an enriched `/ext` listing) and a
+per-table TTL engine that hard-deletes old versions under an explicit API
+policy. A minimal static SPA (vanilla TS + Vite) is served from the same origin
+as the API for browsing and TTL operations.
 
-The full long-term design lives in [`docs/design.md`](docs/design.md); v1.0.0
-implements a subset (see [Known limitations](#known-limitations)). The
+The full long-term design lives in [`docs/design.md`](docs/design.md). The
 as-built architecture is documented in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+## State model: S3 is the sole store
+
+There is no database and no cross-instance coordinator (no leader election, no
+lock). All catalog state lives on S3, split by how it is produced:
+
+- **Derived state** — versions, shapes, byte splits, row counts, schemas, aux.
+  A pure function of immutable S3 content, so any full sweep can regenerate it.
+  The sweep writes the whole `_catalog/registry` Lance dataset **last-wins**,
+  with no coordination: concurrent or double-fired sweeps are safe.
+- **Authored state** — per-table `owner` + `ttl_policy` and per-version
+  `protected`. The only human-mutated data, stored as one small JSON object per
+  table at `_catalog/meta/<table_id>.json` and updated with object-store
+  conditional writes (ETag compare-and-set). A per-table object is its own
+  conflict domain, so S3 itself serializes concurrent edits — no app lock.
+
+A read merges the two back into the `TableEntry` wire shape the REST API and
+frontend expect. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full model.
 
 ## Workspace layout
 
 Cargo workspace with three crates:
 
 - `catalog-core` — shared types (`TableEntry`, `TableVersion`, `TtlPolicy`,
-  `TtlAuditRecord`, `AuxEntry`, `Namespace`, `VersionShape`, `AuxFormat`),
-  the Lance registry reader/writer, the idempotent `apply_sweep_result` merge,
-  and the TTL eligibility computation.
-- `catalog-store` — object-store IO and the S3 sweep (discovery, timestamp-path
+  `TtlAuditRecord`, `AuxEntry`, `Namespace`, `VersionShape`, `AuxFormat`), the
+  Lance registry reader/writer, the sweep-result reconcile, and the TTL
+  eligibility computation.
+- `catalog-store` — object-store IO, the S3 sweep (discovery, timestamp-path
   version classification, shape detection, per-component size split, aux format
-  detection, pre+post cutoff layout handling) plus the TTL hard-delete helper.
-- `catalog-api` — the `catalog-api` binary: the axum HTTP server, the
-  leader-elected sweep loop, the TTL engine, leader election via a k8s Lease,
-  the registry cache, and Prometheus instrumentation.
+  detection, pre+post cutoff layout handling), the TTL hard-delete helper, and
+  the authored-overlay ETag-CAS store (`MetaStore`).
+- `catalog-api` — the `catalog-api` binary: the axum HTTP server, the merged
+  read model, the request-triggered sweep, and the TTL engine.
 
 Additional directories:
 
 - `frontend/` — vanilla TS + Vite static SPA (table list, drill-down, TTL
-  dry-run/apply/audit). See [`frontend/docs/DEPLOY.md`](frontend/docs/DEPLOY.md).
-- `deploy/` — kustomize base + overlays (`local`, `staging`, `prod`) and the
-  in-repo Prometheus + Grafana monitoring stack. See
-  [`docs/RUNBOOK-DEPLOY.md`](docs/RUNBOOK-DEPLOY.md).
-- `docs/` — design doc, deploy + TTL runbooks, smoke-test procedure.
+  dry-run/apply/audit). Built into the container and served same-origin.
+- `docs/` — design doc, deploy + TTL runbooks.
 
-## Quickstart (local dev via Tilt + kind + MinIO)
+## Quickstart (run the API standalone)
 
-Prerequisites: [kind](https://kind.sigs.k8s.io/),
-[Tilt](https://docs.tilt.dev/install.html), `kubectl`, `aws` CLI.
+The binary runs directly against a local filesystem sweep root with an
+in-memory authored overlay — no S3, no cluster:
 
 ```sh
-kind create cluster --name catalog-dev
-tilt up   # open http://localhost:10350, wait for resources to turn green
-```
+# Build the SPA once so the server can serve it (optional; API works without it).
+cd frontend && bun install && bun run build && cd ..
 
-The local overlay (`deploy/overlays/local`) runs `catalog-api` (1 replica,
-forced- or kube-leader election), a MinIO instance serving as the sweep root,
-a fixture-init job that writes small Lance fixture tables into MinIO, and the
-Prometheus + Grafana monitoring stack. Tilt port-forwards the API pod's port
-8080 to `localhost:8080` and the internal metrics/healthz port 9090 to
-`localhost:9090`.
-
-Smoke-test the running stack (health, sweep populated the registry, TTL
-dry-run/apply, leader failover) by following
-[`docs/smoke-test.md`](docs/smoke-test.md).
-
-To run the frontend against the Tilt stack:
-
-```sh
-cd frontend && bun install && bun run dev
-# open http://localhost:5173 — the Vite dev proxy forwards /v1 and /ext to localhost:8080
-```
-
-### Running the API standalone (no cluster)
-
-For local development without a k8s cluster, `catalog-api` can run against a
-local filesystem sweep root with a forced leader state:
-
-```sh
-CATALOG_LEADER_MODE=forced-on \
 CATALOG_SWEEP_ROOT_URI=/path/to/local/sweep/root \
-CATALOG_REGISTRY_PATH=/tmp/catalog/registry \
-CATALOG_TTL_AUDIT_PATH=/tmp/catalog/ttl_audit \
+CATALOG_REGISTRY_PATH=/tmp/catalog/registry.lance \
+CATALOG_TTL_AUDIT_PATH=/tmp/catalog/ttl_audit.lance \
+CATALOG_META_BASE_URI=memory \
+CATALOG_WEBUI_DIR=frontend/dist \
 cargo run -p catalog-api
+# then, in another shell:
+curl -s -X POST localhost:8080/internal/jobs/sweep   # run one sweep
+curl -s localhost:8080/v1/tables                     # list discovered tables
+open http://localhost:8080/                          # the SPA
+```
+
+`CATALOG_META_BASE_URI=memory` uses a non-persistent in-memory overlay, which is
+fine for a quick local run. Persisting authored state needs an S3/MinIO overlay
+(`LocalFileSystem` does not implement the conditional writes the overlay uses).
+
+To run the frontend with hot-reload against a running API:
+
+```sh
+cd frontend && bun run dev
+# open http://localhost:5173 — the Vite dev proxy forwards /v1 and /ext to :8080
 ```
 
 ## Configuration
@@ -88,66 +93,58 @@ authoritative source). Defaults suit local dev / tests.
 
 | Env var | Default | Description |
 |---|---|---|
-| `CATALOG_BIND_ADDR` | `0.0.0.0:8080` | Bind address for the public REST API. |
-| `CATALOG_METRICS_BIND_ADDR` | `0.0.0.0:9090` | Bind address for the internal `/metrics` + `/healthz` server (network-policy-restricted; the main API router has no `/metrics` route). |
-| `CATALOG_LEADER_MODE` | `kube` | `kube` (real `coordination.k8s.io/v1` Lease), `forced-on` (always leader, no k8s API — local dev/tests), or `forced-off` (always non-leader). |
-| `CATALOG_LEASE_NAMESPACE` | `default` | k8s namespace for the Lease object (`kube` mode only). |
-| `CATALOG_LEASE_NAME` | `catalog-api-leader` | Lease object name (`kube` mode only). |
-| `CATALOG_POD_NAME` | `catalog-api-<pid>` | Holder identity advertised in the Lease (`kube` mode only; typically the downward-API pod name). |
-| `CATALOG_LEADER_TICK_INTERVAL_SECS` | `10` | How often the leader-election task re-ticks (acquire/renew attempt). |
-| `CATALOG_LEASE_DURATION_SECS` | `30` | Lease duration advertised to the k8s API (`kube` mode only). |
-| `CATALOG_REGISTRY_PATH` | `_catalog/registry` | URI (or relative path) of the `_catalog/registry` Lance dataset. |
-| `CATALOG_TTL_AUDIT_PATH` | `_catalog/ttl_audit` | URI (or relative path) of the `_catalog/ttl_audit` Lance dataset TTL `apply` appends to. |
-| `CATALOG_REGISTRY_REFRESH_INTERVAL_SECS` | `5` | How often every pod re-reads the registry into its in-memory cache. |
-| `CATALOG_SWEEP_ROOT_URI` | `s3://onroad-perception-datasets/scenario_dataset_export` | URI of the sweep root (S3 or local filesystem path for dev). |
-| `CATALOG_SWEEP_INTERVAL_SECS` | `1800` | How often the leader runs a full sweep pass (~30 min default). |
+| `PORT` | — | Injected by Cloud Run; when set, the server binds `0.0.0.0:$PORT`. |
+| `CATALOG_BIND_ADDR` | `0.0.0.0:8080` | Bind address when `PORT` is unset. |
+| `CATALOG_REGISTRY_PATH` | `_catalog/registry` | URI (or path) of the derived-snapshot Lance dataset. |
+| `CATALOG_TTL_AUDIT_PATH` | `_catalog/ttl_audit` | URI (or path) of the TTL audit Lance dataset. |
+| `CATALOG_META_BASE_URI` | `memory` | Base of the authored overlay objects: `memory` (in-memory, non-persistent) or `s3://bucket/prefix` (S3/MinIO). A plain filesystem path is rejected — the overlay needs conditional writes. |
+| `CATALOG_SWEEP_ROOT_URI` | `s3://onroad-perception-datasets/scenario_dataset_export` | Sweep root (S3 URI or local filesystem path). |
+| `CATALOG_CACHE_TTL_SECS` | `5` | How long the merged read view is served before it revalidates against storage. |
+| `CATALOG_WEBUI_DIR` | `frontend/dist` | Directory of the built SPA to serve at `/`. Absent → API-only. |
+| `CATALOG_SECRET_PREFIX` | `K_SERVICE` | Secret Manager name prefix for AWS credentials (Cloud Run sets `K_SERVICE` to the service name). |
 
-For the local MinIO overlay, S3 endpoint/credentials are supplied via the
-standard `AWS_*` env vars (`AWS_ENDPOINT`, `AWS_ALLOW_HTTP`,
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, etc.) consumed by
-`object_store::parse_url_opts` and Lance's `AwsStoreProvider`. See
-`deploy/overlays/local/configmap-patch.yaml`.
+AWS S3 credentials: on Cloud Run they are read from Secret Manager at startup
+(there is no ambient AWS credential — see [`ARCHITECTURE.md`](ARCHITECTURE.md)
+and the [deploy runbook](docs/RUNBOOK-DEPLOY.md)). Locally, the standard `AWS_*`
+env vars (`AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+`AWS_ALLOW_HTTP`, `AWS_VIRTUAL_HOSTED_STYLE_REQUEST`, `AWS_DEFAULT_REGION`) are
+consumed by `object_store::parse_url_opts`, so an `AWS_ENDPOINT_URL` pointed at
+MinIO exercises the real conditional-write path.
 
 ## REST API surface
 
 The public router (`/v1` + `/ext/v1`) is wired in `catalog-api/src/api.rs`.
-Read endpoints serve from the in-memory registry cache on every pod; mutation
-endpoints are leader-only (503 on a non-leader pod — clients retry; no
-cross-pod forwarding in v1.0.0).
+Reads serve the merged view (derived snapshot + authored overlay), lazily
+revalidated. Any instance can serve any request — reads and mutations alike —
+because the snapshot is written last-wins and the overlay is serialized per
+table by S3's conditional writes.
 
-- `GET /healthz` — liveness (on the internal port).
-- `GET /v1/namespaces` — list distinct namespaces (derived from registered tables).
+- `GET /healthz` — liveness (`ok` from boot).
+- `GET /readyz` — readiness; `503` until the first successful view load, then `200`.
+- `GET /v1/namespaces` — list distinct namespaces (derived from cataloged tables).
 - `GET /v1/namespaces/:id` — describe a namespace (id is `.`-joined path).
 - `GET /v1/tables` — list table ids.
 - `GET /v1/table/:id` — describe a table (full `TableEntry`).
-- `PUT /v1/table/:id` — declare/update a table (set `owner`/`ttl_policy`; idempotent; leader-only).
-- `DELETE /v1/table/:id` — deregister a table (leader-only; the next sweep re-discovers a table that still exists on S3).
-- `GET /ext/v1/tables?expand=...` — enriched listing (always returns full detail, no pagination in v1.0.0).
+- `PUT /v1/table/:id` — declare/update a table (set `owner`/`ttl_policy`; idempotent).
+- `DELETE /v1/table/:id` — deregister (clears the authored overlay; a table still present on S3 stays cataloged via the derived snapshot).
+- `GET /ext/v1/tables?expand=...` — enriched listing (full detail; no pagination).
 - `GET /ext/v1/tables/:id/versions/:vid` — single version detail.
-- `PUT /ext/v1/tables/:id/versions/:vid/protect` — set the `protected` flag on a version (TTL-exempt; leader-only).
-- `GET /ext/v1/tables/:id/ttl/dryrun` — list TTL-eligible versions + reclaimable bytes (read-only, any pod).
-- `POST /ext/v1/tables/:id/ttl/apply` — hard-delete eligible versions (leader-only, irreversible, audited).
-- `GET /ext/v1/tables/:id/ttl/audit` — read the TTL audit log for a table (read-only, any pod).
-- `GET /debug/registry`, `GET /debug/is_leader` — internal debug endpoints (read-only, unauthenticated; revisit gating before exposing beyond an admin boundary).
+- `PUT /ext/v1/tables/:id/versions/:vid/protect` — set/clear a version's TTL-exempt `protected` flag.
+- `GET /ext/v1/tables/:id/ttl/dryrun` — list TTL-eligible versions + reclaimable bytes (read-only).
+- `POST /ext/v1/tables/:id/ttl/apply` — hard-delete eligible versions (irreversible, audited).
+- `GET /ext/v1/tables/:id/ttl/audit` — read a table's TTL audit log.
+- `POST /internal/jobs/sweep` — run one sweep pass. Triggered by Cloud Scheduler; idempotent under retry/double-fire.
 
-`GET /metrics` is served on the separate internal port (default 9090) by the
-internal server, not on the main API router.
+## Observability
 
-## Monitoring
+Structured JSON logs (sweep summaries, per-table sweep failures, TTL outcomes)
+go to stdout for Cloud Logging. HTTP request/latency (RED) metrics come from
+Cloud Run's built-in Cloud Monitoring; there is no Prometheus endpoint.
+`RUST_LOG` tunes log verbosity (default `info`, with Lance's per-operation
+chatter quieted to `warn`).
 
-`deploy/base/monitoring/` ships a standalone Prometheus + Grafana, a
-ServiceMonitor selecting the catalog-api `metrics` port, alert rules loaded by
-the standalone Prometheus from a ConfigMap (`NoLeader`, `FreshnessBreach`,
-`HydrationNotReady`, `SweepStalled`, `S3Throttling`, `TTLDeletesFailed`,
-`ReadAvailabilityBurn`, `ReadLatencyHigh`), and Grafana dashboard ConfigMaps
-(Overview, Sweep & Convergence, TTL & Storage). The
-metric names and label cardinality contract are documented in
-`catalog-api/src/metrics.rs`.
+## Deployment
 
-## Known limitations
-
-v1.0.0 ships the read + control plane (sweep, registry, REST API, TTL engine,
-monitoring, static frontend). Items deferred beyond v1.0.0 are listed in
-[`ARCHITECTURE.md` ("Known limitations / v1.0.0 scope")](ARCHITECTURE.md#known-limitations--v100-scope)
-and in the runbooks (real-cluster validation steps that need a live kind
-cluster / real browser).
+Deployed to Cloud Run via Apps Platform (`apps-platform app deploy --local`),
+with the sweep driven by Cloud Scheduler and AWS credentials in Secret Manager.
+See [`docs/RUNBOOK-DEPLOY.md`](docs/RUNBOOK-DEPLOY.md).

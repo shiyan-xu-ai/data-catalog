@@ -1,8 +1,8 @@
 # AGENTS.md
 
 This repo is a Lance data catalog service: an S3-native metadata catalog for
-Lance tables, written in Rust (axum + tower, `lance` crate, `object_store`,
-`kube-rs`).
+Lance tables, written in Rust (axum, the `lance` crate, `object_store`), deployed
+as a single stateless container on Apps Platform (Cloud Run).
 
 - Full long-term design: `docs/design.md`.
 - Current implementation plan (v1.0.0 scope): `.planning/data-catalog-v1/`

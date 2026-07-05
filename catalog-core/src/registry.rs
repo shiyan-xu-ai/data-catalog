@@ -168,6 +168,23 @@ pub async fn write_registry(path: &str, entries: &[TableEntry]) -> Result<()> {
     Ok(())
 }
 
+/// Best-effort prune of registry Lance versions older than `older_than`, so the derived
+/// snapshot's manifest history (one new version per sweep `Overwrite`) does not grow without
+/// bound. A no-op if the dataset doesn't exist yet. Errors are returned for the caller to log;
+/// the sweep treats a failed cleanup as non-fatal.
+pub async fn cleanup_registry(path: &str, older_than: chrono::Duration) -> Result<()> {
+    let dataset = match Dataset::open(path).await {
+        Ok(dataset) => dataset,
+        Err(lance::Error::DatasetNotFound { .. }) => return Ok(()),
+        Err(e) => return Err(e).context("open registry dataset for cleanup"),
+    };
+    dataset
+        .cleanup_old_versions(older_than, None, None)
+        .await
+        .context("cleanup old registry versions")?;
+    Ok(())
+}
+
 /// Read all registry entries from the Lance dataset at `path`.
 ///
 /// Returns `Ok(None)` only when the dataset does not exist yet (expected on the very first
