@@ -64,7 +64,9 @@ in-memory authored overlay — no S3, no cluster:
 
 ```sh
 # Build the SPA once so the server can serve it (optional; API works without it).
-cd frontend && bun install && bun run build && cd ..
+# `--bun` runs the toolchain under Bun's runtime (Node 18 crashes on an upstream
+# unplugin `import.meta.dirname` use; Bun handles it).
+cd frontend && bun install && bun --bun run build && cd ..
 
 CATALOG_SWEEP_ROOT_URI=/path/to/local/sweep/root \
 CATALOG_REGISTRY_PATH=/tmp/catalog/registry.lance \
@@ -89,9 +91,23 @@ fine for a quick local run. Persisting authored state needs an S3/MinIO overlay
 To run the frontend with hot-reload against a running API:
 
 ```sh
-cd frontend && bun run dev
+cd frontend && bun --bun run dev
 # open http://localhost:5173 — the Vite dev proxy forwards /v1 and /ext to :8080
 ```
+
+The frontend (`frontend/`) is a React + Vite + TypeScript SPA: Tailwind + shadcn/ui
+primitives, TanStack Router (typed URL state), TanStack Query (server state), and
+TanStack Table for the table list. API response shapes are runtime-validated with
+zod schemas mirroring `catalog-core/src/types.rs`. Design rationale:
+`docs/FRONTEND.md`.
+
+```sh
+cd frontend
+bun --bun run typecheck   # tsc --noEmit
+bun --bun run test         # vitest (format + zod schema round-trips)
+bun --bun run build        # tsc --noEmit && vite build → dist/
+```
+
 
 ### Testing against a real bucket
 
