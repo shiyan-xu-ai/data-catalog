@@ -22,7 +22,7 @@ import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { RegisterDialog } from "@/components/register-dialog";
 
-export const Route = createFileRoute("/tables")({
+export const Route = createFileRoute("/tables/")({
   component: TablesPage,
 });
 

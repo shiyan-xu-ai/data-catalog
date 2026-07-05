@@ -6,7 +6,7 @@ import { ErrorState } from "@/components/error-state";
 import { EmptyState } from "@/components/empty-state";
 import { nsToString } from "@/lib/format";
 
-export const Route = createFileRoute("/namespaces")({
+export const Route = createFileRoute("/namespaces/")({
   component: NamespacesPage,
 });
 

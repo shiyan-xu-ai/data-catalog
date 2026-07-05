@@ -9,119 +9,108 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as TablesRouteImport } from './routes/tables'
-import { Route as NamespacesRouteImport } from './routes/namespaces'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as TablesTableIdRouteImport } from './routes/tables.$tableId'
+import { Route as TablesIndexRouteImport } from './routes/tables.index'
+import { Route as NamespacesIndexRouteImport } from './routes/namespaces.index'
 import { Route as NamespacesNsRouteImport } from './routes/namespaces.$ns'
+import { Route as TablesTableIdIndexRouteImport } from './routes/tables.$tableId.index'
 import { Route as TablesTableIdVersionsVersionIdRouteImport } from './routes/tables.$tableId.versions.$versionId'
 
-const TablesRoute = TablesRouteImport.update({
-  id: '/tables',
-  path: '/tables',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const NamespacesRoute = NamespacesRouteImport.update({
-  id: '/namespaces',
-  path: '/namespaces',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TablesTableIdRoute = TablesTableIdRouteImport.update({
-  id: '/$tableId',
-  path: '/$tableId',
-  getParentRoute: () => TablesRoute,
+const TablesIndexRoute = TablesIndexRouteImport.update({
+  id: '/tables/',
+  path: '/tables/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NamespacesIndexRoute = NamespacesIndexRouteImport.update({
+  id: '/namespaces/',
+  path: '/namespaces/',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const NamespacesNsRoute = NamespacesNsRouteImport.update({
-  id: '/$ns',
-  path: '/$ns',
-  getParentRoute: () => NamespacesRoute,
+  id: '/namespaces/$ns',
+  path: '/namespaces/$ns',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TablesTableIdIndexRoute = TablesTableIdIndexRouteImport.update({
+  id: '/tables/$tableId/',
+  path: '/tables/$tableId/',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const TablesTableIdVersionsVersionIdRoute =
   TablesTableIdVersionsVersionIdRouteImport.update({
-    id: '/versions/$versionId',
-    path: '/versions/$versionId',
-    getParentRoute: () => TablesTableIdRoute,
+    id: '/tables/$tableId/versions/$versionId',
+    path: '/tables/$tableId/versions/$versionId',
+    getParentRoute: () => rootRouteImport,
   } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/namespaces': typeof NamespacesRouteWithChildren
-  '/tables': typeof TablesRouteWithChildren
   '/namespaces/$ns': typeof NamespacesNsRoute
-  '/tables/$tableId': typeof TablesTableIdRouteWithChildren
+  '/namespaces/': typeof NamespacesIndexRoute
+  '/tables/': typeof TablesIndexRoute
+  '/tables/$tableId/': typeof TablesTableIdIndexRoute
   '/tables/$tableId/versions/$versionId': typeof TablesTableIdVersionsVersionIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/namespaces': typeof NamespacesRouteWithChildren
-  '/tables': typeof TablesRouteWithChildren
   '/namespaces/$ns': typeof NamespacesNsRoute
-  '/tables/$tableId': typeof TablesTableIdRouteWithChildren
+  '/namespaces': typeof NamespacesIndexRoute
+  '/tables': typeof TablesIndexRoute
+  '/tables/$tableId': typeof TablesTableIdIndexRoute
   '/tables/$tableId/versions/$versionId': typeof TablesTableIdVersionsVersionIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/namespaces': typeof NamespacesRouteWithChildren
-  '/tables': typeof TablesRouteWithChildren
   '/namespaces/$ns': typeof NamespacesNsRoute
-  '/tables/$tableId': typeof TablesTableIdRouteWithChildren
+  '/namespaces/': typeof NamespacesIndexRoute
+  '/tables/': typeof TablesIndexRoute
+  '/tables/$tableId/': typeof TablesTableIdIndexRoute
   '/tables/$tableId/versions/$versionId': typeof TablesTableIdVersionsVersionIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/namespaces'
-    | '/tables'
     | '/namespaces/$ns'
-    | '/tables/$tableId'
+    | '/namespaces/'
+    | '/tables/'
+    | '/tables/$tableId/'
     | '/tables/$tableId/versions/$versionId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/namespaces/$ns'
     | '/namespaces'
     | '/tables'
-    | '/namespaces/$ns'
     | '/tables/$tableId'
     | '/tables/$tableId/versions/$versionId'
   id:
     | '__root__'
     | '/'
-    | '/namespaces'
-    | '/tables'
     | '/namespaces/$ns'
-    | '/tables/$tableId'
+    | '/namespaces/'
+    | '/tables/'
+    | '/tables/$tableId/'
     | '/tables/$tableId/versions/$versionId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  NamespacesRoute: typeof NamespacesRouteWithChildren
-  TablesRoute: typeof TablesRouteWithChildren
+  NamespacesNsRoute: typeof NamespacesNsRoute
+  NamespacesIndexRoute: typeof NamespacesIndexRoute
+  TablesIndexRoute: typeof TablesIndexRoute
+  TablesTableIdIndexRoute: typeof TablesTableIdIndexRoute
+  TablesTableIdVersionsVersionIdRoute: typeof TablesTableIdVersionsVersionIdRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/tables': {
-      id: '/tables'
-      path: '/tables'
-      fullPath: '/tables'
-      preLoaderRoute: typeof TablesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/namespaces': {
-      id: '/namespaces'
-      path: '/namespaces'
-      fullPath: '/namespaces'
-      preLoaderRoute: typeof NamespacesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -129,69 +118,51 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/tables/$tableId': {
-      id: '/tables/$tableId'
-      path: '/$tableId'
-      fullPath: '/tables/$tableId'
-      preLoaderRoute: typeof TablesTableIdRouteImport
-      parentRoute: typeof TablesRoute
+    '/tables/': {
+      id: '/tables/'
+      path: '/tables'
+      fullPath: '/tables/'
+      preLoaderRoute: typeof TablesIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/namespaces/': {
+      id: '/namespaces/'
+      path: '/namespaces'
+      fullPath: '/namespaces/'
+      preLoaderRoute: typeof NamespacesIndexRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/namespaces/$ns': {
       id: '/namespaces/$ns'
-      path: '/$ns'
+      path: '/namespaces/$ns'
       fullPath: '/namespaces/$ns'
       preLoaderRoute: typeof NamespacesNsRouteImport
-      parentRoute: typeof NamespacesRoute
+      parentRoute: typeof rootRouteImport
+    }
+    '/tables/$tableId/': {
+      id: '/tables/$tableId/'
+      path: '/tables/$tableId'
+      fullPath: '/tables/$tableId/'
+      preLoaderRoute: typeof TablesTableIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/tables/$tableId/versions/$versionId': {
       id: '/tables/$tableId/versions/$versionId'
-      path: '/versions/$versionId'
+      path: '/tables/$tableId/versions/$versionId'
       fullPath: '/tables/$tableId/versions/$versionId'
       preLoaderRoute: typeof TablesTableIdVersionsVersionIdRouteImport
-      parentRoute: typeof TablesTableIdRoute
+      parentRoute: typeof rootRouteImport
     }
   }
 }
 
-interface NamespacesRouteChildren {
-  NamespacesNsRoute: typeof NamespacesNsRoute
-}
-
-const NamespacesRouteChildren: NamespacesRouteChildren = {
-  NamespacesNsRoute: NamespacesNsRoute,
-}
-
-const NamespacesRouteWithChildren = NamespacesRoute._addFileChildren(
-  NamespacesRouteChildren,
-)
-
-interface TablesTableIdRouteChildren {
-  TablesTableIdVersionsVersionIdRoute: typeof TablesTableIdVersionsVersionIdRoute
-}
-
-const TablesTableIdRouteChildren: TablesTableIdRouteChildren = {
-  TablesTableIdVersionsVersionIdRoute: TablesTableIdVersionsVersionIdRoute,
-}
-
-const TablesTableIdRouteWithChildren = TablesTableIdRoute._addFileChildren(
-  TablesTableIdRouteChildren,
-)
-
-interface TablesRouteChildren {
-  TablesTableIdRoute: typeof TablesTableIdRouteWithChildren
-}
-
-const TablesRouteChildren: TablesRouteChildren = {
-  TablesTableIdRoute: TablesTableIdRouteWithChildren,
-}
-
-const TablesRouteWithChildren =
-  TablesRoute._addFileChildren(TablesRouteChildren)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  NamespacesRoute: NamespacesRouteWithChildren,
-  TablesRoute: TablesRouteWithChildren,
+  NamespacesNsRoute: NamespacesNsRoute,
+  NamespacesIndexRoute: NamespacesIndexRoute,
+  TablesIndexRoute: TablesIndexRoute,
+  TablesTableIdIndexRoute: TablesTableIdIndexRoute,
+  TablesTableIdVersionsVersionIdRoute: TablesTableIdVersionsVersionIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

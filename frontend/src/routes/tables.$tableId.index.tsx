@@ -9,7 +9,7 @@ import { TtlPanel } from "@/components/ttl-panel";
 import { VersionsTable } from "@/components/versions-table";
 import { formatBytes, formatRelative, formatTime, nsToString, ttlPolicyString } from "@/lib/format";
 
-export const Route = createFileRoute("/tables/$tableId")({
+export const Route = createFileRoute("/tables/$tableId/")({
   component: TableDetailPage,
 });
 
