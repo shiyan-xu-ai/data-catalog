@@ -95,10 +95,12 @@ TOKEN=$(apps-platform auth token)
 auth() { curl -s -H "Authorization: Bearer $TOKEN" "$@"; }
 
 auth "$URL/readyz" -o /dev/null -w '%{http_code}\n'         # 200 once loaded
-auth -X POST "$URL/internal/jobs/sweep" | python3 -m json.tool   # {tables_checked,...}
-auth "$URL/v1/tables" | python3 -m json.tool                # discovered tables
+# Register a table FIRST — the sweep only processes registered tables. <id> is a
+# table directory name directly under the sweep root.
 auth -X PUT "$URL/v1/table/<id>" -H 'content-type: application/json' \
   -d '{"owner":"you@applied.co","ttl_policy":{"keep_last_n":10,"max_age_days":90}}'
+auth -X POST "$URL/internal/jobs/sweep" | python3 -m json.tool   # {tables_checked,...}
+auth "$URL/v1/tables" | python3 -m json.tool                # registered tables
 auth "$URL/ext/v1/tables/<id>/ttl/dryrun" | python3 -m json.tool   # review before any apply
 ```
 

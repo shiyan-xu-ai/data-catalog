@@ -10,10 +10,11 @@
 //! authored overlay is serialized per-table by S3 itself. Any instance can mutate. After a
 //! mutation the read cache is invalidated so a subsequent read on the same instance sees it.
 //!
-//! `DeclareTable`/`protect`/TTL-policy edits write the overlay; the next sweep fills in the
-//! derived fields for a not-yet-swept declared table. `DeregisterTable` clears the overlay — a
-//! table that physically exists on S3 stays cataloged (derived) and is removed only when the
-//! sweep no longer sees it.
+//! The catalog is a curated allowlist: `DeclareTable` registers a table (writes its overlay),
+//! and only registered tables are swept, so declaring is what makes a table's derived fields
+//! appear on the next sweep. `protect`/TTL-policy edits also write the overlay.
+//! `DeregisterTable` clears the overlay, removing the table from the registered set — the next
+//! sweep then drops its derived entry from the snapshot.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -179,7 +180,7 @@ async fn describe_table(
         .ok_or_else(|| table_not_found(&id))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct DeclareTableRequest {
     /// `None` (omitted) leaves the existing owner unchanged; `Some` sets it.
     owner: Option<String>,
@@ -187,13 +188,53 @@ struct DeclareTableRequest {
     ttl_policy: Option<TtlPolicy>,
 }
 
-/// `DeclareTable` -- sets `owner`/`ttl_policy` in the table's authored overlay (creating it if
-/// absent). Idempotent; any instance serves it. The derived fields are filled by the next sweep.
+/// A table id must be a plain S3-directory-style name: it is both the overlay object's filename
+/// (`_catalog/meta/<id>.json`) and a path segment under the sweep root (`<root>/<id>/`), so it
+/// must round-trip through object-store path encoding unchanged. Ids with characters the store
+/// would percent-encode (`/`, `%`, `#`, whitespace, control, non-ASCII) don't round-trip — the
+/// overlay listing would recover a mangled id and the table would be silently unswept — so they
+/// are refused at registration instead. Real table dirs are `[A-Za-z0-9._-]`; this matches them.
+fn valid_table_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 255
+        && id != "."
+        && id != ".."
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// `DeclareTable` -- registers a table by writing its authored overlay (creating it if absent),
+/// optionally setting `owner`/`ttl_policy`. Registration is what puts the table in the swept set,
+/// so its derived fields (versions, sizes, ...) are filled by the next sweep. Idempotent; any
+/// instance serves it.
+///
+/// The body is optional: a bare `PUT /v1/table/:id` (no body / no `content-type`) just registers
+/// the table with no owner/policy. A present-but-malformed JSON body, or an id that isn't a plain
+/// S3-directory name (see [`valid_table_id`]), is a 400.
 async fn declare_table(
     State(state): State<ApiState>,
     Path(id): Path<String>,
-    Json(req): Json<DeclareTableRequest>,
+    body: axum::body::Bytes,
 ) -> Result<Json<TableEntry>, (StatusCode, Json<ErrorResponse>)> {
+    if !valid_table_id(&id) {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            0,
+            "invalid table id: must be a non-empty S3-directory-style name matching [A-Za-z0-9._-]",
+        ));
+    }
+    let req: DeclareTableRequest = if body.is_empty() {
+        DeclareTableRequest::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|e| {
+            error(
+                StatusCode::BAD_REQUEST,
+                0,
+                format!("invalid JSON body: {e}"),
+            )
+        })?
+    };
     state
         .meta
         .mutate_meta(&id, |m| {
@@ -215,9 +256,10 @@ async fn declare_table(
         .ok_or_else(|| table_not_found(&id))
 }
 
-/// `DeregisterTable` -- clears the table's authored overlay. 404 if the table is not cataloged at
-/// all. A table still present on S3 remains cataloged via the derived snapshot (sweep-managed);
-/// deregistering it just drops its owner/policy/protection.
+/// `DeregisterTable` -- unregisters a table by deleting its authored overlay, removing it from
+/// the swept set. 404 if the table is not cataloged at all. The derived entry lingers in the
+/// snapshot until the next sweep, which (no longer seeing it registered) drops it — so a
+/// deregistered table disappears from the catalog within one sweep interval.
 async fn deregister_table(
     State(state): State<ApiState>,
     Path(id): Path<String>,

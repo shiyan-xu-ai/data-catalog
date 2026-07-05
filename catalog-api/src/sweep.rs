@@ -1,4 +1,8 @@
-//! Sweep: discover S3 tables/versions and write the derived registry snapshot.
+//! Sweep: refresh the derived registry snapshot for the registered tables.
+//!
+//! The catalog is a curated allowlist, not a mirror of the bucket: only tables an operator has
+//! registered (an authored overlay object exists for them, written by `DeclareTable`) are swept.
+//! The sweep never enumerates the whole root, so unregistered tables on S3 are ignored.
 //!
 //! On Cloud Run this runs request-scoped (triggered by Cloud Scheduler hitting
 //! `/internal/jobs/sweep`), not as a background loop — CPU is throttled between requests, so a
@@ -11,8 +15,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use catalog_core::{apply_sweep_result, read_registry, write_registry, TableEntry};
+use catalog_core::{read_registry, write_registry, TableEntry};
 use catalog_store::{MetaStore, SweepConfig};
+use object_store::path::Path as ObjPath;
 use serde::Serialize;
 
 /// Summary of one sweep pass, returned to the scheduler endpoint and logged.
@@ -23,10 +28,11 @@ pub struct SweepReport {
     pub duration_secs: f64,
 }
 
-/// Run one sweep: list the root, reconcile the derived snapshot to the swept set, write it,
-/// reconcile stale overlay markers, and best-effort prune old registry versions. Tables that
-/// fail to sweep are isolated (kept from the prior snapshot, counted, logged) rather than
-/// dropped.
+/// Run one sweep: for each registered table, re-derive its version set from S3 and write the
+/// whole derived snapshot (registered tables only), reconcile stale overlay markers, and
+/// best-effort prune old registry versions. A registered table that fails to sweep is isolated
+/// (kept from the prior snapshot, counted, logged) rather than dropped. A registered table with
+/// no directory on S3 yet sweeps cleanly to zero versions (it shows as a stub until data lands).
 pub async fn run_sweep(
     sweep_cfg: &SweepConfig,
     registry_path: &str,
@@ -34,23 +40,46 @@ pub async fn run_sweep(
 ) -> Result<SweepReport> {
     let started = Instant::now();
 
-    let outcome = catalog_store::sweep_root(sweep_cfg)
-        .await
-        .context("sweep root")?;
-    let tables_checked = outcome.tables.len() as u64;
+    // The registered set = the tables that have an authored overlay. Only these are swept.
+    let registered = meta.list_meta().await.context("list registered tables")?;
 
-    // Merge the freshly-swept (derived-only) tables into the prior snapshot: swept tables are
-    // reconciled to their current S3 version set; tables absent from this pass (failed to sweep)
-    // keep their prior entry. No authored fields are written — those live in the overlay.
-    let prior = read_registry(registry_path)
+    // Prior snapshot is only needed to isolate a registered table that fails this pass.
+    let prior: HashMap<String, TableEntry> = read_registry(registry_path)
         .await
         .context("read prior snapshot")?
-        .unwrap_or_default();
-    let mut by_id: HashMap<String, TableEntry> =
-        prior.into_iter().map(|e| (e.id.clone(), e)).collect();
-    for entry in outcome.tables {
-        apply_sweep_result(&mut by_id, entry);
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect();
+
+    // Rebuild the snapshot from scratch as exactly the registered set: a table removed from the
+    // registered set (deregistered) is dropped here, keeping the snapshot an allowlist. No
+    // authored fields are written — those live in the overlay and are merged in at read time.
+    let mut by_id: HashMap<String, TableEntry> = HashMap::with_capacity(registered.len());
+    let mut failed_tables = 0u64;
+    for table_id in registered.keys() {
+        match catalog_store::sweep_table(sweep_cfg, table_id, &table_path(sweep_cfg, table_id))
+            .await
+        {
+            Ok(entry) => {
+                by_id.insert(table_id.clone(), entry);
+            }
+            Err(e) => {
+                failed_tables += 1;
+                tracing::warn!(
+                    table = %table_id,
+                    error = %e,
+                    "sweep: skipping registered table that failed this cycle"
+                );
+                // Isolation: keep the prior derived entry rather than dropping the table on a
+                // transient failure.
+                if let Some(prev) = prior.get(table_id) {
+                    by_id.insert(table_id.clone(), prev.clone());
+                }
+            }
+        }
     }
+    let tables_checked = registered.len() as u64;
 
     // Reconcile stale overlay markers to the new snapshot truth: a `protected`/`deleting` entry
     // for a version no longer in the snapshot (TTL-deleted then swept out, or gone out of band)
@@ -74,7 +103,7 @@ pub async fn run_sweep(
 
     let report = SweepReport {
         tables_checked,
-        failed_tables: outcome.failed_tables,
+        failed_tables,
         duration_secs: started.elapsed().as_secs_f64(),
     };
     tracing::info!(
@@ -84,6 +113,17 @@ pub async fn run_sweep(
         "sweep complete"
     );
     Ok(report)
+}
+
+/// The object-store path of one table's directory: `<root_path>/<table_id>`. `ObjPath::from`
+/// normalizes empty/leading segments, so an empty root (local dev / tests) yields just the id.
+fn table_path(sweep_cfg: &SweepConfig, table_id: &str) -> ObjPath {
+    let root = sweep_cfg.root_path.as_ref().trim_end_matches('/');
+    if root.is_empty() {
+        ObjPath::from(table_id)
+    } else {
+        ObjPath::from(format!("{root}/{table_id}"))
+    }
 }
 
 /// Prune overlay `protected`/`deleting` version ids that no longer exist in the snapshot for

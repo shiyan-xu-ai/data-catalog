@@ -48,13 +48,20 @@ immutability splits registry state in two:
    writes (ETag compare-and-set), so a per-table object is its own conflict
    domain and S3 itself serializes concurrent edits.
 
+The overlay also **defines the registered set**: the catalog is a curated
+allowlist, not a mirror of the bucket. A table is registered iff an overlay
+object exists for it (created by `DeclareTable`), and only registered tables are
+swept. This is what lets the same full sweep root serve a scoped catalog — an
+operator registers the handful of tables to track, and unregistered tables on S3
+are never touched.
+
 Everything the old k8s leader + write-lock protected was the *entanglement* of
 these two in one read-modify-write blob. Separating them dissolves the
 coordination problem instead of porting it. A read merges the two back into the
 `TableEntry` wire shape the REST API and frontend already expect
 (`catalog-api/src/catalog.rs`): the snapshot supplies derived fields, the
-overlay supplies `owner`/`ttl_policy`/`protected`; a table that exists only in
-an overlay (declared before its first sweep) is materialized as a stub.
+overlay supplies `owner`/`ttl_policy`/`protected`; a table registered but not yet
+swept (declared before its first sweep) is materialized as a stub.
 
 ### The authored overlay (`MetaStore`)
 
@@ -73,24 +80,28 @@ contention is effectively never, but the retry makes it correct regardless.
 
 ## The sweep
 
-`catalog-store/src/sweep.rs` implements the sweep of the configured root
-(`CATALOG_SWEEP_ROOT_URI`). `catalog-api/src/sweep.rs` wraps it into one
-request-scoped pass: `run_sweep` lists the root, reconciles the derived snapshot
-to the swept set, writes the whole snapshot (last-wins), reconciles stale
-overlay markers, and best-effort prunes old registry manifest versions.
+`catalog-store/src/sweep.rs` classifies one table's directory
+(`sweep_table`). `catalog-api/src/sweep.rs` wraps it into one request-scoped
+pass: `run_sweep` reads the registered set (the overlay objects), re-derives each
+registered table's version set from S3, writes the whole snapshot as exactly that
+set (last-wins), reconciles stale overlay markers, and best-effort prunes old
+registry manifest versions. It never enumerates the root, so unregistered tables
+cost nothing and never appear.
 
-A single table failing to sweep is isolated — logged, counted, and kept from the
-prior snapshot — rather than aborting the whole cycle and stalling every other
-table's freshness. A version first seen as `partial` (e.g. its dataset
-momentarily failed to open) is re-derived cleanly by a later sweep, so it does
-not stay permanently partial (and permanently TTL-ineligible).
+Because the snapshot is rebuilt from the registered set each pass, it stays an
+allowlist automatically: a deregistered table (overlay deleted) is simply not
+swept and drops out of the snapshot, and within a table, a version no longer on
+S3 (removed out of band, or by a TTL apply) is gone from the freshly-derived set.
+A registered table with no directory on S3 yet sweeps cleanly to zero versions (a
+stub) until data lands.
 
-Because a table's sweep lists every timestamp directory on S3, the swept set is
-the complete current truth for that table, so the reconcile *removes* as well as
-adds: a version no longer present on S3 (removed out of band, or by a TTL apply)
-is dropped from the snapshot too, keeping it in sync with storage and bounding
-growth. Reconciliation only runs for tables that swept cleanly, so a table that
-transiently failed to sweep (and is skipped) never has its versions removed.
+A single registered table failing to sweep is isolated — logged, counted, and
+kept from the prior snapshot — rather than aborting the whole cycle and stalling
+every other table's freshness. A version transiently seen as `partial` (e.g. its
+dataset momentarily failed to open) is re-derived cleanly by a later sweep, so it
+does not stay permanently partial; a transient partial re-observation shows for
+one cycle and self-heals, and the shape safety gate blocks TTL during that window
+(the safe direction).
 
 **Overlay reconciliation.** After writing the snapshot, the sweep prunes overlay
 `protected`/`deleting` entries whose version id is no longer in the snapshot —
@@ -102,13 +113,13 @@ sweeps on a single instance with an in-process mutex (so a Scheduler double-fire
 doesn't run two at once on the same instance); cross-instance concurrency is safe
 regardless because the snapshot is last-wins.
 
-### Discovery
+### Version discovery
 
-The sweep lists the root for table directories, then for each table lists
-timestamp directories. A timestamp directory name is parsed as
-`YYYY-MM-DD_HH-MM-SS` or `YYYY-MM-DD-HH-MM-SS` (name variance is handled),
-normalized to an ISO8601 version id. One timestamp directory = one catalog
-version. Every timestamp version from earliest to latest is supported,
+For each registered table the sweep lists that table's directory
+(`<root>/<table_id>/`) for timestamp subdirectories. A timestamp directory name
+is parsed as `YYYY-MM-DD_HH-MM-SS` or `YYYY-MM-DD-HH-MM-SS` (name variance is
+handled), normalized to an ISO8601 version id. One timestamp directory = one
+catalog version. Every timestamp version from earliest to latest is supported,
 regardless of pre/post cutoff layout.
 
 ### Shape classification
@@ -245,10 +256,10 @@ See [README.md](README.md#rest-api-surface) for the route list. The
 authoritative source is `catalog-api/src/api.rs::api_router`.
 
 - **Basic ops** (`/v1`): `ListNamespaces`, `DescribeNamespace`, `ListTables`,
-  `DescribeTable`, `DeclareTable` (PUT — writes `owner`/`ttl_policy` to the
-  overlay, idempotent), `DeregisterTable` (DELETE — clears the overlay; a table
-  still on S3 stays cataloged via the derived snapshot). Namespaces are a derived
-  view, not stored state.
+  `DescribeTable`, `DeclareTable` (PUT — registers the table by writing its
+  overlay + `owner`/`ttl_policy`, idempotent; the next sweep fills its versions),
+  `DeregisterTable` (DELETE — deletes the overlay, unregistering it; the next
+  sweep drops its derived entry). Namespaces are a derived view, not stored state.
 - **`/ext` enriched surface**: `GET /ext/v1/tables` (full detail, no pagination),
   `GET /ext/v1/tables/:id/versions/:vid`, the TTL endpoints (`dryrun`, `apply`,
   `audit`), and version `protect` (writes the overlay).
