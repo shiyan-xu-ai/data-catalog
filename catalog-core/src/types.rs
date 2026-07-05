@@ -1,4 +1,17 @@
 //! Core registry types: tables, versions, namespaces, aux entries, TTL policy/audit.
+//!
+//! ## Persistence forward/backward compatibility
+//!
+//! Several of these types are persisted as JSON (`registry`'s `versions_json`/`aux_latest_json`
+//! columns, the `ttl_audit` table). During a rolling upgrade two binary versions read each
+//! other's rows, so the JSON schema must evolve without breaking either direction. serde already
+//! ignores unknown fields on deserialize (new field written, old binary reads it), and every
+//! non-identity field below carries `#[serde(default)]` so a field this binary knows but an older
+//! row omits deserializes to its default instead of failing the whole read (which, with the
+//! registry read path, would otherwise surface as an error).
+//!
+//! **Policy:** any new persisted field MUST be added with `#[serde(default)]` (and a `Default`-
+//! able type). Identity/structural fields (ids, timestamps, the shape/format enums) stay required.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -34,12 +47,16 @@ pub enum AuxFormat {
 pub struct AuxEntry {
     /// Directory name as observed on disk (convention-based role; no OpenLineage in v1.0.0).
     pub name: String,
+    #[serde(default)]
     pub path: String,
     pub format: AuxFormat,
     /// Convention-derived role (defaults to `name`).
+    #[serde(default)]
     pub role: String,
+    #[serde(default)]
     pub storage_bytes: u64,
     /// Cheap fingerprint (e.g. LIST-derived hash) for mixed/unknown formats.
+    #[serde(default)]
     pub fingerprint: Option<String>,
 }
 
@@ -68,18 +85,30 @@ pub struct TableVersion {
     pub snapshot_path: String,
     pub shape: VersionShape,
     /// True when this version could not be fully classified/opened (see `shape`).
+    #[serde(default)]
     pub partial: bool,
     /// True when the version is exempt from TTL.
+    #[serde(default)]
     pub protected: bool,
+    #[serde(default)]
     pub storage_bytes_total: u64,
+    #[serde(default)]
     pub lance_core_bytes: u64,
+    #[serde(default)]
     pub sidecar_bytes: u64,
+    #[serde(default)]
     pub segments_bytes: u64,
+    #[serde(default)]
     pub other_aux_bytes: u64,
+    #[serde(default)]
     pub row_count: Option<u64>,
+    #[serde(default)]
     pub num_fragments: Option<u64>,
+    #[serde(default)]
     pub schema_json: Option<String>,
+    #[serde(default)]
     pub num_indices: Option<u64>,
+    #[serde(default)]
     pub aux: Vec<AuxEntry>,
     pub swept_at: DateTime<Utc>,
 }
@@ -103,7 +132,9 @@ pub struct TableEntry {
 /// thresholds (kept if within either); no fields set means no TTL applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TtlPolicy {
+    #[serde(default)]
     pub keep_last_n: Option<u32>,
+    #[serde(default)]
     pub max_age_days: Option<u32>,
 }
 
@@ -113,8 +144,46 @@ pub struct TtlAuditRecord {
     pub table_id: String,
     pub version_id: String,
     pub deleted_at: DateTime<Utc>,
+    #[serde(default)]
     pub reclaimed_bytes: u64,
+    #[serde(default)]
     pub policy_snapshot: TtlPolicy,
     /// e.g. "ttl-engine".
+    #[serde(default)]
     pub actor: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_version_deserializes_from_an_older_schema_missing_additive_fields() {
+        // A row written by an older schema that carried only the identity/structural fields plus
+        // the total size -- it lacks the per-component byte splits, the stats options, and the
+        // aux list this binary now knows. Every additive field must default rather than fail the
+        // whole deserialize (which would otherwise error the registry read during a rolling
+        // upgrade). Also carries an unknown future field, which serde must ignore.
+        let older_json = r#"{
+            "version_id": "2026-01-01T00:00:00Z",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "snapshot_path": "s3://bucket/t/2026-01-01",
+            "shape": "full",
+            "storage_bytes_total": 100,
+            "swept_at": "2026-01-01T00:00:00Z",
+            "some_future_field": {"nested": true}
+        }"#;
+
+        let v: TableVersion = serde_json::from_str(older_json).expect("must parse with defaults");
+        assert_eq!(v.version_id, "2026-01-01T00:00:00Z");
+        assert_eq!(v.shape, VersionShape::Full);
+        assert_eq!(v.storage_bytes_total, 100);
+        // Additive fields absent in the older row default rather than failing the read.
+        assert_eq!(v.lance_core_bytes, 0);
+        assert!(!v.partial);
+        assert!(!v.protected);
+        assert_eq!(v.num_indices, None);
+        assert_eq!(v.schema_json, None);
+        assert!(v.aux.is_empty());
+    }
 }

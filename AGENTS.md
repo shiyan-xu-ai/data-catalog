@@ -23,6 +23,11 @@ Cargo workspace with three crates:
 - `cargo build --workspace` and `cargo test --workspace` must pass before
   committing.
 - 4-space indentation, LF line endings, UTF-8 (see `.editorconfig`).
+- Persisted types in `catalog-core/src/types.rs` are stored as JSON (registry
+  and TTL-audit columns) and read across binary versions during rolling
+  upgrades. Every new persisted field MUST be added with `#[serde(default)]`
+  (and a `Default`-able type) so an older row that omits it still deserializes;
+  identity/structural fields (ids, timestamps, enums) stay required.
 
 ## Commit messages
 
