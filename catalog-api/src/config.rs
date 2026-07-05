@@ -23,6 +23,22 @@ fn env_duration_secs(name: &str, default_secs: u64) -> Result<Duration> {
     Ok(Duration::from_secs(secs))
 }
 
+/// Parse a positive-integer env var, falling back to `default` when unset. A set-but-invalid
+/// value or `0` is a hard error rather than a silent fallback (same contract as
+/// `env_duration_secs`).
+fn env_positive_usize(name: &str, default: usize) -> Result<usize> {
+    let n = match std::env::var(name) {
+        Ok(v) => v
+            .parse::<usize>()
+            .map_err(|_| anyhow!("{name} must be a positive integer, got {v:?}"))?,
+        Err(_) => default,
+    };
+    if n == 0 {
+        return Err(anyhow!("{name} must be greater than 0"));
+    }
+    Ok(n)
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     /// Address the HTTP server binds. Cloud Run injects `PORT`; default `0.0.0.0:8080`.
@@ -39,6 +55,8 @@ pub struct AppConfig {
     pub sweep_root_uri: String,
     /// How long the merged read cache may be served before revalidation.
     pub cache_ttl: Duration,
+    /// How many versions the sweep processes concurrently (in-flight LISTs + Lance opens).
+    pub sweep_concurrency: usize,
     /// Directory holding the built frontend (`dist/`). Served at `/` when it contains an
     /// `index.html`; absent → API-only.
     pub webui_dir: String,
@@ -62,6 +80,10 @@ impl AppConfig {
                 "s3://onroad-perception-datasets/scenario_dataset_export",
             ),
             cache_ttl: env_duration_secs("CATALOG_CACHE_TTL_SECS", 5)?,
+            sweep_concurrency: env_positive_usize(
+                "CATALOG_SWEEP_CONCURRENCY",
+                catalog_store::DEFAULT_SWEEP_CONCURRENCY,
+            )?,
             webui_dir: env_or("CATALOG_WEBUI_DIR", "frontend/dist"),
         })
     }

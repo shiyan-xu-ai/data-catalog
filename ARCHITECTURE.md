@@ -88,6 +88,36 @@ set (last-wins), reconciles stale overlay markers, and best-effort prunes old
 registry manifest versions. It never enumerates the root, so unregistered tables
 cost nothing and never appear.
 
+### Execution shape (performance)
+
+Sweeping is S3-latency-bound, so the implementation minimizes round-trips and
+maximizes useful concurrency:
+
+- **One recursive LIST per version.** A version's shape, byte splits (lance-core/
+  sidecar/segments/other-aux), aux entries, format detection, and fingerprint are
+  all derived in memory from a single recursive LIST of its timestamp directory
+  (`catalog-store/src/format.rs` helpers are pure functions over that object
+  list). The only other per-version IO is opening the main Lance dataset for
+  row-count/schema/fragment/index stats.
+- **The unit of work is the version, not the table.** All registered tables'
+  version dirs are discovered first (one delimiter LIST per table, concurrently),
+  then every pending version from every table feeds one global
+  `buffer_unordered(CATALOG_SWEEP_CONCURRENCY)` queue — so a 500-version table
+  interleaves with 3-version tables instead of serializing behind them, and wall
+  time ≈ `pending versions / concurrency`.
+- **Carry-forward.** Versions are immutable timestamp dirs, so a version already
+  in the prior snapshot with a clean (non-partial) classification is copied
+  forward with zero S3 traffic. Only new versions, `partial` versions (re-swept to
+  self-heal), and `deleting`-marked versions (a failed TTL delete may have removed
+  part of the prefix — carrying would freeze stale byte counts) are actually
+  swept. Steady-state sweeps cost O(new versions), and an interrupted first sweep
+  resumes instead of restarting.
+- **Incremental publication.** As each table's last pending version lands, the
+  snapshot is rewritten (throttled to a few seconds apart, plus a final
+  unconditional write) — a long first sweep fills the catalog table-by-table
+  rather than all-or-nothing, and a crash/timeout keeps everything completed so
+  far.
+
 Because the snapshot is rebuilt from the registered set each pass, it stays an
 allowlist automatically: a deregistered table (overlay deleted) is simply not
 swept and drops out of the snapshot, and within a table, a version no longer on

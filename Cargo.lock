@@ -1091,6 +1091,7 @@ dependencies = [
  "catalog-core",
  "catalog-store",
  "chrono",
+ "futures",
  "http 1.4.2",
  "http-body-util",
  "object_store",

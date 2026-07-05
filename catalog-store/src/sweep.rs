@@ -2,18 +2,29 @@
 //! shape, splits storage bytes into lance-core/sidecar/segments/other-aux, and collects
 //! aux entries — for both the pre- and post-2026-06-26-cutoff sidecar layouts (see
 //! findings.md).
+//!
+//! ## Request shape (performance)
+//!
+//! A version is swept with **one recursive LIST** of its timestamp directory: every object's
+//! key + size + etag lands in memory, and shape classification, byte splits, aux entries,
+//! format detection, and fingerprints are all derived from that single object list (see
+//! `format.rs`). The only other IO per version is opening the main Lance dataset for
+//! row-count/schema/fragment/index stats. Versions sweep concurrently
+//! (`SweepConfig::concurrency`), so a table's wall time is ~`versions / concurrency`, not a
+//! serial walk of 10+ requests per version.
 
 use anyhow::Result;
 use arrow_schema::Schema as ArrowSchema;
 use catalog_core::{AuxEntry, Namespace, TableEntry, TableVersion, VersionShape};
 use chrono::{DateTime, NaiveDateTime, Utc};
+use futures::{StreamExt, TryStreamExt};
 use lance::index::DatasetIndexExt;
 use lance::Dataset;
 use object_store::path::Path as ObjPath;
-use object_store::ObjectStore;
+use object_store::ObjectMeta;
 
 use crate::config::SweepConfig;
-use crate::format::{detect_format, is_lance_shaped, list_dir, recursive_bytes, DirListing};
+use crate::format::{bytes_under, children, detect_format, is_lance_shaped, DirListing};
 
 /// Sidecar directory names that, pre-cutoff, live *inside* the main lance dir instead of
 /// in a top-level `dataset.sidecar/` (findings.md "Cutoff 2026-06-26 + sidecar placement").
@@ -114,16 +125,25 @@ pub async fn sweep_root(cfg: &SweepConfig) -> Result<SweepOutcome> {
     })
 }
 
-/// Sweep one table dir: one `TableVersion` per timestamp-path subdir.
-pub async fn sweep_table(
-    cfg: &SweepConfig,
-    table_name: &str,
-    table_path: &ObjPath,
-) -> Result<TableEntry> {
-    let listing = cfg.store.list_with_delimiter(Some(table_path)).await?;
-    let now = Utc::now();
+/// One timestamp-path version directory discovered under a table dir: the parsed identity
+/// plus the object-store path to sweep. Produced by [`list_version_dirs`]; consumed by
+/// [`sweep_version`] — split so callers (e.g. the API's global sweep queue) can decide which
+/// versions actually need sweeping (carry-forward) before paying for any per-version IO.
+#[derive(Debug, Clone)]
+pub struct VersionDirRef {
+    pub version_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub path: ObjPath,
+}
 
-    let mut versions = Vec::new();
+/// List a table dir's timestamp-path version directories (one cheap delimiter LIST).
+/// Non-timestamp subdirs are skipped, matching discovery's tolerance for stray dirs.
+pub async fn list_version_dirs(
+    cfg: &SweepConfig,
+    table_path: &ObjPath,
+) -> Result<Vec<VersionDirRef>> {
+    let listing = cfg.store.list_with_delimiter(Some(table_path)).await?;
+    let mut dirs = Vec::with_capacity(listing.common_prefixes.len());
     for ts_path in listing.common_prefixes {
         let Some(dirname) = ts_path.filename() else {
             continue;
@@ -131,9 +151,31 @@ pub async fn sweep_table(
         let Some(timestamp) = parse_timestamp_dirname(dirname) else {
             continue;
         };
-        let version_id = timestamp.to_rfc3339();
-        versions.push(sweep_version(cfg, &ts_path, timestamp, version_id, now).await?);
+        dirs.push(VersionDirRef {
+            version_id: timestamp.to_rfc3339(),
+            timestamp,
+            path: ts_path,
+        });
     }
+    Ok(dirs)
+}
+
+/// Sweep one table dir: one `TableVersion` per timestamp-path subdir, swept concurrently
+/// (`cfg.concurrency` versions in flight). Any version failing fails the table — the caller
+/// isolates per-table failures.
+pub async fn sweep_table(
+    cfg: &SweepConfig,
+    table_name: &str,
+    table_path: &ObjPath,
+) -> Result<TableEntry> {
+    let dirs = list_version_dirs(cfg, table_path).await?;
+    let now = Utc::now();
+
+    let mut versions: Vec<TableVersion> = futures::stream::iter(dirs)
+        .map(|d| async move { sweep_version(cfg, &d.path, d.timestamp, d.version_id, now).await })
+        .buffer_unordered(cfg.concurrency)
+        .try_collect()
+        .await?;
     versions.sort_by(|a, b| a.version_id.cmp(&b.version_id));
 
     let aux_latest = versions.last().map(|v| v.aux.clone()).unwrap_or_default();
@@ -179,21 +221,31 @@ async fn try_open_dataset(cfg: &SweepConfig, path: &ObjPath) -> Option<OpenedDat
     })
 }
 
-async fn aux_entry_for(cfg: &SweepConfig, name: &str, path: &ObjPath) -> Result<AuxEntry> {
-    let storage_bytes = recursive_bytes(cfg.store.as_ref(), path).await?;
-    let (format, fingerprint) = detect_format(cfg.store.as_ref(), path).await?;
-    Ok(AuxEntry {
+/// Build an aux entry for `path` from the pre-fetched object list: real recursive size plus
+/// detected format (and fingerprint for mixed/unknown). Pure — no IO.
+fn aux_entry_for(
+    cfg: &SweepConfig,
+    objects: &[ObjectMeta],
+    name: &str,
+    path: &ObjPath,
+) -> AuxEntry {
+    let storage_bytes = bytes_under(objects, path);
+    let (format, fingerprint) = detect_format(objects, path);
+    AuxEntry {
         name: name.to_string(),
         path: cfg.uri_for(path),
         format,
         role: name.to_string(),
         storage_bytes,
         fingerprint,
-    })
+    }
 }
 
 /// Sweep one timestamp-path version dir: classify its shape, split storage bytes into
 /// lance-core/sidecar/segments/other-aux, and collect aux entries.
+///
+/// All of the above comes from ONE recursive LIST of the version dir; the only additional IO
+/// is the Lance dataset open for row/schema/index stats.
 pub async fn sweep_version(
     cfg: &SweepConfig,
     ts_path: &ObjPath,
@@ -201,8 +253,9 @@ pub async fn sweep_version(
     version_id: String,
     swept_at: DateTime<Utc>,
 ) -> Result<TableVersion> {
-    let store: &dyn ObjectStore = cfg.store.as_ref();
-    let top = list_dir(store, ts_path).await?;
+    // The single LIST: every object under this version, with key/size/etag.
+    let objects: Vec<ObjectMeta> = cfg.store.list(Some(ts_path)).try_collect().await?;
+    let top = children(&objects, ts_path);
 
     let mut top_sidecar: Option<ObjPath> = None;
     let mut top_segments: Option<ObjPath> = None;
@@ -232,7 +285,7 @@ pub async fn sweep_version(
     let mut leftovers: Vec<(String, ObjPath)> = Vec::new();
     for (name, path) in &candidates {
         if main_dir.is_none() {
-            let child_listing = list_dir(store, path).await?;
+            let child_listing = children(&objects, path);
             if is_lance_shaped(&child_listing) {
                 main_dir = Some((name.clone(), path.clone(), child_listing));
                 continue;
@@ -262,8 +315,7 @@ pub async fn sweep_version(
 
         for core_name in LANCE_CORE_NAMES {
             if main_listing.subdirs.iter().any(|d| d == core_name) {
-                lance_core_bytes +=
-                    recursive_bytes(store, &main_path.clone().join(*core_name)).await?;
+                lance_core_bytes += bytes_under(&objects, &main_path.clone().join(*core_name));
             }
         }
 
@@ -280,8 +332,8 @@ pub async fn sweep_version(
                 && !SIDECAR_INSIDE_LANCE_NAMES.contains(&name.as_str())
             {
                 let child = main_path.clone().join(name.as_str());
-                other_aux_bytes += recursive_bytes(store, &child).await?;
-                aux.push(aux_entry_for(cfg, name, &child).await?);
+                other_aux_bytes += bytes_under(&objects, &child);
+                aux.push(aux_entry_for(cfg, &objects, name, &child));
             }
         }
 
@@ -293,17 +345,22 @@ pub async fn sweep_version(
             // each inside-lance sidecar dir below so nothing is invisible — those
             // entries' own `storage_bytes` are real per-dir sizes, they're just excluded
             // from the `sidecar_bytes` aggregate to avoid double-counting.
-            sidecar_bytes += recursive_bytes(store, sidecar_path).await?;
-            aux.push(aux_entry_for(cfg, TOP_LEVEL_SIDECAR_NAME, sidecar_path).await?);
+            sidecar_bytes += bytes_under(&objects, sidecar_path);
+            aux.push(aux_entry_for(
+                cfg,
+                &objects,
+                TOP_LEVEL_SIDECAR_NAME,
+                sidecar_path,
+            ));
             for name in &inside_sidecar_names {
                 let child = main_path.clone().join(name.as_str());
-                aux.push(aux_entry_for(cfg, name, &child).await?);
+                aux.push(aux_entry_for(cfg, &objects, name, &child));
             }
         } else {
             for name in &inside_sidecar_names {
                 let child = main_path.clone().join(name.as_str());
-                sidecar_bytes += recursive_bytes(store, &child).await?;
-                aux.push(aux_entry_for(cfg, name, &child).await?);
+                sidecar_bytes += bytes_under(&objects, &child);
+                aux.push(aux_entry_for(cfg, &objects, name, &child));
             }
         }
 
@@ -347,25 +404,35 @@ pub async fn sweep_version(
     // their bytes land in `other_aux_bytes` and they surface as aux entries instead of being
     // silently dropped from the version's size accounting.
     for (name, path) in &leftovers {
-        other_aux_bytes += recursive_bytes(store, path).await?;
-        aux.push(aux_entry_for(cfg, name, path).await?);
+        other_aux_bytes += bytes_under(&objects, path);
+        aux.push(aux_entry_for(cfg, &objects, name, path));
     }
 
     // Segments + other known top-level aux are independent of shape classification.
     if let Some(segments_path) = &top_segments {
-        segments_bytes += recursive_bytes(store, segments_path).await?;
-        aux.push(aux_entry_for(cfg, TOP_LEVEL_SEGMENTS_NAME, segments_path).await?);
+        segments_bytes += bytes_under(&objects, segments_path);
+        aux.push(aux_entry_for(
+            cfg,
+            &objects,
+            TOP_LEVEL_SEGMENTS_NAME,
+            segments_path,
+        ));
     }
     for (name, path) in &top_known_aux {
-        other_aux_bytes += recursive_bytes(store, path).await?;
-        aux.push(aux_entry_for(cfg, name, path).await?);
+        other_aux_bytes += bytes_under(&objects, path);
+        aux.push(aux_entry_for(cfg, &objects, name, path));
     }
     // A top-level `dataset.sidecar/` with no valid main lance dir at all (main_dir is
     // None) still counts toward storage/aux even though there's nothing to dedup against.
     if main_dir.is_none() {
         if let Some(sidecar_path) = &top_sidecar {
-            sidecar_bytes += recursive_bytes(store, sidecar_path).await?;
-            aux.push(aux_entry_for(cfg, TOP_LEVEL_SIDECAR_NAME, sidecar_path).await?);
+            sidecar_bytes += bytes_under(&objects, sidecar_path);
+            aux.push(aux_entry_for(
+                cfg,
+                &objects,
+                TOP_LEVEL_SIDECAR_NAME,
+                sidecar_path,
+            ));
         }
     }
 

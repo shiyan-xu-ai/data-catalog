@@ -6,8 +6,10 @@ mod overlay;
 mod sweep;
 mod ttl;
 
-pub use config::SweepConfig;
-pub use format::{detect_format, recursive_bytes};
+pub use config::{SweepConfig, DEFAULT_SWEEP_CONCURRENCY};
+pub use format::recursive_bytes;
 pub use overlay::{MetaStore, TableMeta};
-pub use sweep::{sweep_root, sweep_table, sweep_version, SweepOutcome};
+pub use sweep::{
+    list_version_dirs, sweep_root, sweep_table, sweep_version, SweepOutcome, VersionDirRef,
+};
 pub use ttl::delete_prefix;
