@@ -324,6 +324,7 @@ async fn declare_accepts_only_ids_scoped_to_a_registered_namespace() {
     for (label, bad) in [
         ("r1:bX:ns1:t1", "r1:bX:ns1:t1"),
         ("r1:b1:nsX:t1", "r1:b1:nsX:t1"),
+        ("r2:b1:ns1:t1", "r2:b1:ns1:t1"),
         ("plainname", "plainname"),
         ("r1:b1:ns1:bad/name", "r1:b1:ns1:bad%2Fname"),
     ] {
