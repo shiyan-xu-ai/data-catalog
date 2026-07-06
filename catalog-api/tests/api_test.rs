@@ -498,8 +498,10 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
     assert_eq!(json["reclaimable_bytes"], eligible_old.storage_bytes_total);
 }
 
+/// TTL apply is not implemented: it must report 501 and leave S3, the view, and the audit log
+/// completely untouched, even when a version is genuinely eligible under the policy.
 #[tokio::test]
-async fn ttl_apply_deletes_objects_writes_audit_hides_version_and_is_idempotent() {
+async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
     let sweep_root_dir = tempfile::tempdir().unwrap();
     let store = LocalFileSystem::new_with_prefix(sweep_root_dir.path()).unwrap();
     let sweep_cfg = common::sweep_config(sweep_root_dir.path());
@@ -510,38 +512,12 @@ async fn ttl_apply_deletes_objects_writes_audit_hides_version_and_is_idempotent(
         b"old",
     )
     .await;
-    write_fake_object(
-        &store,
-        "t1/2026-07-01T00-00-00/dataset.lance/_versions/1.manifest",
-        b"recent",
-    )
-    .await;
-    write_fake_object(
-        &store,
-        "t1/2020-06-01T00-00-00/dataset.lance/_versions/1.manifest",
-        b"protected",
-    )
-    .await;
 
     let eligible_old = ttl_fixture_version(
         &sweep_cfg,
         "t1",
         "2020-01-01T00-00-00",
         2000,
-        VersionShape::Full,
-    );
-    let recent = ttl_fixture_version(
-        &sweep_cfg,
-        "t1",
-        "2026-07-01T00-00-00",
-        1,
-        VersionShape::Full,
-    );
-    let protected_old = ttl_fixture_version(
-        &sweep_cfg,
-        "t1",
-        "2020-06-01T00-00-00",
-        1900,
         VersionShape::Full,
     );
 
@@ -553,13 +529,12 @@ async fn ttl_apply_deletes_objects_writes_audit_hides_version_and_is_idempotent(
         owner: None,
         ttl_policy: None,
         last_swept: None,
-        versions: vec![eligible_old.clone(), recent.clone(), protected_old.clone()],
+        versions: vec![eligible_old.clone()],
         aux_latest: Vec::new(),
     };
-    let overlay = ("t1", ttl_overlay(&protected_old.version_id));
 
     let (app, ttl_audit_path, _dir) =
-        test_app_with_sweep_cfg(vec![entry], vec![overlay], sweep_cfg.clone()).await;
+        test_app_with_sweep_cfg(vec![entry], vec![], sweep_cfg.clone()).await;
 
     let resp = app
         .clone()
@@ -572,86 +547,36 @@ async fn ttl_apply_deletes_objects_writes_audit_hides_version_and_is_idempotent(
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
     let json = body_json(resp).await;
-    assert_eq!(
-        json["deleted"],
-        serde_json::json!([eligible_old.version_id])
-    );
+    assert!(json["message"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("not implemented"));
 
-    // The deleted version's objects are gone; the kept and protected versions' objects remain.
-    let deleted_prefix = sweep_cfg.path_for(&eligible_old.snapshot_path).unwrap();
-    let deleted_bytes = catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &deleted_prefix)
+    // The "eligible" version's objects are untouched.
+    let prefix = sweep_cfg.path_for(&eligible_old.snapshot_path).unwrap();
+    let bytes = catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &prefix)
         .await
         .unwrap();
-    assert_eq!(deleted_bytes, 0, "deleted version's objects must be gone");
+    assert!(bytes > 0, "apply must not delete any objects");
 
-    let kept_prefix = sweep_cfg.path_for(&recent.snapshot_path).unwrap();
-    let kept_bytes = catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &kept_prefix)
-        .await
-        .unwrap();
-    assert!(kept_bytes > 0, "kept version's objects must survive");
-
-    let protected_prefix = sweep_cfg.path_for(&protected_old.snapshot_path).unwrap();
-    let protected_bytes =
-        catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &protected_prefix)
-            .await
-            .unwrap();
-    assert!(
-        protected_bytes > 0,
-        "protected version's objects must never be deleted"
-    );
-
-    // View no longer lists the deleted version (hidden by the `deleting` tombstone until the next
-    // sweep reconciles it out of the snapshot); protected/kept versions remain.
+    // The view still lists the version untouched.
     let json = body_json(get(&app, "/v1/table/t1").await).await;
-    let mut version_ids: Vec<String> = json["versions"]
+    let version_ids: Vec<String> = json["versions"]
         .as_array()
         .unwrap()
         .iter()
         .map(|v| v["version_id"].as_str().unwrap().to_string())
         .collect();
-    version_ids.sort();
-    assert_eq!(
-        version_ids,
-        vec![protected_old.version_id.clone(), recent.version_id.clone()]
-    );
+    assert_eq!(version_ids, vec![eligible_old.version_id.clone()]);
 
-    // Audit record written for the deleted version only.
-    let audit = catalog_core::read_ttl_audit(&ttl_audit_path)
-        .await
-        .unwrap()
-        .expect("audit log exists after a delete");
-    assert_eq!(audit.len(), 1);
-    assert_eq!(audit[0].table_id, "t1");
-    assert_eq!(audit[0].version_id, eligible_old.version_id);
-    assert_eq!(audit[0].actor, "ttl-engine");
-
-    // Idempotent: re-applying finds nothing eligible (the `deleting` marker excludes it) -- no-op.
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/ext/v1/tables/t1/ttl/apply")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        body_json(resp).await["deleted"],
-        serde_json::json!(Vec::<String>::new())
-    );
-
-    let audit_after = catalog_core::read_ttl_audit(&ttl_audit_path)
-        .await
-        .unwrap()
-        .expect("audit log still exists");
-    assert_eq!(
-        audit_after.len(),
-        1,
-        "re-apply must not write a duplicate audit record"
+    // No audit record is ever written.
+    let audit = catalog_core::read_ttl_audit(&ttl_audit_path).await.unwrap();
+    assert!(
+        audit.unwrap_or_default().is_empty(),
+        "apply must never write an audit record"
     );
 }
 
