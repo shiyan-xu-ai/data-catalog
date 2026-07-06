@@ -3,13 +3,13 @@
 //!
 //! Strictly read-only. Lance aux is scanned through the lance scanner (against the entry's
 //! `dataset_path`, which for nested bundles points at the openable root); parquet aux dirs go
-//! through DataFusion with the sweep's object store registered, so the same credentials/endpoint
+//! through DataFusion with the sync's object store registered, so the same credentials/endpoint
 //! plumbing applies. Row counts are clamped (`MAX_SAMPLE_ROWS`) and the whole operation is
 //! timeout-bounded by the caller.
 
 use anyhow::{anyhow, Context, Result};
 use arrow_array::RecordBatch;
-use catalog_store::SweepConfig;
+use catalog_store::SyncConfig;
 use datafusion::execution::context::SessionContext;
 use futures::TryStreamExt;
 
@@ -41,12 +41,12 @@ pub async fn sample_lance(uri: &str, limit: usize) -> Result<Sample> {
 }
 
 /// Sample up to `limit` rows from the parquet files under `uri` (a directory), via DataFusion.
-/// `sweep_cfg` supplies the object store for `s3://` URIs; plain paths read locally.
-pub async fn sample_parquet(sweep_cfg: &SweepConfig, uri: &str, limit: usize) -> Result<Sample> {
+/// `sync_cfg` supplies the object store for `s3://` URIs; plain paths read locally.
+pub async fn sample_parquet(sync_cfg: &SyncConfig, uri: &str, limit: usize) -> Result<Sample> {
     let ctx = SessionContext::new();
     if let Ok(url) = url::Url::parse(uri) {
         if url.scheme() != "file" {
-            // Register the sweep's already-configured store for this bucket so DataFusion
+            // Register the sync's already-configured store for this bucket so DataFusion
             // reads through the same endpoint/credentials.
             let base = url::Url::parse(&format!(
                 "{}://{}",
@@ -54,7 +54,7 @@ pub async fn sample_parquet(sweep_cfg: &SweepConfig, uri: &str, limit: usize) ->
                 url.host_str().unwrap_or_default()
             ))
             .context("derive object-store base url")?;
-            ctx.register_object_store(&base, sweep_cfg.store.clone());
+            ctx.register_object_store(&base, sync_cfg.store.clone());
         }
     }
     // Trailing slash => treat as a directory listing of parquet files.

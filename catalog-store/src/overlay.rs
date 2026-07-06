@@ -6,7 +6,7 @@
 //!
 //! Registry state splits in two by how it is produced. **Derived** fields (versions, shapes,
 //! byte splits, row counts, schemas, aux) are a pure function of immutable S3 content — any
-//! sweep re-derives them, so the derived snapshot is written whole, last-wins, with no
+//! sync re-derives them, so the derived snapshot is written whole, last-wins, with no
 //! coordination. **Authored** fields (`owner`, `ttl_policy`, per-version `protected`) are the
 //! only thing humans mutate; this overlay holds exactly those, keyed per table, so a mutation
 //! touches a few hundred bytes and races are resolved by S3's own conditional write rather than
@@ -23,7 +23,7 @@
 //!
 //! NOTE: `object_store`'s `LocalFileSystem` does not implement `PutMode::Update`, so this store
 //! must be backed by S3 / a MinIO-compatible endpoint (production, local dev) or `InMemory`
-//! (tests). The sweep/data path still uses `LocalFileSystem` freely — it does no conditional
+//! (tests). The sync/data path still uses `LocalFileSystem` freely — it does no conditional
 //! writes.
 
 use std::collections::BTreeSet;
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 const MAX_ATTEMPTS: usize = 16;
 
 /// The authored slice of one table's catalog state. Everything here is human-set via the API;
-/// the sweep never writes it. Absent fields default (forward/backward compatible, like the
+/// the sync never writes it. Absent fields default (forward/backward compatible, like the
 /// registry types).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableMeta {

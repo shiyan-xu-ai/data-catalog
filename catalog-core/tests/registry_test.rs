@@ -43,7 +43,7 @@ fn sample_entry(id: &str) -> TableEntry {
         lance_version: None,
         writer_version: None,
         aux: aux.clone(),
-        swept_at: ts,
+        synced_at: ts,
     };
     TableEntry {
         id: id.to_string(),
@@ -55,7 +55,7 @@ fn sample_entry(id: &str) -> TableEntry {
             keep_last_n: Some(5),
             max_age_days: Some(30),
         }),
-        last_swept: Some(ts),
+        last_synced: Some(ts),
         versions: vec![version],
         aux_latest: aux,
     }

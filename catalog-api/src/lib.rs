@@ -1,4 +1,4 @@
-//! `catalog-api` library: config, the merged read model, the sweep, and API routing, shared
+//! `catalog-api` library: config, the merged read model, the sync, and API routing, shared
 //! between the `catalog-api` binary and its integration tests.
 
 pub mod api;
@@ -7,6 +7,6 @@ pub mod config;
 pub mod sample;
 pub mod secrets;
 pub mod shutdown;
-pub mod sweep;
-pub mod sweep_config;
+pub mod sync;
+pub mod sync_config;
 pub mod webui;

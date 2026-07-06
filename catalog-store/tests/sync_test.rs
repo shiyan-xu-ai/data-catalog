@@ -1,4 +1,4 @@
-//! Integration tests for the S3 sweep, run entirely against a local-filesystem
+//! Integration tests for the S3 sync, run entirely against a local-filesystem
 //! `object_store` (no real S3/MinIO — that's covered by a later phase's CI integration
 //! test). Fixture trees are built by hand per the real layout documented in findings.md.
 
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use catalog_core::{AuxFormat, VersionShape};
-use catalog_store::SweepConfig;
+use catalog_store::SyncConfig;
 use lance::Dataset;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjPath;
@@ -43,8 +43,8 @@ async fn write_fake_file(store: &LocalFileSystem, path: &str, content: &[u8]) {
         .expect("write fake file");
 }
 
-fn cfg(store: Arc<LocalFileSystem>, root_dir: &std::path::Path) -> SweepConfig {
-    SweepConfig::new(
+fn cfg(store: Arc<LocalFileSystem>, root_dir: &std::path::Path) -> SyncConfig {
+    SyncConfig::new(
         store,
         ObjPath::from(""),
         root_dir.to_str().unwrap().to_string(),
@@ -74,7 +74,7 @@ async fn full_shape_post_cutoff() {
     .await;
 
     let cfg = cfg(store, tmp.path());
-    let entry = catalog_store::sweep_table(&cfg, "tableA", &ObjPath::from("tableA"))
+    let entry = catalog_store::sync_table(&cfg, "tableA", &ObjPath::from("tableA"))
         .await
         .unwrap();
 
@@ -132,7 +132,7 @@ async fn pre_cutoff_sidecar_inside_lance_dir() {
     .await;
 
     let cfg = cfg(store, tmp.path());
-    let entry = catalog_store::sweep_table(&cfg, "tableB", &ObjPath::from("tableB"))
+    let entry = catalog_store::sync_table(&cfg, "tableB", &ObjPath::from("tableB"))
         .await
         .unwrap();
 
@@ -173,7 +173,7 @@ async fn seg_only_partial() {
     .await;
 
     let cfg = cfg(store, tmp.path());
-    let entry = catalog_store::sweep_table(&cfg, "tableC", &ObjPath::from("tableC"))
+    let entry = catalog_store::sync_table(&cfg, "tableC", &ObjPath::from("tableC"))
         .await
         .unwrap();
 
@@ -216,7 +216,7 @@ async fn transition_dedups_sidecar_bytes_but_keeps_both_aux_entries() {
     .await;
 
     let cfg = cfg(store, tmp.path());
-    let entry = catalog_store::sweep_table(&cfg, "tableD", &ObjPath::from("tableD"))
+    let entry = catalog_store::sync_table(&cfg, "tableD", &ObjPath::from("tableD"))
         .await
         .unwrap();
 
@@ -251,7 +251,7 @@ async fn timestamp_dirname_separator_variance_parses_to_comparable_version_ids()
     write_fake_file(&store, "tableE/2026-06-11-08-00-00/segments/_SUCCESS", b"").await;
 
     let cfg = cfg(store, tmp.path());
-    let entry = catalog_store::sweep_table(&cfg, "tableE", &ObjPath::from("tableE"))
+    let entry = catalog_store::sync_table(&cfg, "tableE", &ObjPath::from("tableE"))
         .await
         .unwrap();
 
@@ -265,7 +265,7 @@ async fn timestamp_dirname_separator_variance_parses_to_comparable_version_ids()
 }
 
 #[tokio::test]
-async fn full_sweep_multiple_tables_multiple_versions() {
+async fn full_sync_multiple_tables_multiple_versions() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
 
@@ -282,7 +282,7 @@ async fn full_sweep_multiple_tables_multiple_versions() {
     write_lance_dataset(&lance_only_dir.join("dataset.lance")).await;
 
     let cfg = cfg(store, tmp.path());
-    let outcome = catalog_store::sweep_root(&cfg).await.unwrap();
+    let outcome = catalog_store::sync_root(&cfg).await.unwrap();
     let entries = outcome.tables;
 
     assert_eq!(entries.len(), 2);
@@ -314,7 +314,7 @@ async fn full_sweep_multiple_tables_multiple_versions() {
 
 /// A version dir with an openable main lance dataset PLUS an unrecognized top-level dir (not
 /// sidecar/segments/known-aux and not lance-shaped) must fold that dir into `other_aux_bytes`
-/// and surface it as an aux entry -- not silently drop its bytes. Regression test for the sweep
+/// and surface it as an aux entry -- not silently drop its bytes. Regression test for the sync
 /// accounting gap where a leftover sibling of the main lance dir was dropped entirely.
 #[tokio::test]
 async fn unknown_top_level_dir_is_accounted_not_dropped() {
@@ -333,7 +333,7 @@ async fn unknown_top_level_dir_is_accounted_not_dropped() {
     .await;
 
     let cfg = cfg(store, tmp.path());
-    let entry = catalog_store::sweep_table(&cfg, "tableH", &ObjPath::from("tableH"))
+    let entry = catalog_store::sync_table(&cfg, "tableH", &ObjPath::from("tableH"))
         .await
         .unwrap();
 
@@ -371,7 +371,7 @@ async fn deep_stats_latest_and_none_gate_only_the_index_load() {
 
     let latest_mode =
         cfg(store.clone(), tmp.path()).with_deep_stats(catalog_store::DeepStats::Latest);
-    let entry = catalog_store::sweep_table(&latest_mode, "t", &ObjPath::from("t"))
+    let entry = catalog_store::sync_table(&latest_mode, "t", &ObjPath::from("t"))
         .await
         .unwrap();
     assert_eq!(entry.versions.len(), 2);
@@ -387,7 +387,7 @@ async fn deep_stats_latest_and_none_gate_only_the_index_load() {
     assert!(new.num_indices.is_some(), "latest keeps deep stats");
 
     let none_mode = cfg(store, tmp.path()).with_deep_stats(catalog_store::DeepStats::None);
-    let entry = catalog_store::sweep_table(&none_mode, "t", &ObjPath::from("t"))
+    let entry = catalog_store::sync_table(&none_mode, "t", &ObjPath::from("t"))
         .await
         .unwrap();
     assert!(entry.versions.iter().all(|v| v.num_indices.is_none()));
@@ -415,7 +415,7 @@ async fn nested_sidecar_datasets_get_their_own_enriched_aux_entries() {
     .await;
 
     let cfg = cfg(store, tmp.path());
-    let entry = catalog_store::sweep_table(&cfg, "tableG", &ObjPath::from("tableG"))
+    let entry = catalog_store::sync_table(&cfg, "tableG", &ObjPath::from("tableG"))
         .await
         .unwrap();
 

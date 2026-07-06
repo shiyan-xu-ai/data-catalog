@@ -4,24 +4,24 @@
 //! ## State model
 //!
 //! Reads serve the merged catalog view from [`crate::catalog::Catalog`] (the derived snapshot,
-//! written by the sweep, with the authored overlay applied). Mutations write only the authored
+//! written by the sync, with the authored overlay applied). Mutations write only the authored
 //! overlay ([`catalog_store::MetaStore`]) via object-store conditional writes (ETag CAS) — there
-//! is no leader and no lock, because the derived snapshot is sweep-written last-wins and the
+//! is no leader and no lock, because the derived snapshot is sync-written last-wins and the
 //! authored overlay is serialized per-table by S3 itself. Any instance can mutate. After a
 //! mutation the read cache is invalidated so a subsequent read on the same instance sees it.
 //!
 //! The catalog is a curated allowlist: `DeclareTable` registers a table (writes its overlay),
-//! and only registered tables are swept, so declaring is what makes a table's derived fields
-//! appear on the next sweep. `protect`/TTL-policy edits also write the overlay.
+//! and only registered tables are synced, so declaring is what makes a table's derived fields
+//! appear on the next sync. `protect`/TTL-policy edits also write the overlay.
 //! `DeregisterTable` clears the overlay, removing the table from the registered set — the next
-//! sweep then drops its derived entry from the snapshot.
+//! sync then drops its derived entry from the snapshot.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use catalog_core::{ttl_eligible_versions, TableEntry, TableVersion, TtlAuditRecord, TtlPolicy};
-use catalog_store::{MetaStore, SweepConfig};
+use catalog_store::{MetaStore, SyncConfig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -82,7 +82,7 @@ pub struct ApiState {
     /// Authored-overlay store (owner/ttl_policy/protected) mutated via ETag CAS.
     pub meta: MetaStore,
     /// Object-store access for TTL hard-delete; resolves version `snapshot_path`s to prefixes.
-    pub sweep_cfg: SweepConfig,
+    pub sync_cfg: SyncConfig,
     /// URI of the `_catalog/ttl_audit` Lance table TTL `apply` appends to.
     pub ttl_audit_path: String,
 }
@@ -91,13 +91,13 @@ impl ApiState {
     pub fn new(
         catalog: Arc<Catalog>,
         meta: MetaStore,
-        sweep_cfg: SweepConfig,
+        sync_cfg: SyncConfig,
         ttl_audit_path: String,
     ) -> Self {
         Self {
             catalog,
             meta,
-            sweep_cfg,
+            sync_cfg,
             ttl_audit_path,
         }
     }
@@ -189,10 +189,10 @@ struct DeclareTableRequest {
 }
 
 /// A table id must be a plain S3-directory-style name: it is both the overlay object's filename
-/// (`_catalog/meta/<id>.json`) and a path segment under the sweep root (`<root>/<id>/`), so it
+/// (`_catalog/meta/<id>.json`) and a path segment under the sync root (`<root>/<id>/`), so it
 /// must round-trip through object-store path encoding unchanged. Ids with characters the store
 /// would percent-encode (`/`, `%`, `#`, whitespace, control, non-ASCII) don't round-trip — the
-/// overlay listing would recover a mangled id and the table would be silently unswept — so they
+/// overlay listing would recover a mangled id and the table would be silently unsynced — so they
 /// are refused at registration instead. Real table dirs are `[A-Za-z0-9._-]`; this matches them.
 fn valid_table_id(id: &str) -> bool {
     !id.is_empty()
@@ -205,8 +205,8 @@ fn valid_table_id(id: &str) -> bool {
 }
 
 /// `DeclareTable` -- registers a table by writing its authored overlay (creating it if absent),
-/// optionally setting `owner`/`ttl_policy`. Registration is what puts the table in the swept set,
-/// so its derived fields (versions, sizes, ...) are filled by the next sweep. Idempotent; any
+/// optionally setting `owner`/`ttl_policy`. Registration is what puts the table in the synced set,
+/// so its derived fields (versions, sizes, ...) are filled by the next sync. Idempotent; any
 /// instance serves it.
 ///
 /// The body is optional: a bare `PUT /v1/table/:id` (no body / no `content-type`) just registers
@@ -257,9 +257,9 @@ async fn declare_table(
 }
 
 /// `DeregisterTable` -- unregisters a table by deleting its authored overlay, removing it from
-/// the swept set. 404 if the table is not cataloged at all. The derived entry lingers in the
-/// snapshot until the next sweep, which (no longer seeing it registered) drops it — so a
-/// deregistered table disappears from the catalog within one sweep interval.
+/// the synced set. 404 if the table is not cataloged at all. The derived entry lingers in the
+/// snapshot until the next sync, which (no longer seeing it registered) drops it — so a
+/// deregistered table disappears from the catalog within one sync interval.
 async fn deregister_table(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -382,7 +382,7 @@ async fn ext_sample_aux(
         catalog_core::AuxFormat::Parquet => {
             tokio::time::timeout(
                 SAMPLE_TIMEOUT,
-                crate::sample::sample_parquet(&state.sweep_cfg, &entry.path, limit),
+                crate::sample::sample_parquet(&state.sync_cfg, &entry.path, limit),
             )
             .await
         }

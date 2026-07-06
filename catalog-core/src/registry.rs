@@ -22,7 +22,7 @@ fn registry_schema() -> SchemaRef {
         Field::new("root_location", DataType::Utf8, false),
         Field::new("owner", DataType::Utf8, true),
         Field::new("ttl_policy_json", DataType::Utf8, true),
-        Field::new("last_swept", DataType::Utf8, true),
+        Field::new("last_synced", DataType::Utf8, true),
         Field::new("versions_json", DataType::Utf8, false),
         Field::new("aux_latest_json", DataType::Utf8, false),
     ]))
@@ -53,9 +53,9 @@ fn entries_to_batch(entries: &[TableEntry]) -> Result<RecordBatch> {
         .context("serialize ttl_policy")?
         .into_iter()
         .collect();
-    let last_swept: StringArray = entries
+    let last_synced: StringArray = entries
         .iter()
-        .map(|e| e.last_swept.map(|ts| ts.to_rfc3339()))
+        .map(|e| e.last_synced.map(|ts| ts.to_rfc3339()))
         .collect();
     let versions_json: StringArray = entries
         .iter()
@@ -83,7 +83,7 @@ fn entries_to_batch(entries: &[TableEntry]) -> Result<RecordBatch> {
             Arc::new(root_location),
             Arc::new(owner),
             Arc::new(ttl_policy_json),
-            Arc::new(last_swept),
+            Arc::new(last_synced),
             Arc::new(versions_json),
             Arc::new(aux_latest_json),
         ],
@@ -106,7 +106,7 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
     let root_location = col("root_location")?;
     let owner = col("owner")?;
     let ttl_policy_json = col("ttl_policy_json")?;
-    let last_swept = col("last_swept")?;
+    let last_synced = col("last_synced")?;
     let versions_json = col("versions_json")?;
     let aux_latest_json = col("aux_latest_json")?;
 
@@ -119,12 +119,12 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
         } else {
             Some(serde_json::from_str(ttl_policy_json.value(i)).context("deserialize ttl_policy")?)
         };
-        let last_swept = if last_swept.is_null(i) {
+        let last_synced = if last_synced.is_null(i) {
             None
         } else {
             Some(
-                chrono::DateTime::parse_from_rfc3339(last_swept.value(i))
-                    .context("parse last_swept")?
+                chrono::DateTime::parse_from_rfc3339(last_synced.value(i))
+                    .context("parse last_synced")?
                     .with_timezone(&chrono::Utc),
             )
         };
@@ -144,7 +144,7 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
                 Some(owner.value(i).to_string())
             },
             ttl_policy,
-            last_swept,
+            last_synced,
             versions,
             aux_latest,
         });
@@ -169,9 +169,9 @@ pub async fn write_registry(path: &str, entries: &[TableEntry]) -> Result<()> {
 }
 
 /// Best-effort prune of registry Lance versions older than `older_than`, so the derived
-/// snapshot's manifest history (one new version per sweep `Overwrite`) does not grow without
+/// snapshot's manifest history (one new version per sync `Overwrite`) does not grow without
 /// bound. A no-op if the dataset doesn't exist yet. Errors are returned for the caller to log;
-/// the sweep treats a failed cleanup as non-fatal.
+/// the sync treats a failed cleanup as non-fatal.
 pub async fn cleanup_registry(path: &str, older_than: chrono::Duration) -> Result<()> {
     let dataset = match Dataset::open(path).await {
         Ok(dataset) => dataset,
@@ -188,7 +188,7 @@ pub async fn cleanup_registry(path: &str, older_than: chrono::Duration) -> Resul
 /// Read all registry entries from the Lance dataset at `path`.
 ///
 /// Returns `Ok(None)` only when the dataset does not exist yet (expected on the very first
-/// boot, before any sweep has written it). Every other failure -- transient object-store
+/// boot, before any sync has written it). Every other failure -- transient object-store
 /// errors, throttling, corrupt manifests, deserialization failures -- is propagated as `Err`.
 /// Callers MUST NOT treat an `Err` as "empty registry": doing so lets a transient read failure
 /// rebuild the registry from scratch, and because `write_registry` uses `WriteMode::Overwrite`

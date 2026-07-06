@@ -1,6 +1,6 @@
-//! Format detection and byte-accounting helpers shared by the sweep.
+//! Format detection and byte-accounting helpers shared by the sync.
 //!
-//! The classification helpers here are pure functions over a pre-fetched object list: the sweep
+//! The classification helpers here are pure functions over a pre-fetched object list: the sync
 //! fetches every object under a version directory with ONE recursive LIST, then derives listings,
 //! byte totals, formats, and fingerprints in memory instead of issuing per-directory S3 requests
 //! (the old shape of this module). `recursive_bytes` remains as the one direct-IO helper for

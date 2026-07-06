@@ -2,10 +2,10 @@
 //! against the axum `Router` via `tower::ServiceExt::oneshot` -- no real TCP listener needed.
 //!
 //! The app is wired the way `main.rs` wires it: a derived registry snapshot on disk (written by
-//! the sweep in production, seeded here) plus an authored overlay ([`catalog_store::MetaStore`])
+//! the sync in production, seeded here) plus an authored overlay ([`catalog_store::MetaStore`])
 //! backed by `InMemory` -- object-store conditional writes (ETag CAS) are the whole point of the
 //! overlay, and `LocalFileSystem` doesn't implement them, so the overlay must be `InMemory` in
-//! tests while the sweep/TTL data path stays on `LocalFileSystem`.
+//! tests while the sync/TTL data path stays on `LocalFileSystem`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use catalog_api_lib::catalog::Catalog;
 use catalog_core::{
     AuxEntry, AuxFormat, Namespace, TableEntry, TableVersion, TtlPolicy, VersionShape,
 };
-use catalog_store::{MetaStore, SweepConfig, TableMeta};
+use catalog_store::{MetaStore, SyncConfig, TableMeta};
 use chrono::{TimeZone, Utc};
 use http_body_util::BodyExt;
 use object_store::local::LocalFileSystem;
@@ -64,7 +64,7 @@ fn fixture_version(id: &str) -> TableVersion {
             lance_version: None,
             writer_version: None,
         }],
-        swept_at: ts,
+        synced_at: ts,
     }
 }
 
@@ -77,35 +77,35 @@ fn fixture_entry() -> TableEntry {
         root_location: "s3://bucket/smoke_test".to_string(),
         owner: None,
         ttl_policy: None,
-        last_swept: Some(Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap()),
+        last_synced: Some(Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap()),
         versions: vec![version.clone()],
         aux_latest: version.aux,
     }
 }
 
 /// Build a test app: a fresh Lance registry snapshot on disk seeded with `entries` (the derived
-/// state the sweep produces) plus an `InMemory` authored overlay seeded with `overlays` (the
+/// state the sync produces) plus an `InMemory` authored overlay seeded with `overlays` (the
 /// owner/ttl_policy/protected the API mutates). `cache_ttl` is zero so every read revalidates
 /// against storage -- read-your-writes is deterministic without depending on cache timing. The
-/// `sweep_cfg` points at a throwaway, never-populated sweep root, fine for every test except TTL
-/// `apply`, which uses `test_app_with_sweep_cfg` so it can seed real objects to delete.
+/// `sync_cfg` points at a throwaway, never-populated sync root, fine for every test except TTL
+/// `apply`, which uses `test_app_with_sync_cfg` so it can seed real objects to delete.
 async fn test_app(
     entries: Vec<TableEntry>,
     overlays: Vec<(&str, TableMeta)>,
 ) -> (Router, tempfile::TempDir, tempfile::TempDir) {
-    let sweep_dir = tempfile::tempdir().unwrap();
-    let sweep_cfg = common::sweep_config(sweep_dir.path());
-    let (app, _ttl_audit, reg_dir) = test_app_with_sweep_cfg(entries, overlays, sweep_cfg).await;
-    (app, reg_dir, sweep_dir)
+    let sync_dir = tempfile::tempdir().unwrap();
+    let sync_cfg = common::sync_config(sync_dir.path());
+    let (app, _ttl_audit, reg_dir) = test_app_with_sync_cfg(entries, overlays, sync_cfg).await;
+    (app, reg_dir, sync_dir)
 }
 
-/// Like `test_app`, but the caller supplies (and keeps alive) the `SweepConfig` wired into
+/// Like `test_app`, but the caller supplies (and keeps alive) the `SyncConfig` wired into
 /// `ApiState` -- needed by the TTL `apply` test, which seeds real objects into the same object
 /// store `ttl_apply` deletes from. Returns the audit-log path so the test can read it back.
-async fn test_app_with_sweep_cfg(
+async fn test_app_with_sync_cfg(
     entries: Vec<TableEntry>,
     overlays: Vec<(&str, TableMeta)>,
-    sweep_cfg: SweepConfig,
+    sync_cfg: SyncConfig,
 ) -> (Router, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let registry_path = dir
@@ -130,7 +130,7 @@ async fn test_app_with_sweep_cfg(
     }
 
     let catalog = Catalog::new(registry_path, meta.clone(), Duration::ZERO);
-    let state = ApiState::new(catalog, meta, sweep_cfg, ttl_audit_path.clone());
+    let state = ApiState::new(catalog, meta, sync_cfg, ttl_audit_path.clone());
     (api_router(state), ttl_audit_path, dir)
 }
 
@@ -239,7 +239,7 @@ async fn bare_put_registers_a_table_with_no_body_and_rejects_malformed_json() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // An id with a character the object store would percent-encode is refused (400) rather than
-    // silently registered under a mangled overlay filename that the sweep would never find. The
+    // silently registered under a mangled overlay filename that the sync would never find. The
     // id is URL-encoded in the request path; axum decodes it before the handler sees it.
     let resp = app
         .oneshot(
@@ -274,7 +274,7 @@ async fn declare_table_on_unknown_id_materializes_an_overlay_only_stub() {
     let json = body_json(resp).await;
     assert_eq!(json["id"], "brand_new_table");
     assert_eq!(json["owner"], "raymond");
-    // No sweep has observed it yet: the stub has authored state but no derived versions.
+    // No sync has observed it yet: the stub has authored state but no derived versions.
     assert_eq!(json["versions"].as_array().unwrap().len(), 0);
 }
 
@@ -374,18 +374,18 @@ async fn protect_endpoint_writes_the_flag_to_the_overlay_and_it_merges_into_the_
     assert_eq!(json["protected"], true);
 }
 
-/// Build a TTL fixture `TableVersion` whose `snapshot_path` resolves (via `sweep_cfg.uri_for`)
-/// to `<table>/<ts_dir>` in `sweep_cfg`'s backing object store -- so `ttl_apply`'s
+/// Build a TTL fixture `TableVersion` whose `snapshot_path` resolves (via `sync_cfg.uri_for`)
+/// to `<table>/<ts_dir>` in `sync_cfg`'s backing object store -- so `ttl_apply`'s
 /// `path_for(snapshot_path)` round-trips back to the real prefix a test seeded objects under.
 fn ttl_fixture_version(
-    sweep_cfg: &SweepConfig,
+    sync_cfg: &SyncConfig,
     table: &str,
     ts_dir: &str,
     days_ago: i64,
     shape: VersionShape,
 ) -> TableVersion {
     let ts = Utc::now() - chrono::Duration::days(days_ago);
-    let snapshot_path = sweep_cfg.uri_for(&ObjPath::from(format!("{table}/{ts_dir}")));
+    let snapshot_path = sync_cfg.uri_for(&ObjPath::from(format!("{table}/{ts_dir}")));
     TableVersion {
         version_id: ts_dir.to_string(),
         timestamp: ts,
@@ -405,7 +405,7 @@ fn ttl_fixture_version(
         lance_version: None,
         writer_version: None,
         aux: Vec::new(),
-        swept_at: ts,
+        synced_at: ts,
     }
 }
 
@@ -433,32 +433,32 @@ async fn write_fake_object(store: &LocalFileSystem, path: &str, content: &[u8]) 
 
 #[tokio::test]
 async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture() {
-    let sweep_root_dir = tempfile::tempdir().unwrap();
-    let sweep_cfg = common::sweep_config(sweep_root_dir.path());
+    let sync_root_dir = tempfile::tempdir().unwrap();
+    let sync_cfg = common::sync_config(sync_root_dir.path());
 
     let eligible_old = ttl_fixture_version(
-        &sweep_cfg,
+        &sync_cfg,
         "t1",
         "2020-01-01T00-00-00",
         2000,
         VersionShape::Full,
     );
     let recent = ttl_fixture_version(
-        &sweep_cfg,
+        &sync_cfg,
         "t1",
         "2026-07-01T00-00-00",
         1,
         VersionShape::Full,
     );
     let protected_old = ttl_fixture_version(
-        &sweep_cfg,
+        &sync_cfg,
         "t1",
         "2020-06-01T00-00-00",
         1900,
         VersionShape::Full,
     );
     let partial_old = ttl_fixture_version(
-        &sweep_cfg,
+        &sync_cfg,
         "t1",
         "2019-01-01T00-00-00",
         2500,
@@ -472,7 +472,7 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         root_location: "whatever".to_string(),
         owner: None,
         ttl_policy: None,
-        last_swept: None,
+        last_synced: None,
         versions: vec![
             eligible_old.clone(),
             recent.clone(),
@@ -484,7 +484,7 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
     let overlay = ("t1", ttl_overlay(&protected_old.version_id));
 
     let (app, _ttl_audit, _dir) =
-        test_app_with_sweep_cfg(vec![entry], vec![overlay], sweep_cfg).await;
+        test_app_with_sync_cfg(vec![entry], vec![overlay], sync_cfg).await;
 
     let resp = get(&app, "/ext/v1/tables/t1/ttl/dryrun").await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -502,9 +502,9 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
 /// completely untouched, even when a version is genuinely eligible under the policy.
 #[tokio::test]
 async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
-    let sweep_root_dir = tempfile::tempdir().unwrap();
-    let store = LocalFileSystem::new_with_prefix(sweep_root_dir.path()).unwrap();
-    let sweep_cfg = common::sweep_config(sweep_root_dir.path());
+    let sync_root_dir = tempfile::tempdir().unwrap();
+    let store = LocalFileSystem::new_with_prefix(sync_root_dir.path()).unwrap();
+    let sync_cfg = common::sync_config(sync_root_dir.path());
 
     write_fake_object(
         &store,
@@ -514,7 +514,7 @@ async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
     .await;
 
     let eligible_old = ttl_fixture_version(
-        &sweep_cfg,
+        &sync_cfg,
         "t1",
         "2020-01-01T00-00-00",
         2000,
@@ -528,13 +528,13 @@ async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
         root_location: "whatever".to_string(),
         owner: None,
         ttl_policy: None,
-        last_swept: None,
+        last_synced: None,
         versions: vec![eligible_old.clone()],
         aux_latest: Vec::new(),
     };
 
     let (app, ttl_audit_path, _dir) =
-        test_app_with_sweep_cfg(vec![entry], vec![], sweep_cfg.clone()).await;
+        test_app_with_sync_cfg(vec![entry], vec![], sync_cfg.clone()).await;
 
     let resp = app
         .clone()
@@ -556,8 +556,8 @@ async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
         .contains("not implemented"));
 
     // The "eligible" version's objects are untouched.
-    let prefix = sweep_cfg.path_for(&eligible_old.snapshot_path).unwrap();
-    let bytes = catalog_store::recursive_bytes(sweep_cfg.store.as_ref(), &prefix)
+    let prefix = sync_cfg.path_for(&eligible_old.snapshot_path).unwrap();
+    let bytes = catalog_store::recursive_bytes(sync_cfg.store.as_ref(), &prefix)
         .await
         .unwrap();
     assert!(bytes > 0, "apply must not delete any objects");

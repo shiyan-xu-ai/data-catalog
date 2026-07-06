@@ -97,7 +97,7 @@ mod tests {
             lance_version: None,
             writer_version: None,
             aux: Vec::<AuxEntry>::new(),
-            swept_at: ts,
+            synced_at: ts,
         }
     }
 

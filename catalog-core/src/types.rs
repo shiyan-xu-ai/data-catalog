@@ -77,7 +77,7 @@ pub struct AuxEntry {
     pub writer_version: Option<String>,
 }
 
-/// Shape of a swept table version, per findings.md.
+/// Shape of a synced table version, per findings.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionShape {
@@ -133,7 +133,7 @@ pub struct TableVersion {
     pub writer_version: Option<String>,
     #[serde(default)]
     pub aux: Vec<AuxEntry>,
-    pub swept_at: DateTime<Utc>,
+    pub synced_at: DateTime<Utc>,
 }
 
 /// A table's registry entry.
@@ -145,7 +145,7 @@ pub struct TableEntry {
     pub root_location: String,
     pub owner: Option<String>,
     pub ttl_policy: Option<TtlPolicy>,
-    pub last_swept: Option<DateTime<Utc>>,
+    pub last_synced: Option<DateTime<Utc>>,
     pub versions: Vec<TableVersion>,
     /// Latest version's aux summary, kept denormalized for cheap listing.
     pub aux_latest: Vec<AuxEntry>,
@@ -193,7 +193,7 @@ mod tests {
             "snapshot_path": "s3://bucket/t/2026-01-01",
             "shape": "full",
             "storage_bytes_total": 100,
-            "swept_at": "2026-01-01T00:00:00Z",
+            "synced_at": "2026-01-01T00:00:00Z",
             "some_future_field": {"nested": true}
         }"#;
 

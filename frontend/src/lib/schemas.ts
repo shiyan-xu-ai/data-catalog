@@ -66,7 +66,7 @@ export const tableVersionSchema = z.object({
   lance_version: z.number().nullable().default(null),
   writer_version: z.string().nullable().default(null),
   aux: z.array(auxEntrySchema).default([]),
-  swept_at: z.string(),
+  synced_at: z.string(),
 });
 export type TableVersion = z.infer<typeof tableVersionSchema>;
 
@@ -83,7 +83,7 @@ export const tableEntrySchema = z.object({
   root_location: z.string(),
   owner: z.string().nullable(),
   ttl_policy: ttlPolicySchema.nullable(),
-  last_swept: z.string().nullable(),
+  last_synced: z.string().nullable(),
   versions: z.array(tableVersionSchema),
   aux_latest: z.array(auxEntrySchema),
 });

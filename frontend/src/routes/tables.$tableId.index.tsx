@@ -71,7 +71,7 @@ function TableDetailPage() {
             <MetaRow label="TTL policy">{table.ttl_policy ? <Badge variant="secondary">{ttlPolicyString(table.ttl_policy)}</Badge> : "none"}</MetaRow>
             <MetaRow label="Versions">{table.versions.length}</MetaRow>
             <MetaRow label="Total size">{formatBytes(totalBytes)}</MetaRow>
-            <MetaRow label="Last swept">{formatTime(table.last_swept, tz)} <span className="text-muted-foreground">({formatRelative(table.last_swept)})</span></MetaRow>
+            <MetaRow label="Last synced">{formatTime(table.last_synced, tz)} <span className="text-muted-foreground">({formatRelative(table.last_synced)})</span></MetaRow>
           </dl>
         </CardContent>
       </Card>
@@ -104,7 +104,7 @@ function TableDetailPage() {
         </CardHeader>
         <CardContent>
           {table.versions.length === 0 ? (
-            <EmptyState>No versions swept yet.</EmptyState>
+            <EmptyState>No versions synced yet.</EmptyState>
           ) : (
             <VersionsTable tableId={table.id} versions={table.versions} />
           )}

@@ -116,7 +116,7 @@ function VersionDetailPage() {
               <Stat label="Rows" value={version.row_count != null ? version.row_count.toLocaleString() : "—"} />
               <Stat label="Fragments" value={version.num_fragments != null ? version.num_fragments.toLocaleString() : "—"} />
               <Stat label="Indices" value={version.num_indices != null ? version.num_indices.toLocaleString() : "—"} />
-              <Stat label="Swept" value={formatTime(version.swept_at, tz)} />
+              <Stat label="Synced" value={formatTime(version.synced_at, tz)} />
               <Stat label="Snapshot" value={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{version.snapshot_path}</code>} />
             </dl>
           </CardContent>

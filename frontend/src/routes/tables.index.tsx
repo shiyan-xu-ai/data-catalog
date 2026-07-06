@@ -83,10 +83,10 @@ const columns: ColumnDef<TableEntry>[] = [
       ) : <span className="text-muted-foreground">none</span>,
   },
   {
-    accessorKey: "last_swept",
-    header: "Swept",
+    accessorKey: "last_synced",
+    header: "Synced",
     cell: ({ row }) => (
-      <span className="text-muted-foreground">{formatRelative(row.original.last_swept)}</span>
+      <span className="text-muted-foreground">{formatRelative(row.original.last_synced)}</span>
     ),
   },
 ];

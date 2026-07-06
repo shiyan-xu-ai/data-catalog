@@ -26,7 +26,7 @@ describe("tableVersionSchema", () => {
       timestamp: "2026-01-01T00:00:00Z",
       snapshot_path: "s3://b/t/2026-01-01",
       shape: "full",
-      swept_at: "2026-01-01T00:00:00Z",
+      synced_at: "2026-01-01T00:00:00Z",
     });
     expect(v.partial).toBe(false);
     expect(v.protected).toBe(false);
@@ -41,7 +41,7 @@ describe("tableVersionSchema", () => {
         timestamp: "t",
         snapshot_path: "p",
         shape: "bogus",
-        swept_at: "t",
+        synced_at: "t",
       }),
     ).toThrow();
   });
@@ -56,7 +56,7 @@ describe("tableEntrySchema", () => {
       root_location: "s3://b/t1",
       owner: "team",
       ttl_policy: { keep_last_n: 2 },
-      last_swept: "2026-01-01T00:00:00Z",
+      last_synced: "2026-01-01T00:00:00Z",
       versions: [],
       aux_latest: [],
     });
@@ -71,13 +71,13 @@ describe("tableEntrySchema", () => {
       root_location: "s3://b/t2",
       owner: null,
       ttl_policy: null,
-      last_swept: null,
+      last_synced: null,
       versions: [],
       aux_latest: [],
     });
     expect(e.owner).toBeNull();
     expect(e.ttl_policy).toBeNull();
-    expect(e.last_swept).toBeNull();
+    expect(e.last_synced).toBeNull();
   });
 });
 

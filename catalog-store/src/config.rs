@@ -1,4 +1,4 @@
-//! Sweep configuration: which object store + root prefix to sweep, and how to build the
+//! Sync configuration: which object store + root prefix to sync, and how to build the
 //! full URI lance needs to open a dataset.
 
 use std::sync::Arc;
@@ -7,29 +7,29 @@ use anyhow::{anyhow, Result};
 use object_store::path::Path as ObjPath;
 use object_store::ObjectStore;
 
-/// Configuration for one sweep pass.
+/// Configuration for one sync pass.
 ///
 /// `store` is used for all LIST operations (discovery + byte accounting); it is generic
-/// over any `object_store::ObjectStore` impl so the same sweep code runs against
+/// over any `object_store::ObjectStore` impl so the same sync code runs against
 /// `LocalFileSystem`/`InMemory` in tests and against S3 (or a MinIO-compatible endpoint) in
-/// production. `root_path` is the prefix within `store` that is swept. `root_uri` is the
+/// production. `root_path` is the prefix within `store` that is synced. `root_uri` is the
 /// URI prefix lance's `Dataset::open` needs to resolve the *same* location — for local tests
 /// this is a plain filesystem path, for S3 it is `s3://bucket/prefix`.
 #[derive(Clone)]
-pub struct SweepConfig {
+pub struct SyncConfig {
     pub store: Arc<dyn ObjectStore>,
     pub root_path: ObjPath,
     pub root_uri: String,
-    /// How many versions sweep concurrently (in-flight LISTs + dataset opens). The sweep is
+    /// How many versions sync concurrently (in-flight LISTs + dataset opens). The sync is
     /// S3-latency-bound, so wall time ≈ `versions / concurrency`.
     pub concurrency: usize,
     /// Which versions get the expensive Lance stats. See [`DeepStats`].
     pub deep_stats: DeepStats,
 }
 
-/// Default in-flight version sweeps. S3-class stores comfortably serve far more concurrent
+/// Default in-flight version syncs. S3-class stores comfortably serve far more concurrent
 /// requests than this; the cap bounds memory (one version's object list in flight per slot).
-pub const DEFAULT_SWEEP_CONCURRENCY: usize = 16;
+pub const DEFAULT_SYNC_CONCURRENCY: usize = 16;
 
 /// Which versions get the expensive Lance stats (`load_indices`, and the `count_rows` fallback
 /// when the manifest doesn't fully carry row counts). The dataset OPEN itself always runs —
@@ -61,7 +61,7 @@ impl std::str::FromStr for DeepStats {
     }
 }
 
-impl SweepConfig {
+impl SyncConfig {
     pub fn new(
         store: Arc<dyn ObjectStore>,
         root_path: ObjPath,
@@ -71,12 +71,12 @@ impl SweepConfig {
             store,
             root_path,
             root_uri: root_uri.into(),
-            concurrency: DEFAULT_SWEEP_CONCURRENCY,
+            concurrency: DEFAULT_SYNC_CONCURRENCY,
             deep_stats: DeepStats::default(),
         }
     }
 
-    /// Override the version-sweep concurrency (clamped to at least 1).
+    /// Override the version-sync concurrency (clamped to at least 1).
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency.max(1);
         self
@@ -117,7 +117,7 @@ impl SweepConfig {
         let root_uri = self.root_uri.trim_end_matches('/');
         let rel = uri
             .strip_prefix(root_uri)
-            .ok_or_else(|| anyhow!("uri {uri} is not under sweep root {root_uri}"))?
+            .ok_or_else(|| anyhow!("uri {uri} is not under sync root {root_uri}"))?
             .trim_start_matches('/');
         let root_str = self.root_path.as_ref().trim_end_matches('/');
         if rel.is_empty() {
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn path_for_is_the_inverse_of_uri_for() {
-        let cfg = SweepConfig::new(
+        let cfg = SyncConfig::new(
             Arc::new(LocalFileSystem::new()),
             ObjPath::from("scenario_dataset_export"),
             "s3://bucket/scenario_dataset_export".to_string(),
@@ -153,8 +153,8 @@ mod tests {
     }
 
     #[test]
-    fn path_for_errors_when_uri_is_not_under_the_sweep_root() {
-        let cfg = SweepConfig::new(
+    fn path_for_errors_when_uri_is_not_under_the_sync_root() {
+        let cfg = SyncConfig::new(
             Arc::new(LocalFileSystem::new()),
             ObjPath::from("scenario_dataset_export"),
             "s3://bucket/scenario_dataset_export".to_string(),
