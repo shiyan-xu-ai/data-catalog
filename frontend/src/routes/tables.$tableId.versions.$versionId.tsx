@@ -11,7 +11,7 @@ import { ErrorState } from "@/components/error-state";
 import { EmptyState } from "@/components/empty-state";
 import { ShapeBadge } from "@/components/shape-badge";
 import { AuxTable } from "@/components/aux-table";
-import { CodeBlock, prettyJson } from "@/components/code-block";
+import { SchemaView } from "@/components/schema-view";
 import { formatBytes, formatTime } from "@/lib/format";
 import { useTz } from "@/lib/timezone";
 
@@ -127,7 +127,7 @@ function VersionDetailPage() {
         <Card>
           <CardHeader><CardTitle>Schema</CardTitle></CardHeader>
           <CardContent>
-            <CodeBlock>{prettyJson(version.schema_json)}</CodeBlock>
+            <SchemaView schemaJson={version.schema_json} />
           </CardContent>
         </Card>
       )}
