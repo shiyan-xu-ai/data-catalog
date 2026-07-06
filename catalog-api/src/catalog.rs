@@ -54,14 +54,22 @@ fn apply_overlay(entry: &mut TableEntry, meta: &TableMeta) {
     catalog_core::recompute_aux_latest(entry);
 }
 
-/// A table declared (owner/ttl_policy set) before any sync has observed it on S3.
+/// A table declared (owner/ttl_policy set) before any sync has observed it on S3. The id is
+/// parsed to fill `region`/`bucket`/`namespace`/`name` so a declared-before-sync stub still
+/// carries its scope; an id that doesn't parse (shouldn't happen post-declare-validation, but
+/// cheap to handle) falls back to empties with the whole id as the name.
 fn stub_entry(id: &str) -> TableEntry {
+    let parsed = catalog_core::parse_table_id(id);
+    let (region, bucket, namespace, name) = match parsed {
+        Some(p) => (p.region, p.bucket, p.namespace, p.name),
+        None => (String::new(), String::new(), Vec::new(), id.to_string()),
+    };
     TableEntry {
         id: id.to_string(),
-        name: id.to_string(),
-        region: String::new(),
-        bucket: String::new(),
-        namespace: Namespace::new(Vec::<String>::new()),
+        name,
+        region,
+        bucket,
+        namespace: Namespace::new(namespace),
         root_location: String::new(),
         owner: None,
         ttl_policy: None,

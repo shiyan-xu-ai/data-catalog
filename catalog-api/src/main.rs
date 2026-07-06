@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let cfg = AppConfig::from_env()?;
 
     // Fail fast on a missing/invalid deployment config before anything else stands up.
-    let catalog_cfg = CatalogConfig::load(&cfg.catalog_config_path)?;
+    let catalog_cfg = Arc::new(CatalogConfig::load(&cfg.catalog_config_path)?);
 
     // On Cloud Run the AWS keys come from Secret Manager (no ambient AWS credential); locally
     // this is a no-op and env/MinIO credentials are used. Fetched once, shared by both stores.
@@ -123,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
         meta.clone(),
         sync_cfg.clone(),
         cfg.ttl_audit_path.clone(),
+        catalog_cfg.clone(),
     );
     let sync_state = SyncState {
         sync_cfg,

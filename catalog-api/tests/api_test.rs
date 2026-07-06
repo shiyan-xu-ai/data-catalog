@@ -16,6 +16,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use catalog_api_lib::api::{api_router, ApiState};
 use catalog_api_lib::catalog::Catalog;
+use catalog_api_lib::catalog_config::CatalogConfig;
 use catalog_core::{
     AuxEntry, AuxFormat, Namespace, TableEntry, TableVersion, TtlPolicy, VersionShape,
 };
@@ -28,6 +29,13 @@ use object_store::path::Path as ObjPath;
 use tower::ServiceExt;
 
 mod common;
+
+/// The deployment scope every fixture id is composed under: region `r1`, bucket `b1`, a single
+/// registered namespace `ns1`. Composite table ids in this file take the form `r1:b1:ns1:<name>`.
+fn test_catalog_config() -> CatalogConfig {
+    let yaml = "region: r1\nbuckets:\n  - name: b1\n    namespaces: [ns1]\n";
+    serde_yaml::from_str(yaml).unwrap()
+}
 
 fn fixture_version(id: &str) -> TableVersion {
     let ts = Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap();
@@ -72,11 +80,11 @@ fn fixture_version(id: &str) -> TableVersion {
 fn fixture_entry() -> TableEntry {
     let version = fixture_version("2026-06-26T12:00:00Z");
     TableEntry {
-        id: "smoke_test".to_string(),
+        id: "r1:b1:ns1:smoke_test".to_string(),
         name: "smoke_test".to_string(),
-        region: String::new(),
-        bucket: String::new(),
-        namespace: Namespace::new(["scenario_dataset_export"]),
+        region: "r1".to_string(),
+        bucket: "b1".to_string(),
+        namespace: Namespace::new(["ns1"]),
         root_location: "s3://bucket/smoke_test".to_string(),
         owner: None,
         ttl_policy: None,
@@ -133,7 +141,8 @@ async fn test_app_with_sync_cfg(
     }
 
     let catalog = Catalog::new(registry_path, meta.clone(), Duration::ZERO);
-    let state = ApiState::new(catalog, meta, sync_cfg, ttl_audit_path.clone());
+    let catalog_cfg = Arc::new(test_catalog_config());
+    let state = ApiState::new(catalog, meta, sync_cfg, ttl_audit_path.clone(), catalog_cfg);
     (api_router(state), ttl_audit_path, dir)
 }
 
@@ -149,6 +158,20 @@ async fn get(app: &Router, uri: &str) -> axum::response::Response {
         .unwrap()
 }
 
+async fn put_json(app: &Router, uri: &str, body: serde_json::Value) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn list_tables_returns_identifier_strings() {
     let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
@@ -156,17 +179,17 @@ async fn list_tables_returns_identifier_strings() {
     let resp = get(&app, "/v1/tables").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["tables"], serde_json::json!(["smoke_test"]));
+    assert_eq!(json["tables"], serde_json::json!(["r1:b1:ns1:smoke_test"]));
 }
 
 #[tokio::test]
 async fn describe_table_returns_full_detail_and_404s_for_unknown_id() {
     let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
 
-    let resp = get(&app, "/v1/table/smoke_test").await;
+    let resp = get(&app, "/v1/table/r1:b1:ns1:smoke_test").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["id"], "smoke_test");
+    assert_eq!(json["id"], "r1:b1:ns1:smoke_test");
     assert_eq!(json["versions"].as_array().unwrap().len(), 1);
 
     let resp = get(&app, "/v1/table/does_not_exist").await;
@@ -184,7 +207,7 @@ async fn declare_table_writes_owner_to_overlay_and_is_visible_immediately() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/v1/table/smoke_test")
+                .uri("/v1/table/r1:b1:ns1:smoke_test")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"owner":"raymond"}"#))
                 .unwrap(),
@@ -196,7 +219,7 @@ async fn declare_table_writes_owner_to_overlay_and_is_visible_immediately() {
 
     // Read-your-writes on the same instance: the handler invalidates the cache after the overlay
     // write, so the next read merges the fresh overlay.
-    let json = body_json(get(&app, "/v1/table/smoke_test").await).await;
+    let json = body_json(get(&app, "/v1/table/r1:b1:ns1:smoke_test").await).await;
     assert_eq!(json["owner"], "raymond");
 }
 
@@ -211,7 +234,7 @@ async fn bare_put_registers_a_table_with_no_body_and_rejects_malformed_json() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/v1/table/just_registered")
+                .uri("/v1/table/r1:b1:ns1:just_registered")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -219,12 +242,15 @@ async fn bare_put_registers_a_table_with_no_body_and_rejects_malformed_json() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["id"], "just_registered");
+    assert_eq!(json["id"], "r1:b1:ns1:just_registered");
     assert!(json["owner"].is_null());
 
     // It is now registered (an overlay-only stub) and shows in the listing.
     let json = body_json(get(&app, "/v1/tables").await).await;
-    assert_eq!(json["tables"], serde_json::json!(["just_registered"]));
+    assert_eq!(
+        json["tables"],
+        serde_json::json!(["r1:b1:ns1:just_registered"])
+    );
 
     // A present-but-malformed JSON body is a 400 (not silently ignored).
     let resp = app
@@ -232,7 +258,7 @@ async fn bare_put_registers_a_table_with_no_body_and_rejects_malformed_json() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/v1/table/whatever")
+                .uri("/v1/table/r1:b1:ns1:whatever")
                 .header("content-type", "application/json")
                 .body(Body::from("{not json"))
                 .unwrap(),
@@ -248,7 +274,7 @@ async fn bare_put_registers_a_table_with_no_body_and_rejects_malformed_json() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/v1/table/bad%23id") // -> "bad#id" after decode
+                .uri("/v1/table/r1:b1:ns1:bad%23id") // -> "bad#id" after decode
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -266,7 +292,7 @@ async fn declare_table_on_unknown_id_materializes_an_overlay_only_stub() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/v1/table/brand_new_table")
+                .uri("/v1/table/r1:b1:ns1:brand_new_table")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"owner":"raymond"}"#))
                 .unwrap(),
@@ -275,17 +301,52 @@ async fn declare_table_on_unknown_id_materializes_an_overlay_only_stub() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["id"], "brand_new_table");
+    assert_eq!(json["id"], "r1:b1:ns1:brand_new_table");
     assert_eq!(json["owner"], "raymond");
     // No sync has observed it yet: the stub has authored state but no derived versions.
     assert_eq!(json["versions"].as_array().unwrap().len(), 0);
+}
+
+/// Declare only accepts ids that both parse as composite ids and fall under a namespace
+/// registered in the deployment's `CatalogConfig` (region `r1`, bucket `b1`, namespace `ns1`).
+#[tokio::test]
+async fn declare_accepts_only_ids_scoped_to_a_registered_namespace() {
+    let (app, _r, _s) = test_app(vec![], vec![]).await;
+
+    // Registered scope -> 200.
+    let ok = put_json(&app, "/v1/table/r1:b1:ns1:t1", serde_json::json!({})).await;
+    assert_eq!(ok.status(), StatusCode::OK);
+
+    // Wrong bucket, wrong namespace, malformed (too few segments), and a bad segment character
+    // are all refused with a 400. `%2F` is `/` percent-encoded so it survives routing as part of
+    // the `:id` path segment (axum decodes it before the handler sees it) instead of splitting
+    // into an extra path segment that wouldn't match the route at all.
+    for (label, bad) in [
+        ("r1:bX:ns1:t1", "r1:bX:ns1:t1"),
+        ("r1:b1:nsX:t1", "r1:b1:nsX:t1"),
+        ("plainname", "plainname"),
+        ("r1:b1:ns1:bad/name", "r1:b1:ns1:bad%2Fname"),
+    ] {
+        let resp = put_json(&app, &format!("/v1/table/{bad}"), serde_json::json!({})).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "id {label}");
+    }
+}
+
+/// `describe_namespace`'s id is now `bucket:prefix[:prefix...]` (colon-split, not dot-split):
+/// the first segment is the bucket, the rest is the namespace prefix to match against entries.
+#[tokio::test]
+async fn describe_namespace_uses_colon_form() {
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
+
+    let json = body_json(get(&app, "/v1/namespaces/b1:ns1").await).await;
+    assert_eq!(json["table_count"], 1);
 }
 
 #[tokio::test]
 async fn deregister_clears_authored_overlay_but_keeps_the_derived_entry() {
     // A table present on S3 (derived snapshot) with an authored owner overlaid on top.
     let overlay = (
-        "smoke_test",
+        "r1:b1:ns1:smoke_test",
         TableMeta {
             owner: Some("raymond".into()),
             ..Default::default()
@@ -294,7 +355,7 @@ async fn deregister_clears_authored_overlay_but_keeps_the_derived_entry() {
     let (app, _r, _s) = test_app(vec![fixture_entry()], vec![overlay]).await;
 
     assert_eq!(
-        body_json(get(&app, "/v1/table/smoke_test").await).await["owner"],
+        body_json(get(&app, "/v1/table/r1:b1:ns1:smoke_test").await).await["owner"],
         "raymond"
     );
 
@@ -303,7 +364,7 @@ async fn deregister_clears_authored_overlay_but_keeps_the_derived_entry() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/v1/table/smoke_test")
+                .uri("/v1/table/r1:b1:ns1:smoke_test")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -312,8 +373,8 @@ async fn deregister_clears_authored_overlay_but_keeps_the_derived_entry() {
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     // The derived entry survives (S3 truth is unchanged); only the authored fields are cleared.
-    let json = body_json(get(&app, "/v1/table/smoke_test").await).await;
-    assert_eq!(json["id"], "smoke_test");
+    let json = body_json(get(&app, "/v1/table/r1:b1:ns1:smoke_test").await).await;
+    assert_eq!(json["id"], "r1:b1:ns1:smoke_test");
     assert!(json["owner"].is_null());
 
     // Deregistering a table that isn't cataloged at all is a 404.
@@ -336,13 +397,13 @@ async fn ext_get_version_returns_detail_and_404s_for_unknown_version() {
 
     let resp = get(
         &app,
-        "/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z",
+        "/ext/v1/tables/r1:b1:ns1:smoke_test/versions/2026-06-26T12:00:00Z",
     )
     .await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body_json(resp).await["version_id"], "2026-06-26T12:00:00Z");
 
-    let resp = get(&app, "/ext/v1/tables/smoke_test/versions/nope").await;
+    let resp = get(&app, "/ext/v1/tables/r1:b1:ns1:smoke_test/versions/nope").await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(body_json(resp).await["error_code"], 11);
 }
@@ -356,7 +417,7 @@ async fn protect_endpoint_writes_the_flag_to_the_overlay_and_it_merges_into_the_
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z/protect")
+                .uri("/ext/v1/tables/r1:b1:ns1:smoke_test/versions/2026-06-26T12:00:00Z/protect")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"protected":true}"#))
                 .unwrap(),
@@ -369,7 +430,7 @@ async fn protect_endpoint_writes_the_flag_to_the_overlay_and_it_merges_into_the_
     let json = body_json(
         get(
             &app,
-            "/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z",
+            "/ext/v1/tables/r1:b1:ns1:smoke_test/versions/2026-06-26T12:00:00Z",
         )
         .await,
     )
@@ -470,11 +531,11 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
     );
 
     let entry = TableEntry {
-        id: "t1".to_string(),
+        id: "r1:b1:ns1:t1".to_string(),
         name: "t1".to_string(),
-        region: String::new(),
-        bucket: String::new(),
-        namespace: Namespace::new(["ns"]),
+        region: "r1".to_string(),
+        bucket: "b1".to_string(),
+        namespace: Namespace::new(["ns1"]),
         root_location: "whatever".to_string(),
         owner: None,
         ttl_policy: None,
@@ -487,12 +548,12 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
         ],
         aux_latest: Vec::new(),
     };
-    let overlay = ("t1", ttl_overlay(&protected_old.version_id));
+    let overlay = ("r1:b1:ns1:t1", ttl_overlay(&protected_old.version_id));
 
     let (app, _ttl_audit, _dir) =
         test_app_with_sync_cfg(vec![entry], vec![overlay], sync_cfg).await;
 
-    let resp = get(&app, "/ext/v1/tables/t1/ttl/dryrun").await;
+    let resp = get(&app, "/ext/v1/tables/r1:b1:ns1:t1/ttl/dryrun").await;
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     // Only `eligible_old` clears both thresholds; `recent` is within keep_last_n, `protected_old`
@@ -528,11 +589,11 @@ async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
     );
 
     let entry = TableEntry {
-        id: "t1".to_string(),
+        id: "r1:b1:ns1:t1".to_string(),
         name: "t1".to_string(),
-        region: String::new(),
-        bucket: String::new(),
-        namespace: Namespace::new(["ns"]),
+        region: "r1".to_string(),
+        bucket: "b1".to_string(),
+        namespace: Namespace::new(["ns1"]),
         root_location: "whatever".to_string(),
         owner: None,
         ttl_policy: None,
@@ -549,7 +610,7 @@ async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/ext/v1/tables/t1/ttl/apply")
+                .uri("/ext/v1/tables/r1:b1:ns1:t1/ttl/apply")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -571,7 +632,7 @@ async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
     assert!(bytes > 0, "apply must not delete any objects");
 
     // The view still lists the version untouched.
-    let json = body_json(get(&app, "/v1/table/t1").await).await;
+    let json = body_json(get(&app, "/v1/table/r1:b1:ns1:t1").await).await;
     let version_ids: Vec<String> = json["versions"]
         .as_array()
         .unwrap()
@@ -689,7 +750,7 @@ async fn aux_sample_endpoint_reads_lance_and_parquet_and_rejects_others() {
     entry.versions = vec![version];
     let (app, _r, _s) = test_app(vec![entry], vec![]).await;
 
-    let base = "/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z/aux/sample";
+    let base = "/ext/v1/tables/r1:b1:ns1:smoke_test/versions/2026-06-26T12:00:00Z/aux/sample";
 
     // Lance aux: all 3 rows come back with a schema; limit=2 clamps.
     let json = body_json(get(&app, &format!("{base}?name=tags")).await).await;

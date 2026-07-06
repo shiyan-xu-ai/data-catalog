@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::catalog::Catalog;
+use crate::catalog_config::CatalogConfig;
 
 /// Numeric error codes adopted from the Namespace spec where they overlap with what this service
 /// implements. `error_code` 0 marks a non-spec operational/internal error.
@@ -85,6 +86,9 @@ pub struct ApiState {
     pub sync_cfg: SyncConfig,
     /// URI of the `_catalog/ttl_audit` Lance table TTL `apply` appends to.
     pub ttl_audit_path: String,
+    /// Deployment-scoped config (region, registered bucket/namespaces, admins); declare validates
+    /// against it.
+    pub catalog_cfg: Arc<CatalogConfig>,
 }
 
 impl ApiState {
@@ -93,12 +97,14 @@ impl ApiState {
         meta: MetaStore,
         sync_cfg: SyncConfig,
         ttl_audit_path: String,
+        catalog_cfg: Arc<CatalogConfig>,
     ) -> Self {
         Self {
             catalog,
             meta,
             sync_cfg,
             ttl_audit_path,
+            catalog_cfg,
         }
     }
 }
@@ -130,16 +136,19 @@ struct DescribeNamespaceResponse {
     table_count: usize,
 }
 
-/// `DescribeNamespace` -- `id` is a `.`-joined namespace path. 404 if no table references it.
+/// `DescribeNamespace` -- `id` is `bucket:prefix[:prefix...]`: the first `:`-separated segment is
+/// the bucket, the rest is the namespace prefix. 404 if no table references it.
 async fn describe_namespace(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<DescribeNamespaceResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let segments: Vec<String> = id.split('.').map(str::to_string).collect();
+    let mut segments = id.split(catalog_core::ID_SEP);
+    let bucket = segments.next().unwrap_or_default().to_string();
+    let prefix: Vec<String> = segments.map(str::to_string).collect();
     let view = state.catalog.view().await;
     let table_count = view
         .iter()
-        .filter(|e| e.namespace.segments() == segments.as_slice())
+        .filter(|e| e.bucket == bucket && e.namespace.segments() == prefix.as_slice())
         .count();
     if table_count == 0 {
         return Err(error(
@@ -149,7 +158,7 @@ async fn describe_namespace(
         ));
     }
     Ok(Json(DescribeNamespaceResponse {
-        namespace: segments,
+        namespace: prefix,
         table_count,
     }))
 }
@@ -188,40 +197,38 @@ struct DeclareTableRequest {
     ttl_policy: Option<TtlPolicy>,
 }
 
-/// A table id must be a plain S3-directory-style name: it is both the overlay object's filename
-/// (`_catalog/meta/<id>.json`) and a path segment under the sync root (`<root>/<id>/`), so it
-/// must round-trip through object-store path encoding unchanged. Ids with characters the store
-/// would percent-encode (`/`, `%`, `#`, whitespace, control, non-ASCII) don't round-trip — the
-/// overlay listing would recover a mangled id and the table would be silently unsynced — so they
-/// are refused at registration instead. Real table dirs are `[A-Za-z0-9._-]`; this matches them.
-fn valid_table_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 255
-        && id != "."
-        && id != ".."
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-}
-
 /// `DeclareTable` -- registers a table by writing its authored overlay (creating it if absent),
 /// optionally setting `owner`/`ttl_policy`. Registration is what puts the table in the synced set,
 /// so its derived fields (versions, sizes, ...) are filled by the next sync. Idempotent; any
 /// instance serves it.
 ///
 /// The body is optional: a bare `PUT /v1/table/:id` (no body / no `content-type`) just registers
-/// the table with no owner/policy. A present-but-malformed JSON body, or an id that isn't a plain
-/// S3-directory name (see [`valid_table_id`]), is a 400.
+/// the table with no owner/policy. A present-but-malformed JSON body is a 400. The id must parse
+/// as a composite id (`catalog_core::parse_table_id`) whose `(region, bucket, namespace)` matches
+/// this deployment's `CatalogConfig` -- the region equals `catalog_cfg.region` and the bucket's
+/// namespace is registered -- otherwise 400. This is what keeps the catalog scoped to only the
+/// buckets/namespaces this deployment is configured for.
 async fn declare_table(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Json<TableEntry>, (StatusCode, Json<ErrorResponse>)> {
-    if !valid_table_id(&id) {
+    let parsed = catalog_core::parse_table_id(&id).ok_or_else(|| {
+        error(
+            StatusCode::BAD_REQUEST,
+            0,
+            format!("malformed table id: {id}"),
+        )
+    })?;
+    if parsed.region != state.catalog_cfg.region
+        || !state
+            .catalog_cfg
+            .namespace_registered(&parsed.bucket, &parsed.namespace)
+    {
         return Err(error(
             StatusCode::BAD_REQUEST,
             0,
-            "invalid table id: must be a non-empty S3-directory-style name matching [A-Za-z0-9._-]",
+            format!("id {id} is not under a registered namespace"),
         ));
     }
     let req: DeclareTableRequest = if body.is_empty() {
