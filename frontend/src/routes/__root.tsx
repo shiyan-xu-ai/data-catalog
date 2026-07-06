@@ -2,6 +2,7 @@ import { Outlet, Link, createRootRouteWithContext } from "@tanstack/react-router
 import { QueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -36,6 +37,9 @@ function RootComponent() {
                 Namespaces
               </Link>
             </nav>
+            <div className="ml-auto">
+              <ThemeToggle />
+            </div>
           </div>
         </header>
         <main className="container py-6">

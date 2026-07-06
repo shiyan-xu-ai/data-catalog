@@ -4,13 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
-      // Follow the OS light/dark preference; toggles the `.dark` class shadcn/Tailwind key off.
-      // Runs before first paint to avoid a theme flash.
+      // Set the initial theme before first paint (no flash). Honors the saved
+      // choice (light/dark) or falls back to the OS preference in "system" mode.
       (function () {
-        var mq = window.matchMedia("(prefers-color-scheme: dark)");
-        var apply = function (dark) { document.documentElement.classList.toggle("dark", dark); };
-        apply(mq.matches);
-        mq.addEventListener("change", function (e) { apply(e.matches); });
+        try {
+          var stored = localStorage.getItem("theme");
+          var dark = stored === "dark" ||
+            ((stored === "system" || !stored) &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {}
       })();
     </script>
     <link rel="icon" type="image/png" href="/logo-light.png" media="(prefers-color-scheme: light)" />
