@@ -21,10 +21,9 @@ use catalog_api_lib::catalog_config::CatalogConfig;
 use catalog_api_lib::config::AppConfig;
 use catalog_api_lib::secrets::fetch_aws_secret_opts;
 use catalog_api_lib::shutdown::shutdown_signal;
-use catalog_api_lib::sync::run_sync;
-use catalog_api_lib::sync_config::{build_meta_store, build_sync_config};
+use catalog_api_lib::sync::{run_sync, SyncTarget};
+use catalog_api_lib::sync_config::{build_meta_store, build_sync_config, build_sync_targets};
 use catalog_api_lib::webui;
-use catalog_store::SyncConfig;
 
 async fn healthz() -> &'static str {
     "ok"
@@ -42,7 +41,9 @@ async fn readyz(State(catalog): State<Arc<Catalog>>) -> StatusCode {
 
 #[derive(Clone)]
 struct SyncState {
-    sync_cfg: SyncConfig,
+    /// One target per registered namespace across all configured buckets. A sync pass runs over
+    /// the whole set, writing all namespaces into the one registry snapshot.
+    targets: Arc<Vec<SyncTarget>>,
     registry_path: String,
     meta: catalog_store::MetaStore,
     catalog: Arc<Catalog>,
@@ -56,7 +57,7 @@ struct SyncState {
 /// identity); this endpoint does no app-level auth.
 async fn run_sync_endpoint(State(s): State<SyncState>) -> axum::response::Response {
     let _guard = s.lock.lock().await;
-    match run_sync(&s.sync_cfg, &s.registry_path, &s.meta).await {
+    match run_sync(&s.targets, &s.registry_path, &s.meta).await {
         Ok(report) => {
             s.catalog.invalidate().await;
             (StatusCode::OK, Json(report)).into_response()
@@ -106,27 +107,38 @@ async fn main() -> anyhow::Result<()> {
     let catalog_cfg = Arc::new(CatalogConfig::load(&cfg.catalog_config_path)?);
 
     // On Cloud Run the AWS keys come from Secret Manager (no ambient AWS credential); locally
-    // this is a no-op and env/MinIO credentials are used. Fetched once, shared by both stores.
+    // this is a no-op and env/MinIO credentials are used. Fetched once, shared by every store.
     let aws_opts = fetch_aws_secret_opts().await?;
-    // Single-root shim: sync only the first bucket's first namespace until the sync path
-    // handles the full set of configured buckets/namespaces.
+
+    // One sync target per registered namespace across all configured buckets (one object store
+    // per bucket, shared across its namespaces). A single sync pass covers the whole set.
+    let targets: Vec<SyncTarget> = build_sync_targets(&catalog_cfg, &aws_opts)?
+        .into_iter()
+        .map(|mut t| {
+            t.cfg = t
+                .cfg
+                .with_concurrency(cfg.sync_concurrency)
+                .with_deep_stats(cfg.sync_deep_stats);
+            t
+        })
+        .collect();
+
+    // The API's object-store handle for TTL hard-delete + sample reads is rooted at the first
+    // bucket, so `path_for`/`uri_for` resolve any of that bucket's version URIs.
     let first_bucket = &catalog_cfg.buckets[0];
-    let root_uri = format!("s3://{}/{}", first_bucket.name, first_bucket.namespaces[0]);
-    let sync_cfg = build_sync_config(&root_uri, &aws_opts)?
-        .with_concurrency(cfg.sync_concurrency)
-        .with_deep_stats(cfg.sync_deep_stats);
+    let sync_cfg = build_sync_config(&format!("s3://{}", first_bucket.name), &aws_opts)?;
     let meta = build_meta_store(&cfg.meta_base_uri, &aws_opts)?;
     let catalog = Catalog::new(cfg.registry_path.clone(), meta.clone(), cfg.cache_ttl);
 
     let api_state = ApiState::new(
         catalog.clone(),
         meta.clone(),
-        sync_cfg.clone(),
+        sync_cfg,
         cfg.ttl_audit_path.clone(),
         catalog_cfg.clone(),
     );
     let sync_state = SyncState {
-        sync_cfg,
+        targets: Arc::new(targets),
         registry_path: cfg.registry_path.clone(),
         meta,
         catalog: catalog.clone(),

@@ -18,6 +18,9 @@ use catalog_store::SyncConfig;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjPath;
 
+use crate::catalog_config::CatalogConfig;
+use crate::sync::SyncTarget;
+
 /// Collect the `AWS_*` environment variables recognized by `object_store`'s
 /// [`AmazonS3ConfigKey`](object_store::aws::AmazonS3ConfigKey) into a `Vec<(String, String)>`
 /// suitable for [`object_store::parse_url_opts`].
@@ -76,6 +79,42 @@ pub fn build_sync_config(root_uri: &str, extra_opts: &[(String, String)]) -> Res
             root_uri.to_string(),
         ))
     }
+}
+
+/// Build the sync targets for every registered namespace across all configured buckets: ONE
+/// object store per bucket (rooted at `s3://<bucket>`), cloned into one [`SyncTarget`] per
+/// namespace under that bucket. Each target's `cfg.root_path` is the namespace prefix path and
+/// its `cfg.root_uri` is `s3://<bucket>/<namespace>`, so `uri_for`/`path_for` resolve the same
+/// on-store location. `extra_opts` are the Secret-Manager credentials appended to the `AWS_*`
+/// env options, exactly as [`build_sync_config`] does.
+pub fn build_sync_targets(
+    catalog_cfg: &CatalogConfig,
+    extra_opts: &[(String, String)],
+) -> Result<Vec<SyncTarget>> {
+    let opts = s3_opts(extra_opts);
+    let mut targets = Vec::new();
+    for bucket in &catalog_cfg.buckets {
+        // One store per bucket, built once and shared (cloned Arc) across the bucket's namespaces.
+        let bucket_url = url::Url::parse(&format!("s3://{}", bucket.name))
+            .with_context(|| format!("parse bucket URL for {}", bucket.name))?;
+        let (store, _root) = object_store::parse_url_opts(&bucket_url, opts.clone())
+            .with_context(|| format!("build object store for bucket {}", bucket.name))?;
+        let store: Arc<dyn object_store::ObjectStore> = Arc::from(store);
+        for ns in &bucket.namespaces {
+            let cfg = SyncConfig::new(
+                store.clone(),
+                ObjPath::from(ns.as_str()),
+                format!("s3://{}/{ns}", bucket.name),
+            );
+            targets.push(SyncTarget {
+                region: catalog_cfg.region.clone(),
+                bucket: bucket.name.clone(),
+                namespace: ns.split('/').map(|s| s.to_string()).collect(),
+                cfg,
+            });
+        }
+    }
+    Ok(targets)
 }
 
 /// Build the authored-overlay [`MetaStore`] from `uri`. Because the overlay is mutated with

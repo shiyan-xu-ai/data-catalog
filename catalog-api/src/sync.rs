@@ -28,11 +28,27 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use catalog_core::{read_registry, write_registry, TableEntry, TableVersion};
+use catalog_core::{
+    parse_table_id, read_registry, write_registry, Namespace, TableEntry, TableVersion,
+};
 use catalog_store::{deep_for, MetaStore, SyncConfig, TableMeta, VersionDirRef};
 use futures::StreamExt;
 use object_store::path::Path as ObjPath;
 use serde::Serialize;
+
+/// One sync scope: a single registered namespace within a bucket. The `cfg`'s object store is
+/// rooted at the bucket, `cfg.root_path` is the namespace prefix path, and `cfg.root_uri` is
+/// `s3://<bucket>/<namespace>`. A sync pass runs over a slice of these (one per registered
+/// namespace across all buckets), routing each declared table id to the target whose
+/// `(region, bucket, namespace)` it parses to.
+#[derive(Clone)]
+pub struct SyncTarget {
+    pub region: String,
+    pub bucket: String,
+    /// Namespace prefix segments, e.g. `["a", "b"]` for the `a/b` namespace.
+    pub namespace: Vec<String>,
+    pub cfg: SyncConfig,
+}
 
 /// Minimum spacing between intermediate snapshot writes while a sync is still running. The
 /// final write always happens regardless.
@@ -60,8 +76,13 @@ pub struct SyncReport {
 /// Per-table outcome of the discovery phase: which prior versions carry forward as-is and
 /// which version dirs still need a real sync.
 struct TablePlan {
+    /// Composite id, exactly as declared in the overlay.
     table_id: String,
-    table_path: ObjPath,
+    /// The table's leaf name (the last id segment) — the on-store directory name.
+    name: String,
+    /// Index into the `targets` slice this table was routed to; supplies the store/`cfg` for
+    /// its version syncs and the region/bucket/namespace for its assembled entry.
+    target_idx: usize,
     carried: Vec<TableVersion>,
     work: Vec<VersionDirRef>,
     /// The table's latest listed version id — drives `DeepStats::Latest` gating.
@@ -73,7 +94,7 @@ struct TablePlan {
 /// snapshot entry is kept and `failed_tables` incremented. A registered table with no
 /// directory on S3 yet syncs cleanly to zero versions (a stub until data lands).
 pub async fn run_sync(
-    sync_cfg: &SyncConfig,
+    targets: &[SyncTarget],
     registry_path: &str,
     meta: &MetaStore,
 ) -> Result<SyncReport> {
@@ -81,7 +102,8 @@ pub async fn run_sync(
     let now = chrono::Utc::now();
 
     // The registered set = the tables that have an authored overlay. Only these are synced.
-    // The overlays also carry the `deleting` markers that veto carry-forward below.
+    // The overlays also carry the `deleting` markers that veto carry-forward below. `list_meta`
+    // runs ONCE for the whole pass; every target filters this same map.
     let registered = meta.list_meta().await.context("list registered tables")?;
 
     let prior: HashMap<String, TableEntry> = read_registry(registry_path)
@@ -92,43 +114,91 @@ pub async fn run_sync(
         .map(|e| (e.id.clone(), e))
         .collect();
 
-    // Running snapshot state. Seeded with prior ∩ registered so tables not yet synced this pass
-    // stay visible in intermediate writes; a deregistered table is dropped immediately (the
-    // snapshot is an allowlist). Each table's entry is replaced as it completes.
+    // Route each declared id to the one target whose (region, bucket, namespace) it parses to.
+    // An id that parses to no configured target is ignored (it can't be synced — no store for
+    // it); an id that fails to parse is likewise skipped.
+    struct Routed {
+        table_id: String,
+        name: String,
+        target_idx: usize,
+        table_path: ObjPath,
+    }
+    let mut routed: Vec<Routed> = Vec::new();
+    for table_id in registered.keys() {
+        let Some(parsed) = parse_table_id(table_id) else {
+            continue;
+        };
+        let Some(target_idx) = targets.iter().position(|t| {
+            t.region == parsed.region
+                && t.bucket == parsed.bucket
+                && t.namespace == parsed.namespace
+        }) else {
+            continue;
+        };
+        let table_path = targets[target_idx]
+            .cfg
+            .root_path
+            .clone()
+            .join(parsed.name.as_str());
+        routed.push(Routed {
+            table_id: table_id.clone(),
+            name: parsed.name,
+            target_idx,
+            table_path,
+        });
+    }
+
+    // The synced allowlist for this pass = the ids that routed to a configured target. Prior
+    // entries for routed ids seed the running state so tables not yet synced this pass stay
+    // visible in intermediate writes; deregistered (or now-unroutable) ids are dropped
+    // immediately (the snapshot is an allowlist). Each table's entry is replaced as it completes.
+    let routed_ids: HashSet<&str> = routed.iter().map(|r| r.table_id.as_str()).collect();
     let mut state: HashMap<String, TableEntry> = prior
         .iter()
-        .filter(|(id, _)| registered.contains_key(*id))
+        .filter(|(id, _)| routed_ids.contains(id.as_str()))
         .map(|(id, e)| (id.clone(), e.clone()))
         .collect();
 
     let mut failed_tables = 0u64;
     let mut versions_carried = 0u64;
 
-    // ── Discovery: one delimiter LIST per registered table, concurrently. Partition each
-    // table's version dirs into carried (immutable + clean in prior, not marked deleting)
-    // vs work (new / partial / deleting-marked → re-sync).
-    let discovery: Vec<(String, Result<Vec<VersionDirRef>>)> =
-        futures::stream::iter(registered.keys().cloned())
-            .map(|table_id| async move {
-                let path = table_path(sync_cfg, &table_id);
-                let dirs = catalog_store::list_version_dirs(sync_cfg, &path).await;
-                (table_id, dirs)
+    // Discovery concurrency: use the max across targets (they share one queue below anyway).
+    let concurrency = targets.iter().map(|t| t.cfg.concurrency).max().unwrap_or(1);
+
+    // ── Discovery: one delimiter LIST per routed table, concurrently across ALL targets.
+    // Partition each table's version dirs into carried (immutable + clean in prior, not marked
+    // deleting) vs work (new / partial / deleting-marked → re-sync).
+    let discovery_items: Vec<(usize, usize, ObjPath)> = routed
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i, r.target_idx, r.table_path.clone()))
+        .collect();
+    let discovery: Vec<(usize, Result<Vec<VersionDirRef>>)> =
+        futures::stream::iter(discovery_items)
+            .map(|(i, target_idx, path)| async move {
+                let dirs = catalog_store::list_version_dirs(&targets[target_idx].cfg, &path).await;
+                (i, dirs)
             })
-            .buffer_unordered(sync_cfg.concurrency)
+            .buffer_unordered(concurrency)
             .collect()
             .await;
 
     let mut plans: Vec<TablePlan> = Vec::with_capacity(discovery.len());
-    for (table_id, dirs) in discovery {
+    for (i, dirs) in discovery {
+        let r = &routed[i];
         match dirs {
             Ok(dirs) => {
                 let latest_id = dirs.iter().map(|d| d.version_id.clone()).max();
-                let (carried, work) =
-                    partition_carry_forward(dirs, prior.get(&table_id), registered.get(&table_id));
+                let (carried, work) = partition_carry_forward(
+                    dirs,
+                    prior.get(&r.table_id),
+                    registered.get(&r.table_id),
+                );
                 versions_carried += carried.len() as u64;
                 plans.push(TablePlan {
-                    table_path: table_path(sync_cfg, &table_id),
-                    table_id,
+                    table_id: r.table_id.clone(),
+                    name: r.name.clone(),
+                    target_idx: r.target_idx,
                     carried,
                     work,
                     latest_id,
@@ -137,7 +207,7 @@ pub async fn run_sync(
             Err(e) => {
                 failed_tables += 1;
                 tracing::warn!(
-                    table = %table_id,
+                    table = %r.table_id,
                     error = %e,
                     "sync: listing registered table failed this cycle; keeping prior entry"
                 );
@@ -169,28 +239,33 @@ pub async fn run_sync(
         plans.iter().map(|p| (p.table_id.clone(), p)).collect();
     for plan in &plans {
         if plan.work.is_empty() {
-            let entry = assemble_entry(sync_cfg, plan, Vec::new(), now);
+            let entry = assemble_entry(&targets[plan.target_idx], plan, Vec::new(), now);
             state.insert(plan.table_id.clone(), entry);
         }
     }
 
-    let work_items: Vec<(String, VersionDirRef, bool)> = plans
+    // ── ONE global work queue across every target. Each item carries its target index so its
+    // version syncs run against the right bucket's store, but ALL items — from every namespace
+    // and bucket — interleave in this single `buffer_unordered` stream. A big namespace can't
+    // starve small ones, and wall time is ~ total_work / concurrency, not per-namespace serial.
+    let work_items: Vec<(String, usize, VersionDirRef, bool)> = plans
         .iter()
         .flat_map(|p| {
-            p.work.iter().map(|d| {
+            let deep_stats = targets[p.target_idx].cfg.deep_stats;
+            p.work.iter().map(move |d| {
                 let deep = deep_for(
-                    sync_cfg.deep_stats,
+                    deep_stats,
                     p.latest_id.as_deref() == Some(d.version_id.as_str()),
                 );
-                (p.table_id.clone(), d.clone(), deep)
+                (p.table_id.clone(), p.target_idx, d.clone(), deep)
             })
         })
         .collect();
 
     let mut results = futures::stream::iter(work_items)
-        .map(|(table_id, dir, deep)| async move {
+        .map(|(table_id, target_idx, dir, deep)| async move {
             let res = catalog_store::sync_version(
-                sync_cfg,
+                &targets[target_idx].cfg,
                 &dir.path,
                 dir.timestamp,
                 dir.version_id,
@@ -200,7 +275,7 @@ pub async fn run_sync(
             .await;
             (table_id, res)
         })
-        .buffer_unordered(sync_cfg.concurrency);
+        .buffer_unordered(concurrency);
 
     while let Some((table_id, res)) = results.next().await {
         match res {
@@ -233,7 +308,7 @@ pub async fn run_sync(
             } else {
                 let plan = plan_index[&table_id];
                 let entry = assemble_entry(
-                    sync_cfg,
+                    &targets[plan.target_idx],
                     plan,
                     fresh.remove(&table_id).unwrap_or_default(),
                     now,
@@ -274,7 +349,9 @@ pub async fn run_sync(
     }
 
     let report = SyncReport {
-        tables_checked: registered.len() as u64,
+        // Only the tables that routed to a configured target were checked this pass; a declared
+        // id for an unconfigured (region, bucket, namespace) can't be synced and isn't counted.
+        tables_checked: routed.len() as u64,
         failed_tables,
         versions_synced,
         versions_carried,
@@ -335,9 +412,13 @@ fn partition_carry_forward(
     (carried, work)
 }
 
-/// Build a table's snapshot entry from its carried + freshly-synced versions.
+/// Build a table's snapshot entry from its carried + freshly-synced versions. Identity
+/// (`region`/`bucket`/`namespace`) comes from the routed `target`, not from parsing the store
+/// root — a single bucket-rooted store now serves many namespaces, so the root path no longer
+/// identifies the namespace. `name` is the id's leaf segment; `root_location` is the namespace
+/// URI joined with that name.
 fn assemble_entry(
-    sync_cfg: &SyncConfig,
+    target: &SyncTarget,
     plan: &TablePlan,
     fresh: Vec<TableVersion>,
     now: chrono::DateTime<chrono::Utc>,
@@ -346,31 +427,19 @@ fn assemble_entry(
     versions.extend(fresh);
     versions.sort_by(|a, b| a.version_id.cmp(&b.version_id));
     let aux_latest = versions.last().map(|v| v.aux.clone()).unwrap_or_default();
-    let namespace =
-        catalog_core::Namespace::new(sync_cfg.root_path.parts().map(|p| p.as_ref().to_string()));
+    let root_uri = target.cfg.root_uri.trim_end_matches('/');
     TableEntry {
         id: plan.table_id.clone(),
-        name: plan.table_id.clone(),
-        region: String::new(),
-        bucket: String::new(),
-        namespace,
-        root_location: sync_cfg.uri_for(&plan.table_path),
+        name: plan.name.clone(),
+        region: target.region.clone(),
+        bucket: target.bucket.clone(),
+        namespace: Namespace::new(target.namespace.clone()),
+        root_location: format!("{root_uri}/{}", plan.name),
         owner: None,
         ttl_policy: None,
         last_synced: Some(now),
         versions,
         aux_latest,
-    }
-}
-
-/// The object-store path of one table's directory: `<root_path>/<table_id>`. `ObjPath::from`
-/// normalizes empty/leading segments, so an empty root (local dev / tests) yields just the id.
-fn table_path(sync_cfg: &SyncConfig, table_id: &str) -> ObjPath {
-    let root = sync_cfg.root_path.as_ref().trim_end_matches('/');
-    if root.is_empty() {
-        ObjPath::from(table_id)
-    } else {
-        ObjPath::from(format!("{root}/{table_id}"))
     }
 }
 
