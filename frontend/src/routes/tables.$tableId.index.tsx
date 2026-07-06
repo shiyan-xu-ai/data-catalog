@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/empty-state";
 import { TtlPanel } from "@/components/ttl-panel";
 import { VersionsTable } from "@/components/versions-table";
 import { AuxTable } from "@/components/aux-table";
-import { formatBytes, formatRelative, formatTime, nsToString, ttlPolicyString } from "@/lib/format";
+import { formatBytes, formatRelative, formatTime, namespaceId, nsToString, ttlPolicyString } from "@/lib/format";
 import { useTz } from "@/lib/timezone";
 
 export const Route = createFileRoute("/tables/$tableId/")({
@@ -61,7 +61,11 @@ function TableDetailPage() {
           <dl>
             <MetaRow label="Namespace">
               {table.namespace.length ? (
-                <Link to="/namespaces/$ns" params={{ ns: nsToString(table.namespace) }} className="text-primary hover:underline">
+                <Link
+                  to="/namespaces/$ns"
+                  params={{ ns: namespaceId(table.bucket, table.namespace) }}
+                  className="text-primary hover:underline"
+                >
                   {nsToString(table.namespace)}
                 </Link>
               ) : "—"}

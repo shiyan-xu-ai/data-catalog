@@ -3,14 +3,20 @@ import {
   describeNamespaceResponseSchema,
   errorResponseSchema,
   listNamespacesResponseSchema,
+  meResponseSchema,
+  storagePrefixStatSchema,
   tableEntrySchema,
   tableVersionSchema,
   ttlApplyResponseSchema,
   ttlAuditRecordSchema,
   ttlDryRunResponseSchema,
+  userSchema,
   type AuxSampleResponse,
+  type CatalogUser,
   type DescribeNamespaceResponse,
   type ListNamespacesResponse,
+  type MeResponse,
+  type StoragePrefixStat,
   type TableEntry,
   type TableVersion,
   type TtlApplyResponse,
@@ -165,6 +171,21 @@ export function ttlAudit(id: string): Promise<TtlAuditRecord[]> {
     `/ext/v1/tables/${encodeURIComponent(id)}/ttl/audit`,
     zArray(ttlAuditRecordSchema),
   );
+}
+
+// GET /ext/v1/storage  -- bucket-storage breakdown from the sync's storage-analysis tail.
+export function getStorage(): Promise<StoragePrefixStat[]> {
+  return getJson("/ext/v1/storage", zArray(storagePrefixStatSchema));
+}
+
+// GET /ext/v1/users
+export function getUsers(): Promise<CatalogUser[]> {
+  return getJson("/ext/v1/users", zArray(userSchema));
+}
+
+// GET /ext/v1/me  -- the caller's own identity as seen by IAP.
+export function getMe(): Promise<MeResponse> {
+  return getJson("/ext/v1/me", meResponseSchema);
 }
 
 // --- helpers ---

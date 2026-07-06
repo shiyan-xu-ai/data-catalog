@@ -3,6 +3,8 @@ import {
   auxEntrySchema,
   auxSampleResponseSchema,
   errorResponseSchema,
+  meResponseSchema,
+  storagePrefixStatSchema,
   tableEntrySchema,
   tableVersionSchema,
   ttlAuditRecordSchema,
@@ -150,5 +152,27 @@ describe("errorResponseSchema", () => {
     const e = errorResponseSchema.parse({ error_code: 5, message: "not found" });
     expect(e.error_code).toBe(5);
     expect(e.message).toBe("not found");
+  });
+});
+
+describe("storagePrefixStatSchema", () => {
+  it("parses registered and unexplored rows", () => {
+    const reg = storagePrefixStatSchema.parse({
+      region: "r1", bucket: "b1", prefix: "ns1", registered: true,
+      bytes: 10, objects: 2, table_count: 1, scanned_at: "2026-07-05T00:00:00Z",
+    });
+    expect(reg.bytes).toBe(10);
+    const unex = storagePrefixStatSchema.parse({
+      region: "r1", bucket: "b1", prefix: "junk", registered: false,
+      scanned_at: "2026-07-05T00:00:00Z",
+    });
+    expect(unex.bytes).toBeNull();
+  });
+});
+
+describe("meResponseSchema", () => {
+  it("accepts anonymous and named callers", () => {
+    expect(meResponseSchema.parse({ email: null, role: "viewer" }).email).toBeNull();
+    expect(meResponseSchema.parse({ email: "a@x.co", role: "admin" }).role).toBe("admin");
   });
 });

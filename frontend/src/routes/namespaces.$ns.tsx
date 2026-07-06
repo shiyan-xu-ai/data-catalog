@@ -14,7 +14,9 @@ export const Route = createFileRoute("/namespaces/$ns")({
 
 function NamespacePage() {
   const { ns } = Route.useParams();
-  const segments = ns.split(".");
+  // `ns` is the composite id `bucket:prefix[:prefix...]` — the first `:`-separated
+  // segment is the bucket, the rest is the namespace prefix (mirrors `describe_namespace`).
+  const [bucket, ...segments] = ns.split(":");
 
   const { data: desc, error: descError } = useQuery({
     queryKey: ["namespace", ns],
@@ -27,6 +29,7 @@ function NamespacePage() {
   });
 
   const filtered = (tables ?? []).filter((t) =>
+    t.bucket === bucket &&
     t.namespace.length === segments.length &&
     t.namespace.every((seg, i) => seg === segments[i]),
   );
