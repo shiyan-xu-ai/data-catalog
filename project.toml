@@ -22,7 +22,6 @@ use_static_egress_ip = false
 [cloudrun.env_vars]
 # Non-secret runtime config. Adjust bucket names / region per environment.
 AWS_DEFAULT_REGION = "us-east-1"
-CATALOG_SWEEP_ROOT_URI = "s3://onroad-perception-datasets-staging/scenario_dataset_export"
 CATALOG_REGISTRY_PATH = "s3://catalog-staging-data/_catalog/registry"
 CATALOG_TTL_AUDIT_PATH = "s3://catalog-staging-data/_catalog/ttl_audit"
 CATALOG_META_BASE_URI = "s3://catalog-staging-data/_catalog/meta"

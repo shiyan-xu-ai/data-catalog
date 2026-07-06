@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 
 use catalog_api_lib::api::{api_router, ApiState};
 use catalog_api_lib::catalog::Catalog;
+use catalog_api_lib::catalog_config::CatalogConfig;
 use catalog_api_lib::config::AppConfig;
 use catalog_api_lib::secrets::fetch_aws_secret_opts;
 use catalog_api_lib::shutdown::shutdown_signal;
@@ -101,10 +102,17 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = AppConfig::from_env()?;
 
+    // Fail fast on a missing/invalid deployment config before anything else stands up.
+    let catalog_cfg = CatalogConfig::load(&cfg.catalog_config_path)?;
+
     // On Cloud Run the AWS keys come from Secret Manager (no ambient AWS credential); locally
     // this is a no-op and env/MinIO credentials are used. Fetched once, shared by both stores.
     let aws_opts = fetch_aws_secret_opts().await?;
-    let sync_cfg = build_sync_config(&cfg.sync_root_uri, &aws_opts)?
+    // Single-root shim: sync only the first bucket's first namespace until the sync path
+    // handles the full set of configured buckets/namespaces.
+    let first_bucket = &catalog_cfg.buckets[0];
+    let root_uri = format!("s3://{}/{}", first_bucket.name, first_bucket.namespaces[0]);
+    let sync_cfg = build_sync_config(&root_uri, &aws_opts)?
         .with_concurrency(cfg.sync_concurrency)
         .with_deep_stats(cfg.sync_deep_stats);
     let meta = build_meta_store(&cfg.meta_base_uri, &aws_opts)?;

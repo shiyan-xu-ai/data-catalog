@@ -33,6 +33,7 @@ arrow-array.workspace = true
 arrow-json = "58"
 datafusion = "53"
 lance.workspace = true
+serde_yaml = "0.9"
 
 [dev-dependencies]
 tempfile.workspace = true
