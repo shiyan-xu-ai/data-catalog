@@ -12,6 +12,9 @@ Cargo.lock.bak
 node_modules/
 dist/
 
+# Git worktrees
+.worktrees/
+
 # Default local registry/audit path (CATALOG_REGISTRY_PATH default is repo-
 # relative) — a local run that doesn't override it writes a Lance dataset here.
 /_catalog/
