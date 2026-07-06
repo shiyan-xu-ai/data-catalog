@@ -13,7 +13,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ShapeBadge } from "@/components/shape-badge";
-import { formatBytes, formatRelative } from "@/lib/format";
+import { formatBytes, formatTime } from "@/lib/format";
+import { useTz } from "@/lib/timezone";
 
 interface Props {
   tableId: string;
@@ -22,6 +23,7 @@ interface Props {
 
 export function VersionsTable({ tableId, versions }: Props) {
   const qc = useQueryClient();
+  const { mode: tz } = useTz();
   const [pending, setPending] = useState<string | null>(null);
   const [page, setPage] = useState(0);
 
@@ -76,7 +78,7 @@ export function VersionsTable({ tableId, versions }: Props) {
                 <td className="px-3 py-2"><ShapeBadge shape={v.shape} /></td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatBytes(v.storage_bytes_total)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{v.row_count != null ? v.row_count.toLocaleString() : "—"}</td>
-                <td className="px-3 py-2 text-muted-foreground">{formatRelative(v.swept_at)}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{formatTime(v.swept_at, tz)}</td>
                 <td className="px-3 py-2 text-right">
                   <Tooltip>
                     <TooltipTrigger asChild>
