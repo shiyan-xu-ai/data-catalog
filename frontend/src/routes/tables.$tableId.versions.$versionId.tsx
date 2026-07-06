@@ -13,6 +13,7 @@ import { ShapeBadge } from "@/components/shape-badge";
 import { AuxTable } from "@/components/aux-table";
 import { CodeBlock, prettyJson } from "@/components/code-block";
 import { formatBytes, formatTime } from "@/lib/format";
+import { useTz } from "@/lib/timezone";
 
 export const Route = createFileRoute("/tables/$tableId/versions/$versionId")({
   component: VersionDetailPage,
@@ -39,6 +40,7 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 function VersionDetailPage() {
   const { tableId, versionId } = Route.useParams();
   const qc = useQueryClient();
+  const { mode: tz } = useTz();
   const [protecting, setProtecting] = useState(false);
 
   const { data: version, isLoading, error } = useQuery({
@@ -110,11 +112,11 @@ function VersionDetailPage() {
           <CardHeader><CardTitle>Stats</CardTitle></CardHeader>
           <CardContent>
             <dl>
-              <Stat label="Timestamp" value={formatTime(version.timestamp)} />
+              <Stat label="Timestamp" value={formatTime(version.timestamp, tz)} />
               <Stat label="Rows" value={version.row_count != null ? version.row_count.toLocaleString() : "—"} />
               <Stat label="Fragments" value={version.num_fragments != null ? version.num_fragments.toLocaleString() : "—"} />
               <Stat label="Indices" value={version.num_indices != null ? version.num_indices.toLocaleString() : "—"} />
-              <Stat label="Swept" value={formatTime(version.swept_at)} />
+              <Stat label="Swept" value={formatTime(version.swept_at, tz)} />
               <Stat label="Snapshot" value={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{version.snapshot_path}</code>} />
             </dl>
           </CardContent>
