@@ -1,6 +1,5 @@
 import { Outlet, Link, createRootRouteWithContext } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
-import { Database } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -19,8 +18,9 @@ function RootComponent() {
         <header className="border-b">
           <div className="container flex h-14 items-center gap-6">
             <Link to="/tables" className="flex items-center gap-2 font-semibold">
-              <Database className="h-5 w-5" />
-              <span>Data Catalog</span>
+              <img src="/logo-light.png" alt="Applied Intuition" className="h-6 w-auto dark:hidden" />
+              <img src="/logo-dark.png" alt="" aria-hidden="true" className="hidden h-6 w-auto dark:block" />
+              <span>Applied Data Catalog</span>
             </Link>
             <nav className="flex items-center gap-4 text-sm">
               <Link
