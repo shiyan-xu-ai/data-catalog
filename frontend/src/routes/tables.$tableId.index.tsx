@@ -18,7 +18,7 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   return (
     <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 py-1">
       <dt className="text-xs uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="text-sm break-words">{children}</dd>
+      <dd className="text-sm wrap-break-word">{children}</dd>
     </div>
   );
 }
