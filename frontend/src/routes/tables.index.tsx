@@ -126,12 +126,12 @@ function TablesPage() {
         </Button>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <Input
           placeholder="Search tables, namespaces, owners…"
           value={globalFilter}
           onChange={(e) => setGlobalFilter(e.target.value)}
-          className="max-w-sm"
+          className="w-full sm:max-w-sm"
         />
         <span className="text-sm text-muted-foreground">{rows.length} tables</span>
       </div>
@@ -143,7 +143,7 @@ function TablesPage() {
       ) : rows.length === 0 ? (
         <EmptyState>No tables registered.</EmptyState>
       ) : (
-        <div className="rounded-lg border">
+        <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/40">
               <tr>

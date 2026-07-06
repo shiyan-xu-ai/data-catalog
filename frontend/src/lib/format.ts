@@ -1,4 +1,5 @@
 import type { TtlPolicy } from "./schemas";
+import { getTz, type TzMode } from "./timezone";
 
 export function formatBytes(n: number | null | undefined): string {
   if (n == null || n === 0) return "—";
@@ -18,17 +19,19 @@ export function formatCount(n: number | null | undefined): string {
   return n.toLocaleString();
 }
 
-export function formatTime(iso: string | null | undefined): string {
+export function formatTime(iso: string | null | undefined, mode: TzMode = getTz()): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
+  return new Intl.DateTimeFormat(undefined, {
     year: "numeric",
     month: "short",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  });
+    timeZoneName: "shortOffset",
+    ...(mode === "utc" ? { timeZone: "UTC" } : {}),
+  }).format(d);
 }
 
 export function formatRelative(iso: string | null | undefined): string {

@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
 import { formatBytes, formatTime, ttlPolicyString } from "@/lib/format";
+import { useTz } from "@/lib/timezone";
 import { declareTable } from "@/lib/api";
 
 interface Props {
@@ -21,6 +22,7 @@ interface Props {
 
 export function TtlPanel({ tableId, policy, audit }: Props) {
   const qc = useQueryClient();
+  const { mode: tz } = useTz();
   const [keepLastN, setKeepLastN] = useState(policy?.keep_last_n?.toString() ?? "");
   const [maxAgeDays, setMaxAgeDays] = useState(policy?.max_age_days?.toString() ?? "");
 
@@ -140,7 +142,7 @@ export function TtlPanel({ tableId, policy, audit }: Props) {
                       <td className="px-3 py-2 font-mono text-xs">{r.version_id}</td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatBytes(r.reclaimed_bytes)}</td>
                       <td className="px-3 py-2"><Badge variant="outline">{ttlPolicyString(r.policy_snapshot)}</Badge></td>
-                      <td className="px-3 py-2 text-muted-foreground">{formatTime(r.deleted_at)}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{formatTime(r.deleted_at, tz)}</td>
                       <td className="px-3 py-2 text-muted-foreground">{r.actor}</td>
                     </tr>
                   ))}

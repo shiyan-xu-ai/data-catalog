@@ -26,9 +26,12 @@ export function VersionsTable({ tableId, versions }: Props) {
   const [page, setPage] = useState(0);
 
   const pageSize = 20;
-  const pageCount = Math.max(1, Math.ceil(versions.length / pageSize));
+  const sorted = [...versions].sort(
+    (a, b) => b.timestamp.localeCompare(a.timestamp) || b.version_id.localeCompare(a.version_id),
+  );
+  const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
-  const pageVersions = versions.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
+  const pageVersions = sorted.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
 
   const protectMut = useMutation({
     mutationFn: ({ vid, protect }: { vid: string; protect: boolean }) =>
@@ -47,7 +50,7 @@ export function VersionsTable({ tableId, versions }: Props) {
     <div className="space-y-3">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
+          <thead className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground whitespace-nowrap">
             <tr>
               <th className="px-3 py-2">Version</th>
               <th className="px-3 py-2">Shape</th>

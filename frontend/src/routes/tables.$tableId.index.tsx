@@ -9,6 +9,7 @@ import { TtlPanel } from "@/components/ttl-panel";
 import { VersionsTable } from "@/components/versions-table";
 import { AuxTable } from "@/components/aux-table";
 import { formatBytes, formatRelative, formatTime, nsToString, ttlPolicyString } from "@/lib/format";
+import { useTz } from "@/lib/timezone";
 
 export const Route = createFileRoute("/tables/$tableId/")({
   component: TableDetailPage,
@@ -25,6 +26,7 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
 
 function TableDetailPage() {
   const { tableId } = Route.useParams();
+  const { mode: tz } = useTz();
   const { data: table, isLoading, error } = useQuery({
     queryKey: ["table", tableId],
     queryFn: () => describeTable(tableId),
@@ -69,7 +71,7 @@ function TableDetailPage() {
             <MetaRow label="TTL policy">{table.ttl_policy ? <Badge variant="secondary">{ttlPolicyString(table.ttl_policy)}</Badge> : "none"}</MetaRow>
             <MetaRow label="Versions">{table.versions.length}</MetaRow>
             <MetaRow label="Total size">{formatBytes(totalBytes)}</MetaRow>
-            <MetaRow label="Last swept">{formatTime(table.last_swept)} <span className="text-muted-foreground">({formatRelative(table.last_swept)})</span></MetaRow>
+            <MetaRow label="Last swept">{formatTime(table.last_swept, tz)} <span className="text-muted-foreground">({formatRelative(table.last_swept)})</span></MetaRow>
           </dl>
         </CardContent>
       </Card>
