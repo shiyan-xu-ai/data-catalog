@@ -7,6 +7,7 @@ import { ErrorState } from "@/components/error-state";
 import { EmptyState } from "@/components/empty-state";
 import { TtlPanel } from "@/components/ttl-panel";
 import { VersionsTable } from "@/components/versions-table";
+import { AuxTable } from "@/components/aux-table";
 import { formatBytes, formatRelative, formatTime, nsToString, ttlPolicyString } from "@/lib/format";
 
 export const Route = createFileRoute("/tables/$tableId/")({
@@ -73,7 +74,27 @@ function TableDetailPage() {
         </CardContent>
       </Card>
 
-      <TtlPanel tableId={table.id} policy={table.ttl_policy} audit={audit ?? []} />
+      {latest && latest.aux.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Auxiliary data</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Sidecar &amp; nested-sidecar tables of the latest version (
+              <Link
+                to="/tables/$tableId/versions/$versionId"
+                params={{ tableId: table.id, versionId: latest.version_id }}
+                className="font-mono text-xs text-primary hover:underline"
+              >
+                {latest.version_id}
+              </Link>
+              ).
+            </p>
+          </CardHeader>
+          <CardContent>
+            <AuxTable tableId={table.id} versionId={latest.version_id} aux={latest.aux} />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -88,35 +109,7 @@ function TableDetailPage() {
         </CardContent>
       </Card>
 
-      {latest && latest.aux.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle>Latest aux</CardTitle></CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="border-b bg-muted/40 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <tr>
-                    <th className="px-3 py-2">Name</th>
-                    <th className="px-3 py-2">Role</th>
-                    <th className="px-3 py-2">Format</th>
-                    <th className="px-3 py-2 text-right">Size</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {latest.aux.map((a) => (
-                    <tr key={a.name} className="border-b last:border-0">
-                      <td className="px-3 py-2 font-mono text-xs">{a.name}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{a.role || a.name}</td>
-                      <td className="px-3 py-2"><Badge variant="outline">{a.format}</Badge></td>
-                      <td className="px-3 py-2 text-right tabular-nums">{formatBytes(a.storage_bytes)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      <TtlPanel tableId={table.id} policy={table.ttl_policy} audit={audit ?? []} />
     </div>
   );
 }

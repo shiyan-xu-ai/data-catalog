@@ -1,4 +1,5 @@
 import {
+  auxSampleResponseSchema,
   describeNamespaceResponseSchema,
   errorResponseSchema,
   listNamespacesResponseSchema,
@@ -7,6 +8,7 @@ import {
   ttlApplyResponseSchema,
   ttlAuditRecordSchema,
   ttlDryRunResponseSchema,
+  type AuxSampleResponse,
   type DescribeNamespaceResponse,
   type ListNamespacesResponse,
   type TableEntry,
@@ -112,6 +114,21 @@ export function getVersion(id: string, vid: string): Promise<TableVersion> {
   return getJson(
     `/ext/v1/tables/${encodeURIComponent(id)}/versions/${encodeURIComponent(vid)}`,
     tableVersionSchema,
+  );
+}
+
+// GET /ext/v1/tables/:id/versions/:vid/aux/sample?name=&limit=
+// `name` may contain slashes (nested sidecar paths), so it must be URL-encoded.
+export function sampleAux(
+  id: string,
+  vid: string,
+  name: string,
+  limit: number,
+): Promise<AuxSampleResponse> {
+  const q = new URLSearchParams({ name, limit: String(limit) });
+  return getJson(
+    `/ext/v1/tables/${encodeURIComponent(id)}/versions/${encodeURIComponent(vid)}/aux/sample?${q}`,
+    auxSampleResponseSchema,
   );
 }
 

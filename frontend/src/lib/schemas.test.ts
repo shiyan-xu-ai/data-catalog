@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   auxEntrySchema,
+  auxSampleResponseSchema,
   errorResponseSchema,
   tableEntrySchema,
   tableVersionSchema,
@@ -86,6 +87,47 @@ describe("auxEntrySchema", () => {
     expect(a.path).toBe("");
     expect(a.storage_bytes).toBe(0);
     expect(a.fingerprint).toBeNull();
+    expect(a.category).toBeNull();
+    expect(a.dataset_path).toBeNull();
+    expect(a.row_count).toBeNull();
+  });
+
+  it("parses enriched nested-sidecar fields", () => {
+    const a = auxEntrySchema.parse({
+      name: "dataset.lance/tag_datasets/x.lance/inner/segment_tags.lance",
+      format: "lance",
+      category: "nested_sidecar",
+      dataset_path: "s3://b/.../segment_tags.lance",
+      row_count: 42,
+      writer_version: "lance/8.0.0",
+    });
+    expect(a.category).toBe("nested_sidecar");
+    expect(a.row_count).toBe(42);
+    expect(a.writer_version).toBe("lance/8.0.0");
+  });
+});
+
+describe("auxSampleResponseSchema", () => {
+  it("parses rows + schema and defaults empties", () => {
+    const s = auxSampleResponseSchema.parse({
+      table_id: "t",
+      version_id: "v",
+      aux_name: "segments",
+      format: "parquet",
+      schema: [{ name: "id", data_type: "Int32", nullable: false }],
+      rows: [{ id: 1 }, { id: 2 }],
+    });
+    expect(s.rows).toHaveLength(2);
+    expect(s.schema[0].name).toBe("id");
+
+    const empty = auxSampleResponseSchema.parse({
+      table_id: "t",
+      version_id: "v",
+      aux_name: "x",
+      format: "lance",
+    });
+    expect(empty.rows).toEqual([]);
+    expect(empty.schema).toEqual([]);
   });
 });
 
