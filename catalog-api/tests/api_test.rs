@@ -153,6 +153,7 @@ async fn test_app_with_sync_cfg_and_storage(
         .to_str()
         .unwrap()
         .to_string();
+    let users_path = dir.path().join("users.lance").to_str().unwrap().to_string();
 
     let meta = MetaStore::new(Arc::new(InMemory::new()), ObjPath::from("_catalog/meta"));
     for (id, tm) in overlays {
@@ -167,6 +168,7 @@ async fn test_app_with_sync_cfg_and_storage(
         sync_cfg,
         ttl_audit_path.clone(),
         storage_scan_path.clone(),
+        users_path,
         catalog_cfg,
     );
     (api_router(state), ttl_audit_path, storage_scan_path, dir)
@@ -180,6 +182,24 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 async fn get(app: &Router, uri: &str) -> axum::response::Response {
     app.clone()
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn get_with_header(
+    app: &Router,
+    uri: &str,
+    header: &str,
+    value: &str,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header, value)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap()
 }
@@ -852,4 +872,73 @@ async fn ext_storage_endpoint_returns_scanned_stats_and_empty_before_any_scan() 
     assert_eq!(prefixes.len(), 2);
     assert!(prefixes.contains(&"ns1"));
     assert!(prefixes.contains(&"junk"));
+}
+
+/// `CatalogConfig` fixture whose admin list contains `boss@x.co`, for the identity/me/users test.
+fn admin_catalog_config() -> CatalogConfig {
+    let yaml = "region: r1\nbuckets:\n  - name: b1\n    namespaces: [ns1]\nadmins: [boss@x.co]\n";
+    serde_yaml::from_str(yaml).unwrap()
+}
+
+/// The identity middleware maps the IAP header to `/me`, resolves the role against the admin list,
+/// records the sighting into the users table, and `/ext/v1/users` lists it with the role overlaid.
+#[tokio::test]
+async fn me_reflects_iap_header_and_admin_list_and_users_endpoint_lists_seen_users() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry_path = dir
+        .path()
+        .join("registry.lance")
+        .to_str()
+        .unwrap()
+        .to_string();
+    catalog_core::write_registry(&registry_path, &[])
+        .await
+        .unwrap();
+    let users_path = dir.path().join("users.lance").to_str().unwrap().to_string();
+    let sync_dir = tempfile::tempdir().unwrap();
+    let sync_cfg = common::sync_config(sync_dir.path());
+
+    let meta = MetaStore::new(Arc::new(InMemory::new()), ObjPath::from("_catalog/meta"));
+    let catalog = Catalog::new(registry_path, meta.clone(), Duration::ZERO);
+    let state = ApiState::new(
+        catalog,
+        meta,
+        sync_cfg,
+        dir.path().join("ttl_audit.lance").to_str().unwrap().into(),
+        dir.path()
+            .join("storage_scan.lance")
+            .to_str()
+            .unwrap()
+            .into(),
+        users_path,
+        Arc::new(admin_catalog_config()),
+    );
+    let app = api_router(state);
+
+    // Anonymous: no IAP header -> null email, viewer role.
+    let anon = body_json(get(&app, "/ext/v1/me").await).await;
+    assert_eq!(anon["email"], serde_json::Value::Null);
+    assert_eq!(anon["role"], "viewer");
+
+    // With the IAP header: the `accounts.google.com:` prefix is stripped and the email lowercased;
+    // `boss@x.co` is an admin per the fixture.
+    let me = body_json(
+        get_with_header(
+            &app,
+            "/ext/v1/me",
+            "x-goog-authenticated-user-email",
+            "accounts.google.com:Boss@x.co",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(me["email"], "boss@x.co");
+    assert_eq!(me["role"], "admin");
+
+    // The request above recorded the user via a spawned write; give it a beat to land.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let users = body_json(get(&app, "/ext/v1/users").await).await;
+    assert_eq!(users.as_array().unwrap().len(), 1);
+    assert_eq!(users[0]["email"], "boss@x.co");
+    assert_eq!(users[0]["role"], "admin"); // overlaid from the admin list at read
 }

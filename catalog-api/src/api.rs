@@ -90,18 +90,22 @@ pub struct ApiState {
     pub ttl_audit_path: String,
     /// URI of the `_catalog/storage_scan` Lance table the sync's storage-analysis tail writes.
     pub storage_scan_path: String,
+    /// URI of the `_catalog/users` Lance table the identity layer upserts and `/ext/v1/users` reads.
+    pub users_path: String,
     /// Deployment-scoped config (region, registered bucket/namespaces, admins); declare validates
     /// against it.
     pub catalog_cfg: Arc<CatalogConfig>,
 }
 
 impl ApiState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         catalog: Arc<Catalog>,
         meta: MetaStore,
         sync_cfg: SyncConfig,
         ttl_audit_path: String,
         storage_scan_path: String,
+        users_path: String,
         catalog_cfg: Arc<CatalogConfig>,
     ) -> Self {
         Self {
@@ -110,6 +114,7 @@ impl ApiState {
             sync_cfg,
             ttl_audit_path,
             storage_scan_path,
+            users_path,
             catalog_cfg,
         }
     }
@@ -314,6 +319,66 @@ async fn ext_storage(
         .map_err(internal_error)?
         .unwrap_or_default();
     Ok(Json(stats))
+}
+
+#[derive(Debug, Serialize)]
+struct MeResponse {
+    email: Option<String>,
+    role: &'static str,
+}
+
+/// `GET /ext/v1/me` -- the caller's identity as seen by IAP, with the role resolved against the
+/// deployment's admin list. Anonymous (no IAP header) is `{email: null, role: "viewer"}`.
+async fn ext_me(
+    State(state): State<ApiState>,
+    axum::Extension(ident): axum::Extension<crate::identity::CallerIdentity>,
+) -> Json<MeResponse> {
+    let role = ident
+        .0
+        .as_deref()
+        .map(|e| {
+            if state.catalog_cfg.is_admin(e) {
+                "admin"
+            } else {
+                "viewer"
+            }
+        })
+        .unwrap_or("viewer");
+    Json(MeResponse {
+        email: ident.0.clone(),
+        role,
+    })
+}
+
+/// `GET /ext/v1/users` -- the users recorded by the identity layer. Each user's `role` is overlaid
+/// from the deployment's admin list at read time (admin if the email is an admin, else the stored
+/// role), so the admin list is the single source of truth and a demotion takes effect immediately.
+async fn ext_users(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ErrorResponse>)> {
+    let users = catalog_core::read_users(&state.users_path)
+        .await
+        .map_err(internal_error)?
+        .unwrap_or_default();
+    Ok(Json(
+        users
+            .into_iter()
+            .map(|u| {
+                let role = if state.catalog_cfg.is_admin(&u.email) {
+                    "admin"
+                } else {
+                    u.role.as_str()
+                };
+                serde_json::json!({
+                    "id": u.id,
+                    "email": u.email,
+                    "role": role,
+                    "created_at": u.created_at,
+                    "last_seen_at": u.last_seen_at,
+                })
+            })
+            .collect(),
+    ))
 }
 
 /// `GET /ext/v1/tables/{id}/versions/{vid}` -- single version detail.
@@ -554,7 +619,11 @@ async fn ttl_apply(
 }
 
 /// Build the public `/v1` + `/ext/v1` router wired to `state`.
+///
+/// The identity middleware wraps the whole router so every route sees a [`CallerIdentity`]
+/// extension and every first-sighting of an IAP email is recorded into the users table.
 pub fn api_router(state: ApiState) -> Router {
+    let identity_state = crate::identity::IdentityState::new(state.users_path.clone());
     Router::new()
         .route("/v1/namespaces", get(list_namespaces))
         .route("/v1/namespaces/:id", get(describe_namespace))
@@ -567,6 +636,8 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/ext/v1/tables", get(ext_list_tables))
         .route("/ext/v1/storage", get(ext_storage))
+        .route("/ext/v1/me", get(ext_me))
+        .route("/ext/v1/users", get(ext_users))
         .route("/ext/v1/tables/:id/versions/:vid", get(ext_get_version))
         .route(
             "/ext/v1/tables/:id/versions/:vid/aux/sample",
@@ -579,5 +650,9 @@ pub fn api_router(state: ApiState) -> Router {
         .route("/ext/v1/tables/:id/ttl/dryrun", get(ttl_dryrun))
         .route("/ext/v1/tables/:id/ttl/audit", get(ttl_audit))
         .route("/ext/v1/tables/:id/ttl/apply", post(ttl_apply))
+        .layer(axum::middleware::from_fn_with_state(
+            identity_state,
+            crate::identity::identity_layer,
+        ))
         .with_state(state)
 }

@@ -49,6 +49,8 @@ pub struct AppConfig {
     pub ttl_audit_path: String,
     /// URI of the `_catalog/storage_scan` Lance dataset (sync's storage-analysis tail).
     pub storage_scan_path: String,
+    /// URI of the `_catalog/users` Lance dataset (IAP-sighting upserts).
+    pub users_path: String,
     /// URI base of the authored overlay objects. `memory` (dev/tests, non-persistent),
     /// `s3://bucket/_catalog/meta` (prod / MinIO local). A plain filesystem path does NOT work:
     /// `LocalFileSystem` lacks conditional writes.
@@ -79,6 +81,7 @@ impl AppConfig {
             registry_path: env_or("CATALOG_REGISTRY_PATH", "_catalog/registry"),
             ttl_audit_path: env_or("CATALOG_TTL_AUDIT_PATH", "_catalog/ttl_audit"),
             storage_scan_path: env_or("CATALOG_STORAGE_SCAN_PATH", "_catalog/storage_scan"),
+            users_path: env_or("CATALOG_USERS_PATH", "_catalog/users"),
             meta_base_uri: env_or("CATALOG_META_BASE_URI", "memory"),
             catalog_config_path: env_or("CATALOG_CONFIG_PATH", "catalog-config.yaml"),
             cache_ttl: env_duration_secs("CATALOG_CACHE_TTL_SECS", 5)?,

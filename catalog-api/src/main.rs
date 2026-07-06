@@ -137,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         sync_cfg,
         cfg.ttl_audit_path.clone(),
         cfg.storage_scan_path.clone(),
+        cfg.users_path.clone(),
         catalog_cfg.clone(),
     );
     let sync_state = SyncState {

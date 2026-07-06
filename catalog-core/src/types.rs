@@ -190,6 +190,27 @@ pub struct StoragePrefixStat {
     pub scanned_at: DateTime<Utc>,
 }
 
+fn default_viewer() -> String {
+    "viewer".to_string()
+}
+
+/// A catalog user, upserted on every sighting via the IAP identity header. The `email` is the
+/// merge key (lowercased); `role` is the stored default and is overlaid from the deployment's
+/// admin list at read time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserRecord {
+    /// UUIDv7, assigned once on first sighting and stable thereafter.
+    pub id: String,
+    /// Lowercased email; the merge/upsert key.
+    pub email: String,
+    /// Stored role default. `#[serde(default)]` so a row written before this field existed still
+    /// deserializes to "viewer" during a rolling upgrade.
+    #[serde(default = "default_viewer")]
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
 /// Durable record of a TTL hard-delete.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TtlAuditRecord {

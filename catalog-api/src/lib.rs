@@ -5,6 +5,7 @@ pub mod api;
 pub mod catalog;
 pub mod catalog_config;
 pub mod config;
+pub mod identity;
 pub mod sample;
 pub mod secrets;
 pub mod shutdown;
