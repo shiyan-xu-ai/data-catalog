@@ -79,3 +79,29 @@ Key vars: `CATALOG_SWEEP_ROOT_URI`, `CATALOG_REGISTRY_PATH`,
 - Design features dropped for v1.0.0: lineage, MCP, Flight SQL, profiling,
   maintenance/compaction engine, cost analysis, credential vending, operation
   history, inbox. See [`docs/design.md`](design.md).
+
+## Since v1.0.0
+
+- **S3-only deployment on Apps Platform (Cloud Run).** Leader election
+  (k8s Lease), the in-process write lock, and the Prometheus/Grafana/
+  kustomize stack described above are gone. Catalog state now splits into a
+  derived snapshot (sweep output, last-wins, no coordination) and a small
+  per-table authored overlay (`owner`/`ttl_policy`/`protected`) guarded by
+  S3 ETag-CAS. Sweep runs from a Cloud Scheduler-triggered endpoint instead
+  of a background loop. Observability moved to Cloud Logging; there is no
+  `/metrics` Prometheus endpoint. See `ARCHITECTURE.md` and the design
+  doc's as-built notes for the current model.
+- **Sweep performance.** A single per-version LIST now drives shape/size/aux
+  classification, all registered tables' pending versions sweep
+  concurrently from one bounded work queue, and clean immutable versions
+  already in the prior snapshot are carried forward without re-opening
+  their datasets. A `CATALOG_SWEEP_DEEP_STATS` knob (`all`/`latest`/`none`)
+  gates the index-load + `count_rows` fallback per version.
+- **Richer auxiliary table metadata.** Aux entries record a `category`
+  (`sidecar` vs `nested_sidecar` — a lance dataset discovered nested inside
+  another table's `dataset.lance/`), row count, schema, and Lance/writer
+  version, derived from the dataset manifest at no extra S3 cost.
+  `GET /ext/v1/tables/:id/versions/:vid/aux/sample` reads sample rows from
+  an aux table (Lance or Parquet, via DataFusion).
+- **Frontend rewritten** on React + TanStack Router/Query + shadcn/ui (see
+  [`docs/FRONTEND.md`](FRONTEND.md)), replacing the vanilla-TS/Vite SPA.

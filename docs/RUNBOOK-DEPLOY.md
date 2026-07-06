@@ -20,9 +20,13 @@ apps-platform app environment list
 apps-platform app environment use experimental-staging
 ```
 
-> The sweep root holds customer-derived perception data and the TTL engine hard-
-> deletes it. Confirm the environment choice against the platform's
-> sensitive-data policy before pointing production config at a real bucket.
+> The sweep root holds customer-derived perception data (vehicle data,
+> simulation results) and the TTL engine hard-deletes it — the platform's
+> sensitive-data policy flags this category as needing extra care on
+> `experimental`/`experimental-staging`. The `anaheim` and `internal`
+> environments are isolated from platform-team access for exactly this case;
+> request access before pointing the sweep root at a real bucket outside
+> local/scratch testing.
 
 ## 2. Review `project.toml`
 
@@ -31,7 +35,10 @@ apps-platform app environment use experimental-staging
 (`[cloudrun.env_vars]`: sweep root, registry/audit/meta URIs, AWS region,
 `RUST_LOG`). Adjust the bucket names and region for the target environment. By
 default any Applied FTE can reach the app (IAP + Trident); restrict with
-`allowed_usergroups` if needed.
+`allowed_usergroups` if needed. The active environment profile's own
+`[cloudrun]`/env var settings, if any, take precedence over `project.toml`'s —
+check `apps-platform app environment show <name>` if a deploy doesn't seem to
+pick up a value set here.
 
 The overlay (`CATALOG_META_BASE_URI`) MUST be an `s3://` URI — it relies on S3
 conditional writes, which `LocalFileSystem` does not implement. `memory` is only
@@ -62,9 +69,13 @@ environment (local dev), the fetch is skipped.
 apps-platform app deploy --local   # builds the Dockerfile locally, deploys to Cloud Run
 ```
 
-The service comes up at `https://lance-catalog.<env>.apps.applied.dev`. On boot
-the app binds `$PORT`, hydrates AWS credentials, and serves both the API and the
-SPA. `/readyz` returns `503` until the first view load, then `200`.
+The CLI prints the service URL on success. The DNS suffix doesn't always
+match the environment name verbatim — e.g. `experimental-staging` serves at
+`.experimental.staging.apps.applied.dev` but `experimental-prod` is just
+`.experimental.apps.applied.dev` (run `apps-platform docs get environments`
+for the full per-environment suffix table). On boot the app binds `$PORT`,
+hydrates AWS credentials, and serves both the API and the SPA. `/readyz`
+returns `503` until the first view load, then `200`.
 
 ## 5. Schedule the sweep
 
@@ -90,7 +101,7 @@ Through the browser (IAP handles login) or with an ID token
 (`apps-platform auth token`):
 
 ```sh
-URL=https://lance-catalog.<env>.apps.applied.dev
+URL=<the URL printed by `apps-platform app deploy` in step 4>
 TOKEN=$(apps-platform auth token)
 auth() { curl -s -H "Authorization: Bearer $TOKEN" "$@"; }
 
