@@ -1,4 +1,4 @@
-//! Build a `catalog_store::SweepConfig` from a root URI: `s3://bucket/prefix` in prod, or a plain
+//! Build a `catalog_store::SyncConfig` from a root URI: `s3://bucket/prefix` in prod, or a plain
 //! filesystem path for local dev and tests.
 //!
 //! For `s3://` URIs the object store is built with `object_store::parse_url_opts` feeding in every
@@ -14,9 +14,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use catalog_store::SweepConfig;
+use catalog_store::SyncConfig;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjPath;
+
+use crate::catalog_config::CatalogConfig;
+use crate::sync::SyncTarget;
 
 /// Collect the `AWS_*` environment variables recognized by `object_store`'s
 /// [`AmazonS3ConfigKey`](object_store::aws::AmazonS3ConfigKey) into a `Vec<(String, String)>`
@@ -57,20 +60,20 @@ fn s3_opts(extra: &[(String, String)]) -> Vec<(String, String)> {
     opts
 }
 
-pub fn build_sweep_config(root_uri: &str, extra_opts: &[(String, String)]) -> Result<SweepConfig> {
+pub fn build_sync_config(root_uri: &str, extra_opts: &[(String, String)]) -> Result<SyncConfig> {
     if root_uri.contains("://") {
-        let url = url::Url::parse(root_uri).context("parse sweep root URI")?;
+        let url = url::Url::parse(root_uri).context("parse sync root URI")?;
         let (store, path) = object_store::parse_url_opts(&url, s3_opts(extra_opts))
-            .context("build object store for sweep root")?;
-        Ok(SweepConfig::new(
+            .context("build object store for sync root")?;
+        Ok(SyncConfig::new(
             Arc::from(store),
             path,
             root_uri.to_string(),
         ))
     } else {
         let store = LocalFileSystem::new_with_prefix(root_uri)
-            .with_context(|| format!("open local filesystem sweep root {root_uri}"))?;
-        Ok(SweepConfig::new(
+            .with_context(|| format!("open local filesystem sync root {root_uri}"))?;
+        Ok(SyncConfig::new(
             Arc::new(store),
             ObjPath::from(""),
             root_uri.to_string(),
@@ -78,11 +81,47 @@ pub fn build_sweep_config(root_uri: &str, extra_opts: &[(String, String)]) -> Re
     }
 }
 
+/// Build the sync targets for every registered namespace across all configured buckets: ONE
+/// object store per bucket (rooted at `s3://<bucket>`), cloned into one [`SyncTarget`] per
+/// namespace under that bucket. Each target's `cfg.root_path` is the namespace prefix path and
+/// its `cfg.root_uri` is `s3://<bucket>/<namespace>`, so `uri_for`/`path_for` resolve the same
+/// on-store location. `extra_opts` are the Secret-Manager credentials appended to the `AWS_*`
+/// env options, exactly as [`build_sync_config`] does.
+pub fn build_sync_targets(
+    catalog_cfg: &CatalogConfig,
+    extra_opts: &[(String, String)],
+) -> Result<Vec<SyncTarget>> {
+    let opts = s3_opts(extra_opts);
+    let mut targets = Vec::new();
+    for bucket in &catalog_cfg.buckets {
+        // One store per bucket, built once and shared (cloned Arc) across the bucket's namespaces.
+        let bucket_url = url::Url::parse(&format!("s3://{}", bucket.name))
+            .with_context(|| format!("parse bucket URL for {}", bucket.name))?;
+        let (store, _root) = object_store::parse_url_opts(&bucket_url, opts.clone())
+            .with_context(|| format!("build object store for bucket {}", bucket.name))?;
+        let store: Arc<dyn object_store::ObjectStore> = Arc::from(store);
+        for ns in &bucket.namespaces {
+            let cfg = SyncConfig::new(
+                store.clone(),
+                ObjPath::from(ns.as_str()),
+                format!("s3://{}/{ns}", bucket.name),
+            );
+            targets.push(SyncTarget {
+                region: catalog_cfg.region.clone(),
+                bucket: bucket.name.clone(),
+                namespace: ns.split('/').map(|s| s.to_string()).collect(),
+                cfg,
+            });
+        }
+    }
+    Ok(targets)
+}
+
 /// Build the authored-overlay [`MetaStore`] from `uri`. Because the overlay is mutated with
 /// conditional writes (ETag CAS), the backing store must support them:
 /// - `memory` — an `InMemory` store (dev / local without MinIO / tests; NOT persistent).
 /// - `s3://bucket/prefix` — S3 or a MinIO-compatible endpoint (production, local dev). AWS_*
-///   env is applied exactly as for the sweep store.
+///   env is applied exactly as for the sync store.
 ///
 /// A plain filesystem path is rejected: `object_store`'s `LocalFileSystem` does not implement
 /// `PutMode::Update`, so overlay mutations would fail at runtime.
@@ -115,7 +154,7 @@ mod tests {
     /// `aws_s3_opts_from_env` must surface exactly the `AWS_*` env vars object_store 0.13.2
     /// recognizes via `AmazonS3ConfigKey::from_str`, and must NOT emit unrecognized names
     /// (e.g. a bogus `AWS_S3_FORCE_PATH_STYLE` — the real path-style key is
-    /// `AWS_VIRTUAL_HOSTED_STYLE_REQUEST`). This is the pure env→options mapping the sweep
+    /// `AWS_VIRTUAL_HOSTED_STYLE_REQUEST`). This is the pure env→options mapping the sync
     /// store build depends on; a wrong key name here is the same silent-misconfig bug the fix
     /// targets, so it is unit-tested in isolation.
     #[test]

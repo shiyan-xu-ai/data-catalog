@@ -66,7 +66,7 @@ export function RegisterDialog({ open, onOpenChange }: RegisterDialogProps) {
           <DialogTitle>Register table</DialogTitle>
           <DialogDescription>
             Registers the table by writing its authored overlay. Derived fields (versions, sizes) are
-            filled by the next sweep.
+            filled by the next sync.
           </DialogDescription>
         </DialogHeader>
 

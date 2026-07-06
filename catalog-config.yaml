@@ -1,0 +1,13 @@
+# Deployment-scoped catalog configuration. The service is regional: it runs in
+# the same region as the target buckets below. Changing this file is a PR +
+# deploy (it is baked into the image).
+region: us-phoenix-1
+
+buckets:
+  - name: onroad-perception-datasets
+    namespaces:
+      - scenario_dataset_export
+
+# Source of truth for the admin role (overlaid at read time; never persisted).
+admins:
+  - shiyan.xu@applied.co

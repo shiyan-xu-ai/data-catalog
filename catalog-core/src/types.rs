@@ -77,7 +77,7 @@ pub struct AuxEntry {
     pub writer_version: Option<String>,
 }
 
-/// Shape of a swept table version, per findings.md.
+/// Shape of a synced table version, per findings.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VersionShape {
@@ -109,6 +109,9 @@ pub struct TableVersion {
     pub protected: bool,
     #[serde(default)]
     pub storage_bytes_total: u64,
+    /// Objects under this version's prefix, from the sync LIST.
+    #[serde(default)]
+    pub object_count: Option<u64>,
     #[serde(default)]
     pub lance_core_bytes: u64,
     #[serde(default)]
@@ -133,7 +136,7 @@ pub struct TableVersion {
     pub writer_version: Option<String>,
     #[serde(default)]
     pub aux: Vec<AuxEntry>,
-    pub swept_at: DateTime<Utc>,
+    pub synced_at: DateTime<Utc>,
 }
 
 /// A table's registry entry.
@@ -141,11 +144,17 @@ pub struct TableVersion {
 pub struct TableEntry {
     pub id: String,
     pub name: String,
+    /// Deployment region this table's bucket lives in (first id segment).
+    #[serde(default)]
+    pub region: String,
+    /// Target bucket holding the table (second id segment).
+    #[serde(default)]
+    pub bucket: String,
     pub namespace: Namespace,
     pub root_location: String,
     pub owner: Option<String>,
     pub ttl_policy: Option<TtlPolicy>,
-    pub last_swept: Option<DateTime<Utc>>,
+    pub last_synced: Option<DateTime<Utc>>,
     pub versions: Vec<TableVersion>,
     /// Latest version's aux summary, kept denormalized for cheap listing.
     pub aux_latest: Vec<AuxEntry>,
@@ -159,6 +168,47 @@ pub struct TtlPolicy {
     pub keep_last_n: Option<u32>,
     #[serde(default)]
     pub max_age_days: Option<u32>,
+}
+
+/// One row of a storage scan: a bucket prefix (either a registered namespace or an unexplored
+/// top-level/sibling/ancestor dir) with its aggregated size when registered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoragePrefixStat {
+    pub region: String,
+    pub bucket: String,
+    /// `/`-joined display path, e.g. `"a"`, `"a/c"`, or the `"(root)"` pseudo-prefix for loose
+    /// objects sitting directly at the bucket root.
+    pub prefix: String,
+    /// True iff `prefix` IS a registered namespace (not an ancestor or sibling of one).
+    pub registered: bool,
+    #[serde(default)]
+    pub bytes: Option<u64>,
+    #[serde(default)]
+    pub objects: Option<u64>,
+    #[serde(default)]
+    pub table_count: Option<u32>,
+    pub scanned_at: DateTime<Utc>,
+}
+
+fn default_viewer() -> String {
+    "viewer".to_string()
+}
+
+/// A catalog user, upserted on every sighting via the IAP identity header. The `email` is the
+/// merge key (lowercased); `role` is the stored default and is overlaid from the deployment's
+/// admin list at read time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserRecord {
+    /// UUIDv7, assigned once on first sighting and stable thereafter.
+    pub id: String,
+    /// Lowercased email; the merge/upsert key.
+    pub email: String,
+    /// Stored role default. `#[serde(default)]` so a row written before this field existed still
+    /// deserializes to "viewer" during a rolling upgrade.
+    #[serde(default = "default_viewer")]
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
 }
 
 /// Durable record of a TTL hard-delete.
@@ -193,7 +243,7 @@ mod tests {
             "snapshot_path": "s3://bucket/t/2026-01-01",
             "shape": "full",
             "storage_bytes_total": 100,
-            "swept_at": "2026-01-01T00:00:00Z",
+            "synced_at": "2026-01-01T00:00:00Z",
             "some_future_field": {"nested": true}
         }"#;
 

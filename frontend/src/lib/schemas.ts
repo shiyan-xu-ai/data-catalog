@@ -66,7 +66,7 @@ export const tableVersionSchema = z.object({
   lance_version: z.number().nullable().default(null),
   writer_version: z.string().nullable().default(null),
   aux: z.array(auxEntrySchema).default([]),
-  swept_at: z.string(),
+  synced_at: z.string(),
 });
 export type TableVersion = z.infer<typeof tableVersionSchema>;
 
@@ -79,11 +79,13 @@ export type TtlPolicy = z.infer<typeof ttlPolicySchema>;
 export const tableEntrySchema = z.object({
   id: z.string(),
   name: z.string(),
+  region: z.string().default(""),
+  bucket: z.string().default(""),
   namespace: z.array(z.string()),
   root_location: z.string(),
   owner: z.string().nullable(),
   ttl_policy: ttlPolicySchema.nullable(),
-  last_swept: z.string().nullable(),
+  last_synced: z.string().nullable(),
   versions: z.array(tableVersionSchema),
   aux_latest: z.array(auxEntrySchema),
 });
@@ -120,8 +122,14 @@ export const errorResponseSchema = z.object({
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 
 // Namespaces
+export const namespaceRefSchema = z.object({
+  bucket: z.string(),
+  namespace: z.array(z.string()),
+});
+export type NamespaceRef = z.infer<typeof namespaceRefSchema>;
+
 export const listNamespacesResponseSchema = z.object({
-  namespaces: z.array(z.array(z.string())),
+  namespaces: z.array(namespaceRefSchema),
 });
 export type ListNamespacesResponse = z.infer<typeof listNamespacesResponseSchema>;
 
@@ -130,3 +138,32 @@ export const describeNamespaceResponseSchema = z.object({
   table_count: z.number(),
 });
 export type DescribeNamespaceResponse = z.infer<typeof describeNamespaceResponseSchema>;
+
+// Storage analysis
+export const storagePrefixStatSchema = z.object({
+  region: z.string(),
+  bucket: z.string(),
+  prefix: z.string(),
+  registered: z.boolean(),
+  bytes: z.number().nullable().default(null),
+  objects: z.number().nullable().default(null),
+  table_count: z.number().nullable().default(null),
+  scanned_at: z.string(),
+});
+export type StoragePrefixStat = z.infer<typeof storagePrefixStatSchema>;
+
+// Users / identity
+export const userSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  role: z.string(),
+  created_at: z.string(),
+  last_seen_at: z.string(),
+});
+export type CatalogUser = z.infer<typeof userSchema>;
+
+export const meResponseSchema = z.object({
+  email: z.string().nullable(),
+  role: z.string(),
+});
+export type MeResponse = z.infer<typeof meResponseSchema>;

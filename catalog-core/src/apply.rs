@@ -1,7 +1,7 @@
 //! Derivation of a table's `aux_latest` from its version set.
 //!
-//! The sweep re-derives each registered table's version set whole from immutable S3 content, so
-//! there is no cross-sweep merge to perform — the swept result IS the derived snapshot. The one
+//! The sync re-derives each registered table's version set whole from immutable S3 content, so
+//! there is no cross-sync merge to perform — the synced result IS the derived snapshot. The one
 //! derived field not read straight off a single version is `aux_latest` (the aux of the
 //! chronologically-latest version), which `recompute_aux_latest` computes from the version set.
 
@@ -40,6 +40,7 @@ mod tests {
             partial: false,
             protected: false,
             storage_bytes_total: 100,
+            object_count: None,
             lance_core_bytes: 60,
             sidecar_bytes: 0,
             segments_bytes: 40,
@@ -64,7 +65,7 @@ mod tests {
                 lance_version: None,
                 writer_version: None,
             }],
-            swept_at: ts,
+            synced_at: ts,
         }
     }
 
@@ -72,11 +73,13 @@ mod tests {
         TableEntry {
             id: "t1".to_string(),
             name: "t1".to_string(),
+            region: String::new(),
+            bucket: String::new(),
             namespace: Namespace::new(["ns"]),
             root_location: "s3://bucket/table".to_string(),
             owner: None,
             ttl_policy: None,
-            last_swept: None,
+            last_synced: None,
             versions,
             aux_latest: vec![],
         }

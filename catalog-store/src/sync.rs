@@ -1,16 +1,16 @@
-//! S3 sweep: discovers tables and timestamp-path versions, classifies each version's
+//! S3 sync: discovers tables and timestamp-path versions, classifies each version's
 //! shape, splits storage bytes into lance-core/sidecar/segments/other-aux, and collects
 //! aux entries — for both the pre- and post-2026-06-26-cutoff sidecar layouts (see
 //! findings.md).
 //!
 //! ## Request shape (performance)
 //!
-//! A version is swept with **one recursive LIST** of its timestamp directory: every object's
+//! A version is synced with **one recursive LIST** of its timestamp directory: every object's
 //! key + size + etag lands in memory, and shape classification, byte splits, aux entries,
 //! format detection, and fingerprints are all derived from that single object list (see
 //! `format.rs`). The only other IO per version is opening the main Lance dataset for
-//! row-count/schema/fragment/index stats. Versions sweep concurrently
-//! (`SweepConfig::concurrency`), so a table's wall time is ~`versions / concurrency`, not a
+//! row-count/schema/fragment/index stats. Versions sync concurrently
+//! (`SyncConfig::concurrency`), so a table's wall time is ~`versions / concurrency`, not a
 //! serial walk of 10+ requests per version.
 
 use std::time::Instant;
@@ -25,7 +25,7 @@ use lance::Dataset;
 use object_store::path::Path as ObjPath;
 use object_store::ObjectMeta;
 
-use crate::config::{DeepStats, SweepConfig};
+use crate::config::{DeepStats, SyncConfig};
 use crate::format::{bytes_under, children, detect_format, is_lance_shaped, DirListing};
 
 /// Sidecar directory names that, pre-cutoff, live *inside* the main lance dir instead of
@@ -87,21 +87,21 @@ fn schema_to_json(schema: &lance::datatypes::Schema) -> Result<String> {
     )?)
 }
 
-/// Result of one full sweep pass: the tables that swept cleanly, plus a count of table dirs
+/// Result of one full sync pass: the tables that synced cleanly, plus a count of table dirs
 /// that failed and were skipped this cycle (per-table failures are isolated so one bad table
 /// never aborts the whole cycle).
-pub struct SweepOutcome {
+pub struct SyncOutcome {
     pub tables: Vec<TableEntry>,
     pub failed_tables: u64,
 }
 
-/// Sweep the whole configured root: one `TableEntry` per top-level table dir.
+/// Sync the whole configured root: one `TableEntry` per top-level table dir.
 ///
 /// The top-level LIST failing aborts the pass (we can't discover tables). But a single table
-/// failing to sweep is isolated: it is logged and skipped (counted in `failed_tables`) so the
+/// failing to sync is isolated: it is logged and skipped (counted in `failed_tables`) so the
 /// rest of the catalog still refreshes, rather than one malformed or transiently-unreadable
 /// table dir aborting the entire cycle and stalling every other table's freshness.
-pub async fn sweep_root(cfg: &SweepConfig) -> Result<SweepOutcome> {
+pub async fn sync_root(cfg: &SyncConfig) -> Result<SyncOutcome> {
     let listing = cfg.store.list_with_delimiter(Some(&cfg.root_path)).await?;
     let mut tables = Vec::with_capacity(listing.common_prefixes.len());
     let mut failed_tables = 0u64;
@@ -109,19 +109,19 @@ pub async fn sweep_root(cfg: &SweepConfig) -> Result<SweepOutcome> {
         let Some(table_name) = table_path.filename().map(|n| n.to_string()) else {
             continue;
         };
-        match sweep_table(cfg, &table_name, &table_path).await {
+        match sync_table(cfg, &table_name, &table_path).await {
             Ok(entry) => tables.push(entry),
             Err(e) => {
                 failed_tables += 1;
                 tracing::warn!(
                     table = %table_name,
                     error = %e,
-                    "sweep: skipping table that failed to sweep this cycle"
+                    "sync: skipping table that failed to sync this cycle"
                 );
             }
         }
     }
-    Ok(SweepOutcome {
+    Ok(SyncOutcome {
         tables,
         failed_tables,
     })
@@ -137,9 +137,9 @@ pub fn deep_for(mode: DeepStats, is_latest: bool) -> bool {
 }
 
 /// One timestamp-path version directory discovered under a table dir: the parsed identity
-/// plus the object-store path to sweep. Produced by [`list_version_dirs`]; consumed by
-/// [`sweep_version`] — split so callers (e.g. the API's global sweep queue) can decide which
-/// versions actually need sweeping (carry-forward) before paying for any per-version IO.
+/// plus the object-store path to sync. Produced by [`list_version_dirs`]; consumed by
+/// [`sync_version`] — split so callers (e.g. the API's global sync queue) can decide which
+/// versions actually need syncing (carry-forward) before paying for any per-version IO.
 #[derive(Debug, Clone)]
 pub struct VersionDirRef {
     pub version_id: String,
@@ -150,7 +150,7 @@ pub struct VersionDirRef {
 /// List a table dir's timestamp-path version directories (one cheap delimiter LIST).
 /// Non-timestamp subdirs are skipped, matching discovery's tolerance for stray dirs.
 pub async fn list_version_dirs(
-    cfg: &SweepConfig,
+    cfg: &SyncConfig,
     table_path: &ObjPath,
 ) -> Result<Vec<VersionDirRef>> {
     let listing = cfg.store.list_with_delimiter(Some(table_path)).await?;
@@ -171,11 +171,11 @@ pub async fn list_version_dirs(
     Ok(dirs)
 }
 
-/// Sweep one table dir: one `TableVersion` per timestamp-path subdir, swept concurrently
+/// Sync one table dir: one `TableVersion` per timestamp-path subdir, synced concurrently
 /// (`cfg.concurrency` versions in flight). Any version failing fails the table — the caller
 /// isolates per-table failures.
-pub async fn sweep_table(
-    cfg: &SweepConfig,
+pub async fn sync_table(
+    cfg: &SyncConfig,
     table_name: &str,
     table_path: &ObjPath,
 ) -> Result<TableEntry> {
@@ -187,7 +187,7 @@ pub async fn sweep_table(
         .map(|d| {
             let deep = deep_for(cfg.deep_stats, latest_id.as_deref() == Some(&d.version_id));
             async move {
-                sweep_version(cfg, &d.path, d.timestamp, d.version_id, now, deep)
+                sync_version(cfg, &d.path, d.timestamp, d.version_id, now, deep)
                     .await
                     .map(|s| s.version)
             }
@@ -203,11 +203,13 @@ pub async fn sweep_table(
     Ok(TableEntry {
         id: table_name.to_string(),
         name: table_name.to_string(),
+        region: String::new(),
+        bucket: String::new(),
         namespace,
         root_location: cfg.uri_for(table_path),
         owner: None,
         ttl_policy: None,
-        last_swept: Some(now),
+        last_synced: Some(now),
         versions,
         aux_latest,
     })
@@ -234,7 +236,7 @@ struct OpenedDataset {
 ///
 /// The open itself always runs regardless of `deep`, so openability — and therefore
 /// shape/`partial` classification — is identical in every mode.
-async fn try_open_dataset(cfg: &SweepConfig, path: &ObjPath, deep: bool) -> Option<OpenedDataset> {
+async fn try_open_dataset(cfg: &SyncConfig, path: &ObjPath, deep: bool) -> Option<OpenedDataset> {
     let uri = cfg.uri_for(path);
     let dataset = Dataset::open(&uri).await.ok()?;
     let manifest = dataset.manifest();
@@ -283,7 +285,7 @@ const CATEGORY_NESTED_SIDECAR: &str = "nested_sidecar";
 /// Build an aux entry for `path` from the pre-fetched object list: real recursive size plus
 /// detected format (and fingerprint for mixed/unknown). Pure — no IO.
 fn aux_entry_for(
-    cfg: &SweepConfig,
+    cfg: &SyncConfig,
     objects: &[ObjectMeta],
     name: &str,
     path: &ObjPath,
@@ -332,7 +334,7 @@ fn lance_dataset_roots(objects: &[ObjectMeta], base: &ObjPath) -> Vec<ObjPath> {
 /// Open a lance-format aux dataset and fill the entry's manifest-derived stats. Aux stats are
 /// intentionally cheaper than the main dataset's: manifest-only row counts (no `count_rows`
 /// fallback) and no index loading.
-async fn enrich_lance_aux(cfg: &SweepConfig, entry: &mut AuxEntry, root: &ObjPath) {
+async fn enrich_lance_aux(cfg: &SyncConfig, entry: &mut AuxEntry, root: &ObjPath) {
     let uri = cfg.uri_for(root);
     let Ok(dataset) = Dataset::open(&uri).await else {
         return;
@@ -349,9 +351,9 @@ async fn enrich_lance_aux(cfg: &SweepConfig, entry: &mut AuxEntry, root: &ObjPat
         .map(|w| format!("{}/{}", w.library, w.version));
 }
 
-/// One swept version plus where its wall time went, so a sweep can report the LIST-vs-Lance
+/// One synced version plus where its wall time went, so a sync can report the LIST-vs-Lance
 /// split instead of leaving slow tables a mystery.
-pub struct SweptVersion {
+pub struct SyncedVersion {
     pub version: TableVersion,
     /// Objects enumerated by the version's recursive LIST.
     pub objects: u64,
@@ -361,20 +363,20 @@ pub struct SweptVersion {
     pub open_ms: u64,
 }
 
-/// Sweep one timestamp-path version dir: classify its shape, split storage bytes into
+/// Sync one timestamp-path version dir: classify its shape, split storage bytes into
 /// lance-core/sidecar/segments/other-aux, and collect aux entries.
 ///
 /// All of the above comes from ONE recursive LIST of the version dir; the only additional IO
 /// is the Lance dataset open for row/schema/index stats (see [`try_open_dataset`] for what
 /// `deep` gates).
-pub async fn sweep_version(
-    cfg: &SweepConfig,
+pub async fn sync_version(
+    cfg: &SyncConfig,
     ts_path: &ObjPath,
     timestamp: DateTime<Utc>,
     version_id: String,
-    swept_at: DateTime<Utc>,
+    synced_at: DateTime<Utc>,
     deep: bool,
-) -> Result<SweptVersion> {
+) -> Result<SyncedVersion> {
     // The single LIST: every object under this version, with key/size/etag.
     let list_started = Instant::now();
     let objects: Vec<ObjectMeta> = cfg.store.list(Some(ts_path)).try_collect().await?;
@@ -530,7 +532,7 @@ pub async fn sweep_version(
             None => {
                 // Looked lance-shaped (had _versions/_transactions) but failed to open
                 // (e.g. corrupt manifest). Degrade gracefully rather than panic/error out
-                // the whole sweep: record it as partial with no schema/row data.
+                // the whole sync: record it as partial with no schema/row data.
                 shape = VersionShape::LanceOnlyPartial;
                 partial = true;
             }
@@ -644,10 +646,10 @@ pub async fn sweep_version(
         list_ms,
         open_ms,
         deep,
-        "swept version"
+        "synced version"
     );
 
-    Ok(SweptVersion {
+    Ok(SyncedVersion {
         version: TableVersion {
             version_id,
             timestamp,
@@ -656,6 +658,7 @@ pub async fn sweep_version(
             partial,
             protected: false,
             storage_bytes_total,
+            object_count: Some(objects_count),
             lance_core_bytes,
             sidecar_bytes,
             segments_bytes,
@@ -667,7 +670,7 @@ pub async fn sweep_version(
             lance_version,
             writer_version,
             aux,
-            swept_at,
+            synced_at,
         },
         objects: objects_count,
         list_ms,

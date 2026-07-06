@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/empty-state";
 import { TtlPanel } from "@/components/ttl-panel";
 import { VersionsTable } from "@/components/versions-table";
 import { AuxTable } from "@/components/aux-table";
-import { formatBytes, formatRelative, formatTime, nsToString, ttlPolicyString } from "@/lib/format";
+import { formatBytes, formatRelative, formatTime, namespaceId, nsToString, ttlPolicyString } from "@/lib/format";
 import { useTz } from "@/lib/timezone";
 
 export const Route = createFileRoute("/tables/$tableId/")({
@@ -61,7 +61,11 @@ function TableDetailPage() {
           <dl>
             <MetaRow label="Namespace">
               {table.namespace.length ? (
-                <Link to="/namespaces/$ns" params={{ ns: nsToString(table.namespace) }} className="text-primary hover:underline">
+                <Link
+                  to="/namespaces/$ns"
+                  params={{ ns: namespaceId(table.bucket, table.namespace) }}
+                  className="text-primary hover:underline"
+                >
                   {nsToString(table.namespace)}
                 </Link>
               ) : "—"}
@@ -71,7 +75,7 @@ function TableDetailPage() {
             <MetaRow label="TTL policy">{table.ttl_policy ? <Badge variant="secondary">{ttlPolicyString(table.ttl_policy)}</Badge> : "none"}</MetaRow>
             <MetaRow label="Versions">{table.versions.length}</MetaRow>
             <MetaRow label="Total size">{formatBytes(totalBytes)}</MetaRow>
-            <MetaRow label="Last swept">{formatTime(table.last_swept, tz)} <span className="text-muted-foreground">({formatRelative(table.last_swept)})</span></MetaRow>
+            <MetaRow label="Last synced">{formatTime(table.last_synced, tz)} <span className="text-muted-foreground">({formatRelative(table.last_synced)})</span></MetaRow>
           </dl>
         </CardContent>
       </Card>
@@ -104,7 +108,7 @@ function TableDetailPage() {
         </CardHeader>
         <CardContent>
           {table.versions.length === 0 ? (
-            <EmptyState>No versions swept yet.</EmptyState>
+            <EmptyState>No versions synced yet.</EmptyState>
           ) : (
             <VersionsTable tableId={table.id} versions={table.versions} />
           )}

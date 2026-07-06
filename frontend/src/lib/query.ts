@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 
-// Sweep freshness is bounded by the sweep interval; align staleTime so the UI never pretends to
-// be more current than the catalog is. 30s matches a typical sweep cadence.
+// Sync freshness is bounded by the sync interval; align staleTime so the UI never pretends to
+// be more current than the catalog is. 30s matches a typical sync cadence.
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

@@ -86,6 +86,7 @@ mod tests {
             partial: !matches!(shape, VersionShape::Full),
             protected,
             storage_bytes_total: 1000,
+            object_count: None,
             lance_core_bytes: 1000,
             sidecar_bytes: 0,
             segments_bytes: 0,
@@ -97,7 +98,7 @@ mod tests {
             lance_version: None,
             writer_version: None,
             aux: Vec::<AuxEntry>::new(),
-            swept_at: ts,
+            synced_at: ts,
         }
     }
 

@@ -3,6 +3,8 @@ import {
   auxEntrySchema,
   auxSampleResponseSchema,
   errorResponseSchema,
+  meResponseSchema,
+  storagePrefixStatSchema,
   tableEntrySchema,
   tableVersionSchema,
   ttlAuditRecordSchema,
@@ -26,7 +28,7 @@ describe("tableVersionSchema", () => {
       timestamp: "2026-01-01T00:00:00Z",
       snapshot_path: "s3://b/t/2026-01-01",
       shape: "full",
-      swept_at: "2026-01-01T00:00:00Z",
+      synced_at: "2026-01-01T00:00:00Z",
     });
     expect(v.partial).toBe(false);
     expect(v.protected).toBe(false);
@@ -41,7 +43,7 @@ describe("tableVersionSchema", () => {
         timestamp: "t",
         snapshot_path: "p",
         shape: "bogus",
-        swept_at: "t",
+        synced_at: "t",
       }),
     ).toThrow();
   });
@@ -56,7 +58,7 @@ describe("tableEntrySchema", () => {
       root_location: "s3://b/t1",
       owner: "team",
       ttl_policy: { keep_last_n: 2 },
-      last_swept: "2026-01-01T00:00:00Z",
+      last_synced: "2026-01-01T00:00:00Z",
       versions: [],
       aux_latest: [],
     });
@@ -71,13 +73,13 @@ describe("tableEntrySchema", () => {
       root_location: "s3://b/t2",
       owner: null,
       ttl_policy: null,
-      last_swept: null,
+      last_synced: null,
       versions: [],
       aux_latest: [],
     });
     expect(e.owner).toBeNull();
     expect(e.ttl_policy).toBeNull();
-    expect(e.last_swept).toBeNull();
+    expect(e.last_synced).toBeNull();
   });
 });
 
@@ -150,5 +152,27 @@ describe("errorResponseSchema", () => {
     const e = errorResponseSchema.parse({ error_code: 5, message: "not found" });
     expect(e.error_code).toBe(5);
     expect(e.message).toBe("not found");
+  });
+});
+
+describe("storagePrefixStatSchema", () => {
+  it("parses registered and unexplored rows", () => {
+    const reg = storagePrefixStatSchema.parse({
+      region: "r1", bucket: "b1", prefix: "ns1", registered: true,
+      bytes: 10, objects: 2, table_count: 1, scanned_at: "2026-07-05T00:00:00Z",
+    });
+    expect(reg.bytes).toBe(10);
+    const unex = storagePrefixStatSchema.parse({
+      region: "r1", bucket: "b1", prefix: "junk", registered: false,
+      scanned_at: "2026-07-05T00:00:00Z",
+    });
+    expect(unex.bytes).toBeNull();
+  });
+});
+
+describe("meResponseSchema", () => {
+  it("accepts anonymous and named callers", () => {
+    expect(meResponseSchema.parse({ email: null, role: "viewer" }).email).toBeNull();
+    expect(meResponseSchema.parse({ email: "a@x.co", role: "admin" }).role).toBe("admin");
   });
 });

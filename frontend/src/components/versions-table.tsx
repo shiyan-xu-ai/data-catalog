@@ -58,7 +58,7 @@ export function VersionsTable({ tableId, versions }: Props) {
               <th className="px-3 py-2">Shape</th>
               <th className="px-3 py-2 text-right">Size</th>
               <th className="px-3 py-2 text-right">Rows</th>
-              <th className="px-3 py-2">Swept</th>
+              <th className="px-3 py-2">Synced</th>
               <th className="px-3 py-2 text-right">Protect</th>
             </tr>
           </thead>
@@ -78,7 +78,7 @@ export function VersionsTable({ tableId, versions }: Props) {
                 <td className="px-3 py-2"><ShapeBadge shape={v.shape} /></td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatBytes(v.storage_bytes_total)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{v.row_count != null ? v.row_count.toLocaleString() : "—"}</td>
-                <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{formatTime(v.swept_at, tz)}</td>
+                <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{formatTime(v.synced_at, tz)}</td>
                 <td className="px-3 py-2 text-right">
                   <Tooltip>
                     <TooltipTrigger asChild>

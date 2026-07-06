@@ -47,18 +47,22 @@ pub struct AppConfig {
     pub registry_path: String,
     /// URI of the `_catalog/ttl_audit` Lance dataset.
     pub ttl_audit_path: String,
+    /// URI of the `_catalog/storage_scan` Lance dataset (sync's storage-analysis tail).
+    pub storage_scan_path: String,
+    /// URI of the `_catalog/users` Lance dataset (IAP-sighting upserts).
+    pub users_path: String,
     /// URI base of the authored overlay objects. `memory` (dev/tests, non-persistent),
     /// `s3://bucket/_catalog/meta` (prod / MinIO local). A plain filesystem path does NOT work:
     /// `LocalFileSystem` lacks conditional writes.
     pub meta_base_uri: String,
-    /// URI of the sweep root.
-    pub sweep_root_uri: String,
+    /// Path to the deployment-scoped catalog config (region, buckets, namespaces, admins).
+    pub catalog_config_path: String,
     /// How long the merged read cache may be served before revalidation.
     pub cache_ttl: Duration,
-    /// How many versions the sweep processes concurrently (in-flight LISTs + Lance opens).
-    pub sweep_concurrency: usize,
+    /// How many versions the sync processes concurrently (in-flight LISTs + Lance opens).
+    pub sync_concurrency: usize,
     /// Which versions get the expensive Lance stats (`all` | `latest` | `none`).
-    pub sweep_deep_stats: catalog_store::DeepStats,
+    pub sync_deep_stats: catalog_store::DeepStats,
     /// Directory holding the built frontend (`dist/`). Served at `/` when it contains an
     /// `index.html`; absent → API-only.
     pub webui_dir: String,
@@ -76,17 +80,16 @@ impl AppConfig {
             bind_addr,
             registry_path: env_or("CATALOG_REGISTRY_PATH", "_catalog/registry"),
             ttl_audit_path: env_or("CATALOG_TTL_AUDIT_PATH", "_catalog/ttl_audit"),
+            storage_scan_path: env_or("CATALOG_STORAGE_SCAN_PATH", "_catalog/storage_scan"),
+            users_path: env_or("CATALOG_USERS_PATH", "_catalog/users"),
             meta_base_uri: env_or("CATALOG_META_BASE_URI", "memory"),
-            sweep_root_uri: env_or(
-                "CATALOG_SWEEP_ROOT_URI",
-                "s3://onroad-perception-datasets/scenario_dataset_export",
-            ),
+            catalog_config_path: env_or("CATALOG_CONFIG_PATH", "catalog-config.yaml"),
             cache_ttl: env_duration_secs("CATALOG_CACHE_TTL_SECS", 5)?,
-            sweep_concurrency: env_positive_usize(
-                "CATALOG_SWEEP_CONCURRENCY",
-                catalog_store::DEFAULT_SWEEP_CONCURRENCY,
+            sync_concurrency: env_positive_usize(
+                "CATALOG_SYNC_CONCURRENCY",
+                catalog_store::DEFAULT_SYNC_CONCURRENCY,
             )?,
-            sweep_deep_stats: match std::env::var("CATALOG_SWEEP_DEEP_STATS") {
+            sync_deep_stats: match std::env::var("CATALOG_SYNC_DEEP_STATS") {
                 Ok(v) => v.parse()?,
                 Err(_) => catalog_store::DeepStats::default(),
             },

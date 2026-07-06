@@ -4,7 +4,7 @@ import { listNamespaces } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ErrorState } from "@/components/error-state";
 import { EmptyState } from "@/components/empty-state";
-import { nsToString } from "@/lib/format";
+import { namespaceId, nsToString } from "@/lib/format";
 
 export const Route = createFileRoute("/namespaces/")({
   component: NamespacesPage,
@@ -31,17 +31,23 @@ function NamespacesPage() {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {namespaces
             .slice()
-            .sort((a, b) => nsToString(a).localeCompare(nsToString(b)))
-            .map((ns) => {
-              const id = nsToString(ns);
+            .sort((a, b) =>
+              `${a.bucket}:${nsToString(a.namespace)}`.localeCompare(`${b.bucket}:${nsToString(b.namespace)}`),
+            )
+            .map((ref) => {
+              const id = namespaceId(ref.bucket, ref.namespace);
               return (
                 <Link key={id} to="/namespaces/$ns" params={{ ns: id }} className="block">
                   <Card className="transition-colors hover:border-primary/50 hover:bg-accent/40">
                     <CardHeader className="pb-2">
-                      <CardTitle className="font-mono text-sm">{id}</CardTitle>
+                      <CardTitle className="font-mono text-sm">
+                        {ref.bucket} / {nsToString(ref.namespace)}
+                      </CardTitle>
                     </CardHeader>
                     <CardContent className="pt-0">
-                      <p className="text-xs text-muted-foreground">{ns.length} segment{ns.length !== 1 ? "s" : ""}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {ref.namespace.length} segment{ref.namespace.length !== 1 ? "s" : ""}
+                      </p>
                     </CardContent>
                   </Card>
                 </Link>

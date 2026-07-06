@@ -75,6 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd --system --uid 1000 --no-create-home catalog
 
 COPY --from=builder /build/target/release/catalog-api /usr/local/bin/catalog-api
+COPY catalog-config.yaml ./catalog-config.yaml
 COPY --from=frontend /web/dist /app/webui
 
 # Point the server at the bundled SPA; Cloud Run overrides PORT at runtime.

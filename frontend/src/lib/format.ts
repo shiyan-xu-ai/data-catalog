@@ -55,6 +55,11 @@ export function nsToString(segments: string[]): string {
   return segments.join(".");
 }
 
+/** Composite namespace id (`bucket:prefix[:prefix...]`) used by `describeNamespace`/`/namespaces/$ns`. */
+export function namespaceId(bucket: string, segments: string[]): string {
+  return [bucket, ...segments].join(":");
+}
+
 export function ttlPolicyString(p: TtlPolicy | null | undefined): string {
   if (!p) return "none";
   const parts: string[] = [];

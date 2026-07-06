@@ -43,7 +43,8 @@ fn sample_entry(id: &str) -> TableEntry {
         lance_version: None,
         writer_version: None,
         aux: aux.clone(),
-        swept_at: ts,
+        synced_at: ts,
+        object_count: Some(42),
     };
     TableEntry {
         id: id.to_string(),
@@ -51,11 +52,13 @@ fn sample_entry(id: &str) -> TableEntry {
         namespace: Namespace::new(["scenario_dataset_export"]),
         root_location: format!("s3://bucket/{id}"),
         owner: Some("raymond".to_string()),
+        region: "us-phoenix-1".into(),
+        bucket: "bkt".into(),
         ttl_policy: Some(TtlPolicy {
             keep_last_n: Some(5),
             max_age_days: Some(30),
         }),
-        last_swept: Some(ts),
+        last_synced: Some(ts),
         versions: vec![version],
         aux_latest: aux,
     }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -14,7 +14,7 @@ import {
 import { Plus, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { listTables } from "@/lib/api";
 import type { TableEntry } from "@/lib/schemas";
-import { formatBytes, formatRelative, nsToString, ttlPolicyString } from "@/lib/format";
+import { formatBytes, formatRelative, namespaceId, nsToString, ttlPolicyString } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +25,10 @@ import { RegisterDialog } from "@/components/register-dialog";
 export const Route = createFileRoute("/tables/")({
   component: TablesPage,
 });
+
+function groupKey(t: TableEntry): string {
+  return `${t.bucket}:${nsToString(t.namespace)}`;
+}
 
 const columns: ColumnDef<TableEntry>[] = [
   {
@@ -46,8 +50,9 @@ const columns: ColumnDef<TableEntry>[] = [
     header: "Namespace",
     cell: ({ row }) => {
       const ns = nsToString(row.original.namespace);
+      const id = namespaceId(row.original.bucket, row.original.namespace);
       return ns ? (
-        <Link to="/namespaces/$ns" params={{ ns }} className="text-muted-foreground hover:underline">
+        <Link to="/namespaces/$ns" params={{ ns: id }} className="text-muted-foreground hover:underline">
           {ns}
         </Link>
       ) : <span className="text-muted-foreground">—</span>;
@@ -83,10 +88,10 @@ const columns: ColumnDef<TableEntry>[] = [
       ) : <span className="text-muted-foreground">none</span>,
   },
   {
-    accessorKey: "last_swept",
-    header: "Swept",
+    accessorKey: "last_synced",
+    header: "Synced",
     cell: ({ row }) => (
-      <span className="text-muted-foreground">{formatRelative(row.original.last_swept)}</span>
+      <span className="text-muted-foreground">{formatRelative(row.original.last_synced)}</span>
     ),
   },
 ];
@@ -101,9 +106,15 @@ function TablesPage() {
   const [registerOpen, setRegisterOpen] = useState(false);
 
   const rows = data ?? [];
+  // Default (unsorted) order groups rows by "bucket:namespace" so the heading rows below
+  // line up with runs of the same group; an explicit column sort overrides this order.
+  const groupedRows = useMemo(
+    () => [...rows].sort((a, b) => groupKey(a).localeCompare(groupKey(b))),
+    [rows],
+  );
 
   const table = useReactTable({
-    data: rows,
+    data: groupedRows,
     columns,
     state: { globalFilter, sorting },
     onGlobalFilterChange: setGlobalFilter,
@@ -116,6 +127,10 @@ function TablesPage() {
   });
 
   const { rows: modelRows } = table.getRowModel();
+  // Default (unsorted) view groups rows under a "bucket:namespace" heading; an explicit
+  // column sort takes precedence and drops the grouping so the chosen order stays intact.
+  const grouped = sorting.length === 0;
+  const columnCount = columns.length;
 
   return (
     <div className="space-y-4">
@@ -165,15 +180,31 @@ function TablesPage() {
               </tr>
             </thead>
             <tbody>
-              {modelRows.map((row) => (
-                <tr key={row.id} className="border-b last:border-0 hover:bg-muted/40">
-                  {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="px-3 py-2 align-middle">
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {modelRows.map((row, i) => {
+                const key = groupKey(row.original);
+                const showHeading = grouped && (i === 0 || groupKey(modelRows[i - 1].original) !== key);
+                return (
+                  <Fragment key={row.id}>
+                    {showHeading && (
+                      <tr className="bg-muted/20">
+                        <td
+                          colSpan={columnCount}
+                          className="px-3 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                        >
+                          {key}
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="border-b last:border-0 hover:bg-muted/40">
+                      {row.getVisibleCells().map((cell) => (
+                        <td key={cell.id} className="px-3 py-2 align-middle">
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
+                    </tr>
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

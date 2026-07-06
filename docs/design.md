@@ -609,3 +609,8 @@ container on Apps Platform (Cloud Run):
   structured tracing (sweep summaries, per-table failures, TTL outcomes)
   goes to Cloud Logging, and HTTP RED metrics come from Cloud Run's
   built-in request metrics rather than a scraped `/metrics` endpoint.
+- **Regional, multi-bucket, and config-declared.** The service now runs one
+  deployment per region, colocated with that region's target buckets, with
+  scope (region, buckets, registered namespaces, admins) declared in the
+  committed `catalog-config.yaml` — see `ARCHITECTURE.md`'s "Regional
+  deployment" section for the current model.

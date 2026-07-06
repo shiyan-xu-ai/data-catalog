@@ -1,8 +1,8 @@
 //! `catalog-api` binary for Apps Platform (Cloud Run).
 //!
 //! One stateless HTTP service on a single port: serves the REST API from the merged read model
-//! (derived snapshot + authored overlay), and runs the sweep on demand via
-//! `POST /internal/jobs/sweep` (triggered by Cloud Scheduler — there is no background loop
+//! (derived snapshot + authored overlay), and runs the sync on demand via
+//! `POST /internal/jobs/sync` (triggered by Cloud Scheduler — there is no background loop
 //! because Cloud Run throttles CPU between requests). All catalog state lives on S3.
 
 use std::sync::Arc;
@@ -17,13 +17,13 @@ use tokio::sync::Mutex;
 
 use catalog_api_lib::api::{api_router, ApiState};
 use catalog_api_lib::catalog::Catalog;
+use catalog_api_lib::catalog_config::CatalogConfig;
 use catalog_api_lib::config::AppConfig;
 use catalog_api_lib::secrets::fetch_aws_secret_opts;
 use catalog_api_lib::shutdown::shutdown_signal;
-use catalog_api_lib::sweep::run_sweep;
-use catalog_api_lib::sweep_config::{build_meta_store, build_sweep_config};
+use catalog_api_lib::sync::{run_sync, SyncTarget};
+use catalog_api_lib::sync_config::{build_meta_store, build_sync_config, build_sync_targets};
 use catalog_api_lib::webui;
-use catalog_store::SweepConfig;
 
 async fn healthz() -> &'static str {
     "ok"
@@ -40,29 +40,32 @@ async fn readyz(State(catalog): State<Arc<Catalog>>) -> StatusCode {
 }
 
 #[derive(Clone)]
-struct SweepState {
-    sweep_cfg: SweepConfig,
+struct SyncState {
+    /// One target per registered namespace across all configured buckets. A sync pass runs over
+    /// the whole set, writing all namespaces into the one registry snapshot.
+    targets: Arc<Vec<SyncTarget>>,
     registry_path: String,
+    storage_scan_path: String,
     meta: catalog_store::MetaStore,
     catalog: Arc<Catalog>,
-    /// Serializes sweeps on this instance so a Cloud Scheduler double-fire doesn't run two at
+    /// Serializes syncs on this instance so a Cloud Scheduler double-fire doesn't run two at
     /// once (cross-instance concurrency is safe anyway: the snapshot is last-wins).
     lock: Arc<Mutex<()>>,
 }
 
-/// `POST /internal/jobs/sweep` — run one sweep. Idempotent; returns 2xx on success (Cloud
+/// `POST /internal/jobs/sync` — run one sync. Idempotent; returns 2xx on success (Cloud
 /// Scheduler retries non-2xx). Auth is enforced by the platform (Scheduler uses the app's OIDC
 /// identity); this endpoint does no app-level auth.
-async fn run_sweep_endpoint(State(s): State<SweepState>) -> axum::response::Response {
+async fn run_sync_endpoint(State(s): State<SyncState>) -> axum::response::Response {
     let _guard = s.lock.lock().await;
-    match run_sweep(&s.sweep_cfg, &s.registry_path, &s.meta).await {
+    match run_sync(&s.targets, &s.registry_path, &s.storage_scan_path, &s.meta).await {
         Ok(report) => {
             s.catalog.invalidate().await;
             (StatusCode::OK, Json(report)).into_response()
         }
         Err(e) => {
-            tracing::error!(error = %e, "sweep failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "sweep failed").into_response()
+            tracing::error!(error = %e, "sync failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "sync failed").into_response()
         }
     }
 }
@@ -70,15 +73,15 @@ async fn run_sweep_endpoint(State(s): State<SweepState>) -> axum::response::Resp
 fn app(
     api_state: ApiState,
     catalog: Arc<Catalog>,
-    sweep_state: SweepState,
+    sync_state: SyncState,
     webui_dir: &str,
 ) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz).with_state(catalog))
         .route(
-            "/internal/jobs/sweep",
-            post(run_sweep_endpoint).with_state(sweep_state),
+            "/internal/jobs/sync",
+            post(run_sync_endpoint).with_state(sync_state),
         )
         .merge(api_router(api_state));
     // Serve the SPA from the same origin (no CORS) when its build output is present.
@@ -101,24 +104,46 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = AppConfig::from_env()?;
 
+    // Fail fast on a missing/invalid deployment config before anything else stands up.
+    let catalog_cfg = Arc::new(CatalogConfig::load(&cfg.catalog_config_path)?);
+
     // On Cloud Run the AWS keys come from Secret Manager (no ambient AWS credential); locally
-    // this is a no-op and env/MinIO credentials are used. Fetched once, shared by both stores.
+    // this is a no-op and env/MinIO credentials are used. Fetched once, shared by every store.
     let aws_opts = fetch_aws_secret_opts().await?;
-    let sweep_cfg = build_sweep_config(&cfg.sweep_root_uri, &aws_opts)?
-        .with_concurrency(cfg.sweep_concurrency)
-        .with_deep_stats(cfg.sweep_deep_stats);
+
+    // One sync target per registered namespace across all configured buckets (one object store
+    // per bucket, shared across its namespaces). A single sync pass covers the whole set.
+    let targets: Vec<SyncTarget> = build_sync_targets(&catalog_cfg, &aws_opts)?
+        .into_iter()
+        .map(|mut t| {
+            t.cfg = t
+                .cfg
+                .with_concurrency(cfg.sync_concurrency)
+                .with_deep_stats(cfg.sync_deep_stats);
+            t
+        })
+        .collect();
+
+    // The API's object-store handle for TTL hard-delete + sample reads is rooted at the first
+    // bucket, so `path_for`/`uri_for` resolve any of that bucket's version URIs.
+    let first_bucket = &catalog_cfg.buckets[0];
+    let sync_cfg = build_sync_config(&format!("s3://{}", first_bucket.name), &aws_opts)?;
     let meta = build_meta_store(&cfg.meta_base_uri, &aws_opts)?;
     let catalog = Catalog::new(cfg.registry_path.clone(), meta.clone(), cfg.cache_ttl);
 
     let api_state = ApiState::new(
         catalog.clone(),
         meta.clone(),
-        sweep_cfg.clone(),
+        sync_cfg,
         cfg.ttl_audit_path.clone(),
+        cfg.storage_scan_path.clone(),
+        cfg.users_path.clone(),
+        catalog_cfg.clone(),
     );
-    let sweep_state = SweepState {
-        sweep_cfg,
+    let sync_state = SyncState {
+        targets: Arc::new(targets),
         registry_path: cfg.registry_path.clone(),
+        storage_scan_path: cfg.storage_scan_path.clone(),
         meta,
         catalog: catalog.clone(),
         lock: Arc::new(Mutex::new(())),
@@ -131,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(
         listener,
-        app(api_state, catalog, sweep_state, &cfg.webui_dir),
+        app(api_state, catalog, sync_state, &cfg.webui_dir),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await

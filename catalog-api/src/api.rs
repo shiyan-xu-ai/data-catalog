@@ -4,28 +4,31 @@
 //! ## State model
 //!
 //! Reads serve the merged catalog view from [`crate::catalog::Catalog`] (the derived snapshot,
-//! written by the sweep, with the authored overlay applied). Mutations write only the authored
+//! written by the sync, with the authored overlay applied). Mutations write only the authored
 //! overlay ([`catalog_store::MetaStore`]) via object-store conditional writes (ETag CAS) — there
-//! is no leader and no lock, because the derived snapshot is sweep-written last-wins and the
+//! is no leader and no lock, because the derived snapshot is sync-written last-wins and the
 //! authored overlay is serialized per-table by S3 itself. Any instance can mutate. After a
 //! mutation the read cache is invalidated so a subsequent read on the same instance sees it.
 //!
 //! The catalog is a curated allowlist: `DeclareTable` registers a table (writes its overlay),
-//! and only registered tables are swept, so declaring is what makes a table's derived fields
-//! appear on the next sweep. `protect`/TTL-policy edits also write the overlay.
+//! and only registered tables are synced, so declaring is what makes a table's derived fields
+//! appear on the next sync. `protect`/TTL-policy edits also write the overlay.
 //! `DeregisterTable` clears the overlay, removing the table from the registered set — the next
-//! sweep then drops its derived entry from the snapshot.
+//! sync then drops its derived entry from the snapshot.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use catalog_core::{ttl_eligible_versions, TableEntry, TableVersion, TtlAuditRecord, TtlPolicy};
-use catalog_store::{MetaStore, SweepConfig};
+use catalog_core::{
+    ttl_eligible_versions, StoragePrefixStat, TableEntry, TableVersion, TtlAuditRecord, TtlPolicy,
+};
+use catalog_store::{MetaStore, SyncConfig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::catalog::Catalog;
+use crate::catalog_config::CatalogConfig;
 
 /// Numeric error codes adopted from the Namespace spec where they overlap with what this service
 /// implements. `error_code` 0 marks a non-spec operational/internal error.
@@ -82,23 +85,37 @@ pub struct ApiState {
     /// Authored-overlay store (owner/ttl_policy/protected) mutated via ETag CAS.
     pub meta: MetaStore,
     /// Object-store access for TTL hard-delete; resolves version `snapshot_path`s to prefixes.
-    pub sweep_cfg: SweepConfig,
+    pub sync_cfg: SyncConfig,
     /// URI of the `_catalog/ttl_audit` Lance table TTL `apply` appends to.
     pub ttl_audit_path: String,
+    /// URI of the `_catalog/storage_scan` Lance table the sync's storage-analysis tail writes.
+    pub storage_scan_path: String,
+    /// URI of the `_catalog/users` Lance table the identity layer upserts and `/ext/v1/users` reads.
+    pub users_path: String,
+    /// Deployment-scoped config (region, registered bucket/namespaces, admins); declare validates
+    /// against it.
+    pub catalog_cfg: Arc<CatalogConfig>,
 }
 
 impl ApiState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         catalog: Arc<Catalog>,
         meta: MetaStore,
-        sweep_cfg: SweepConfig,
+        sync_cfg: SyncConfig,
         ttl_audit_path: String,
+        storage_scan_path: String,
+        users_path: String,
+        catalog_cfg: Arc<CatalogConfig>,
     ) -> Self {
         Self {
             catalog,
             meta,
-            sweep_cfg,
+            sync_cfg,
             ttl_audit_path,
+            storage_scan_path,
+            users_path,
+            catalog_cfg,
         }
     }
 }
@@ -107,17 +124,28 @@ impl ApiState {
 // Basic ops
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct ListNamespacesResponse {
-    namespaces: Vec<Vec<String>>,
+#[derive(Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+struct NamespaceRef {
+    bucket: String,
+    namespace: Vec<String>,
 }
 
-/// `ListNamespaces` -- distinct `namespace` values present on cataloged tables.
+#[derive(Debug, Serialize)]
+struct ListNamespacesResponse {
+    namespaces: Vec<NamespaceRef>,
+}
+
+/// `ListNamespaces` -- distinct `(bucket, namespace)` pairs present on cataloged tables. Each
+/// entry carries its bucket so the id `describe_namespace` expects (`bucket:prefix[:prefix...]`)
+/// can be reconstructed by callers.
 async fn list_namespaces(State(state): State<ApiState>) -> Json<ListNamespacesResponse> {
     let view = state.catalog.view().await;
-    let mut namespaces: Vec<Vec<String>> = view
+    let mut namespaces: Vec<NamespaceRef> = view
         .iter()
-        .map(|e| e.namespace.segments().to_vec())
+        .map(|e| NamespaceRef {
+            bucket: e.bucket.clone(),
+            namespace: e.namespace.segments().to_vec(),
+        })
         .collect();
     namespaces.sort();
     namespaces.dedup();
@@ -130,16 +158,19 @@ struct DescribeNamespaceResponse {
     table_count: usize,
 }
 
-/// `DescribeNamespace` -- `id` is a `.`-joined namespace path. 404 if no table references it.
+/// `DescribeNamespace` -- `id` is `bucket:prefix[:prefix...]`: the first `:`-separated segment is
+/// the bucket, the rest is the namespace prefix. 404 if no table references it.
 async fn describe_namespace(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<DescribeNamespaceResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let segments: Vec<String> = id.split('.').map(str::to_string).collect();
+    let mut segments = id.split(catalog_core::ID_SEP);
+    let bucket = segments.next().unwrap_or_default().to_string();
+    let prefix: Vec<String> = segments.map(str::to_string).collect();
     let view = state.catalog.view().await;
     let table_count = view
         .iter()
-        .filter(|e| e.namespace.segments() == segments.as_slice())
+        .filter(|e| e.bucket == bucket && e.namespace.segments() == prefix.as_slice())
         .count();
     if table_count == 0 {
         return Err(error(
@@ -149,7 +180,7 @@ async fn describe_namespace(
         ));
     }
     Ok(Json(DescribeNamespaceResponse {
-        namespace: segments,
+        namespace: prefix,
         table_count,
     }))
 }
@@ -188,40 +219,38 @@ struct DeclareTableRequest {
     ttl_policy: Option<TtlPolicy>,
 }
 
-/// A table id must be a plain S3-directory-style name: it is both the overlay object's filename
-/// (`_catalog/meta/<id>.json`) and a path segment under the sweep root (`<root>/<id>/`), so it
-/// must round-trip through object-store path encoding unchanged. Ids with characters the store
-/// would percent-encode (`/`, `%`, `#`, whitespace, control, non-ASCII) don't round-trip — the
-/// overlay listing would recover a mangled id and the table would be silently unswept — so they
-/// are refused at registration instead. Real table dirs are `[A-Za-z0-9._-]`; this matches them.
-fn valid_table_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 255
-        && id != "."
-        && id != ".."
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-}
-
 /// `DeclareTable` -- registers a table by writing its authored overlay (creating it if absent),
-/// optionally setting `owner`/`ttl_policy`. Registration is what puts the table in the swept set,
-/// so its derived fields (versions, sizes, ...) are filled by the next sweep. Idempotent; any
+/// optionally setting `owner`/`ttl_policy`. Registration is what puts the table in the synced set,
+/// so its derived fields (versions, sizes, ...) are filled by the next sync. Idempotent; any
 /// instance serves it.
 ///
 /// The body is optional: a bare `PUT /v1/table/:id` (no body / no `content-type`) just registers
-/// the table with no owner/policy. A present-but-malformed JSON body, or an id that isn't a plain
-/// S3-directory name (see [`valid_table_id`]), is a 400.
+/// the table with no owner/policy. A present-but-malformed JSON body is a 400. The id must parse
+/// as a composite id (`catalog_core::parse_table_id`) whose `(region, bucket, namespace)` matches
+/// this deployment's `CatalogConfig` -- the region equals `catalog_cfg.region` and the bucket's
+/// namespace is registered -- otherwise 400. This is what keeps the catalog scoped to only the
+/// buckets/namespaces this deployment is configured for.
 async fn declare_table(
     State(state): State<ApiState>,
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Json<TableEntry>, (StatusCode, Json<ErrorResponse>)> {
-    if !valid_table_id(&id) {
+    let parsed = catalog_core::parse_table_id(&id).ok_or_else(|| {
+        error(
+            StatusCode::BAD_REQUEST,
+            0,
+            format!("malformed table id: {id}"),
+        )
+    })?;
+    if parsed.region != state.catalog_cfg.region
+        || !state
+            .catalog_cfg
+            .namespace_registered(&parsed.bucket, &parsed.namespace)
+    {
         return Err(error(
             StatusCode::BAD_REQUEST,
             0,
-            "invalid table id: must be a non-empty S3-directory-style name matching [A-Za-z0-9._-]",
+            format!("id {id} is not under a registered namespace"),
         ));
     }
     let req: DeclareTableRequest = if body.is_empty() {
@@ -257,9 +286,9 @@ async fn declare_table(
 }
 
 /// `DeregisterTable` -- unregisters a table by deleting its authored overlay, removing it from
-/// the swept set. 404 if the table is not cataloged at all. The derived entry lingers in the
-/// snapshot until the next sweep, which (no longer seeing it registered) drops it — so a
-/// deregistered table disappears from the catalog within one sweep interval.
+/// the synced set. 404 if the table is not cataloged at all. The derived entry lingers in the
+/// snapshot until the next sync, which (no longer seeing it registered) drops it — so a
+/// deregistered table disappears from the catalog within one sync interval.
 async fn deregister_table(
     State(state): State<ApiState>,
     Path(id): Path<String>,
@@ -289,6 +318,78 @@ async fn ext_list_tables(
     Query(_expand): Query<ExpandQuery>,
 ) -> Json<Vec<TableEntry>> {
     Json(state.catalog.view().await)
+}
+
+/// `GET /ext/v1/storage` -- the current bucket-storage breakdown from the sync's storage-analysis
+/// tail. `[]` when no scan has run yet.
+async fn ext_storage(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<StoragePrefixStat>>, (StatusCode, Json<ErrorResponse>)> {
+    let stats = catalog_core::read_storage_stats(&state.storage_scan_path)
+        .await
+        .map_err(internal_error)?
+        .unwrap_or_default();
+    Ok(Json(stats))
+}
+
+#[derive(Debug, Serialize)]
+struct MeResponse {
+    email: Option<String>,
+    role: &'static str,
+}
+
+/// `GET /ext/v1/me` -- the caller's identity as seen by IAP, with the role resolved against the
+/// deployment's admin list. Anonymous (no IAP header) is `{email: null, role: "viewer"}`.
+async fn ext_me(
+    State(state): State<ApiState>,
+    axum::Extension(ident): axum::Extension<crate::identity::CallerIdentity>,
+) -> Json<MeResponse> {
+    let role = ident
+        .0
+        .as_deref()
+        .map(|e| {
+            if state.catalog_cfg.is_admin(e) {
+                "admin"
+            } else {
+                "viewer"
+            }
+        })
+        .unwrap_or("viewer");
+    Json(MeResponse {
+        email: ident.0.clone(),
+        role,
+    })
+}
+
+/// `GET /ext/v1/users` -- the users recorded by the identity layer. Each user's `role` is overlaid
+/// from the deployment's admin list at read time (admin if the email is an admin, else the stored
+/// role), so the admin list is the single source of truth and a demotion takes effect immediately.
+async fn ext_users(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ErrorResponse>)> {
+    let users = catalog_core::read_users(&state.users_path)
+        .await
+        .map_err(internal_error)?
+        .unwrap_or_default();
+    Ok(Json(
+        users
+            .into_iter()
+            .map(|u| {
+                let role = if state.catalog_cfg.is_admin(&u.email) {
+                    "admin"
+                } else {
+                    u.role.as_str()
+                };
+                serde_json::json!({
+                    "id": u.id,
+                    "email": u.email,
+                    "role": role,
+                    "created_at": u.created_at,
+                    "last_seen_at": u.last_seen_at,
+                })
+            })
+            .collect(),
+    ))
 }
 
 /// `GET /ext/v1/tables/{id}/versions/{vid}` -- single version detail.
@@ -382,7 +483,7 @@ async fn ext_sample_aux(
         catalog_core::AuxFormat::Parquet => {
             tokio::time::timeout(
                 SAMPLE_TIMEOUT,
-                crate::sample::sample_parquet(&state.sweep_cfg, &entry.path, limit),
+                crate::sample::sample_parquet(&state.sync_cfg, &entry.path, limit),
             )
             .await
         }
@@ -529,7 +630,11 @@ async fn ttl_apply(
 }
 
 /// Build the public `/v1` + `/ext/v1` router wired to `state`.
+///
+/// The identity middleware wraps the whole router so every route sees a [`CallerIdentity`]
+/// extension and every first-sighting of an IAP email is recorded into the users table.
 pub fn api_router(state: ApiState) -> Router {
+    let identity_state = crate::identity::IdentityState::new(state.users_path.clone());
     Router::new()
         .route("/v1/namespaces", get(list_namespaces))
         .route("/v1/namespaces/:id", get(describe_namespace))
@@ -541,6 +646,9 @@ pub fn api_router(state: ApiState) -> Router {
                 .delete(deregister_table),
         )
         .route("/ext/v1/tables", get(ext_list_tables))
+        .route("/ext/v1/storage", get(ext_storage))
+        .route("/ext/v1/me", get(ext_me))
+        .route("/ext/v1/users", get(ext_users))
         .route("/ext/v1/tables/:id/versions/:vid", get(ext_get_version))
         .route(
             "/ext/v1/tables/:id/versions/:vid/aux/sample",
@@ -553,5 +661,9 @@ pub fn api_router(state: ApiState) -> Router {
         .route("/ext/v1/tables/:id/ttl/dryrun", get(ttl_dryrun))
         .route("/ext/v1/tables/:id/ttl/audit", get(ttl_audit))
         .route("/ext/v1/tables/:id/ttl/apply", post(ttl_apply))
+        .layer(axum::middleware::from_fn_with_state(
+            identity_state,
+            crate::identity::identity_layer,
+        ))
         .with_state(state)
 }
