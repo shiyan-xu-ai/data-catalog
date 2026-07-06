@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, nsToString, shapeLabel, ttlPolicyString } from "./format";
+import { formatBytes, formatTime, nsToString, shapeLabel, ttlPolicyString } from "./format";
 import { ttlPolicySchema } from "./schemas";
+
+describe("formatTime", () => {
+  it("renders the instant in UTC when mode is utc", () => {
+    const out = formatTime("2026-07-05T12:00:00Z", "utc");
+    expect(out).toContain("12:00");
+    expect(out).toContain("GMT");
+  });
+  it("returns dash for missing input", () => {
+    expect(formatTime(null, "utc")).toBe("—");
+  });
+});
 
 describe("formatBytes", () => {
   it("returns dash for null/0", () => {
