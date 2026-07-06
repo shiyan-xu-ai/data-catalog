@@ -96,6 +96,7 @@ struct TablePlan {
 pub async fn run_sync(
     targets: &[SyncTarget],
     registry_path: &str,
+    storage_scan_path: &str,
     meta: &MetaStore,
 ) -> Result<SyncReport> {
     let started = Instant::now();
@@ -348,6 +349,19 @@ pub async fn run_sync(
         tracing::warn!(error = %e, "registry version cleanup failed (non-fatal)");
     }
 
+    // Storage analysis tail: a bucket-wide breakdown of registered vs. unexplored prefixes,
+    // derived from the snapshot just written. Level-triggered — a failure here is logged and
+    // does not fail the sync; the next pass just retries from scratch (the scan is a point-in-
+    // time snapshot, not a durable history).
+    if let Err(e) = storage_tail(targets, &merged, storage_scan_path, now).await {
+        tracing::warn!(error = %e, "storage analysis tail failed (non-fatal)");
+    }
+    if let Err(e) =
+        catalog_core::cleanup_storage_stats(storage_scan_path, chrono::Duration::days(1)).await
+    {
+        tracing::warn!(error = %e, "storage_scan version cleanup failed (non-fatal)");
+    }
+
     let report = SyncReport {
         // Only the tables that routed to a configured target were checked this pass; a declared
         // id for an unconfigured (region, bucket, namespace) can't be synced and isn't counted.
@@ -372,6 +386,97 @@ pub async fn run_sync(
         "sync complete"
     );
     Ok(report)
+}
+
+/// Storage analysis: for each bucket, report its top-level layout as registered-namespace rows
+/// (sized by aggregating the just-written registry `entries`) or unexplored, name-only rows —
+/// covering top-level prefixes, loose root objects (the `(root)` pseudo-prefix), and, for each
+/// nested registered namespace, its ancestor levels' siblings. Every listing here is a delimiter
+/// LIST (`list_with_delimiter`); nothing recurses into a prefix's contents, so this never pays
+/// for a full object enumeration the way the version sync does.
+async fn storage_tail(
+    targets: &[SyncTarget],
+    entries: &[TableEntry],
+    storage_scan_path: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> anyhow::Result<usize> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // One store per bucket (targets share Arc'd stores).
+    let mut by_bucket: BTreeMap<&str, (&SyncTarget, Vec<&SyncTarget>)> = BTreeMap::new();
+    for t in targets {
+        by_bucket
+            .entry(t.bucket.as_str())
+            .or_insert((t, Vec::new()))
+            .1
+            .push(t);
+    }
+    let mut stats = Vec::new();
+    for (bucket, (any, ns_targets)) in &by_bucket {
+        let store = any.cfg.store.as_ref();
+        let registered: BTreeSet<String> =
+            ns_targets.iter().map(|t| t.namespace.join("/")).collect();
+        let mut emitted: BTreeSet<String> = BTreeSet::new();
+
+        // 1. Bucket root: top-level prefixes + loose objects.
+        let root = store.list_with_delimiter(None).await?;
+        for p in &root.common_prefixes {
+            emitted.insert(p.as_ref().to_string());
+        }
+        if !root.objects.is_empty() {
+            emitted.insert("(root)".to_string());
+        }
+        // 2. Ancestors of nested namespaces: surface each level's siblings.
+        for ns in &registered {
+            let segs: Vec<&str> = ns.split('/').collect();
+            for depth in 1..segs.len() {
+                let ancestor = segs[..depth].join("/");
+                let listing = store
+                    .list_with_delimiter(Some(&ObjPath::from(ancestor.clone())))
+                    .await?;
+                emitted.insert(ancestor);
+                for p in &listing.common_prefixes {
+                    emitted.insert(p.as_ref().to_string());
+                }
+            }
+        }
+        // 3. Rows: a prefix IS registered only if it exactly matches a registered namespace;
+        // ancestors and siblings stay unexplored (name-only).
+        for prefix in emitted {
+            let is_ns = registered.contains(&prefix);
+            let (bytes, objects, table_count) = if is_ns {
+                let in_ns: Vec<&TableEntry> = entries
+                    .iter()
+                    .filter(|e| e.bucket == *bucket && e.namespace.segments().join("/") == prefix)
+                    .collect();
+                let bytes: u64 = in_ns
+                    .iter()
+                    .flat_map(|e| &e.versions)
+                    .map(|v| v.storage_bytes_total)
+                    .sum();
+                let objects: u64 = in_ns
+                    .iter()
+                    .flat_map(|e| &e.versions)
+                    .filter_map(|v| v.object_count)
+                    .sum();
+                (Some(bytes), Some(objects), Some(in_ns.len() as u32))
+            } else {
+                (None, None, None)
+            };
+            stats.push(catalog_core::StoragePrefixStat {
+                region: any.region.clone(),
+                bucket: (*bucket).to_string(),
+                prefix,
+                registered: is_ns,
+                bytes,
+                objects,
+                table_count,
+                scanned_at: now,
+            });
+        }
+    }
+    let n = stats.len();
+    catalog_core::write_storage_stats(storage_scan_path, &stats).await?;
+    Ok(n)
 }
 
 /// Split a table's listed version dirs into carried-forward prior versions and dirs that need

@@ -45,6 +45,7 @@ struct SyncState {
     /// the whole set, writing all namespaces into the one registry snapshot.
     targets: Arc<Vec<SyncTarget>>,
     registry_path: String,
+    storage_scan_path: String,
     meta: catalog_store::MetaStore,
     catalog: Arc<Catalog>,
     /// Serializes syncs on this instance so a Cloud Scheduler double-fire doesn't run two at
@@ -57,7 +58,7 @@ struct SyncState {
 /// identity); this endpoint does no app-level auth.
 async fn run_sync_endpoint(State(s): State<SyncState>) -> axum::response::Response {
     let _guard = s.lock.lock().await;
-    match run_sync(&s.targets, &s.registry_path, &s.meta).await {
+    match run_sync(&s.targets, &s.registry_path, &s.storage_scan_path, &s.meta).await {
         Ok(report) => {
             s.catalog.invalidate().await;
             (StatusCode::OK, Json(report)).into_response()
@@ -135,11 +136,13 @@ async fn main() -> anyhow::Result<()> {
         meta.clone(),
         sync_cfg,
         cfg.ttl_audit_path.clone(),
+        cfg.storage_scan_path.clone(),
         catalog_cfg.clone(),
     );
     let sync_state = SyncState {
         targets: Arc::new(targets),
         registry_path: cfg.registry_path.clone(),
+        storage_scan_path: cfg.storage_scan_path.clone(),
         meta,
         catalog: catalog.clone(),
         lock: Arc::new(Mutex::new(())),

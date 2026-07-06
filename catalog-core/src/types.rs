@@ -170,6 +170,26 @@ pub struct TtlPolicy {
     pub max_age_days: Option<u32>,
 }
 
+/// One row of a storage scan: a bucket prefix (either a registered namespace or an unexplored
+/// top-level/sibling/ancestor dir) with its aggregated size when registered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoragePrefixStat {
+    pub region: String,
+    pub bucket: String,
+    /// `/`-joined display path, e.g. `"a"`, `"a/c"`, or the `"(root)"` pseudo-prefix for loose
+    /// objects sitting directly at the bucket root.
+    pub prefix: String,
+    /// True iff `prefix` IS a registered namespace (not an ancestor or sibling of one).
+    pub registered: bool,
+    #[serde(default)]
+    pub bytes: Option<u64>,
+    #[serde(default)]
+    pub objects: Option<u64>,
+    #[serde(default)]
+    pub table_count: Option<u32>,
+    pub scanned_at: DateTime<Utc>,
+}
+
 /// Durable record of a TTL hard-delete.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TtlAuditRecord {

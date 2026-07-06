@@ -80,6 +80,14 @@ fn registry_path(dir: &tempfile::TempDir) -> String {
         .to_string()
 }
 
+fn storage_scan_path(dir: &tempfile::TempDir) -> String {
+    dir.path()
+        .join("storage_scan.lance")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
 /// The architecturally central case: two buckets, two namespaces (one nested), synced into a
 /// single registry snapshot. Each declared id is routed to the target whose
 /// `(region, bucket, namespace)` matches, and the entry's `region`/`bucket`/`namespace` come
@@ -112,8 +120,11 @@ async fn syncs_all_namespaces_across_buckets_into_one_snapshot() {
 
     let dir = tempfile::tempdir().unwrap();
     let registry_path = registry_path(&dir);
+    let storage_scan_path = storage_scan_path(&dir);
 
-    let report = run_sync(&targets, &registry_path, &meta).await.unwrap();
+    let report = run_sync(&targets, &registry_path, &storage_scan_path, &meta)
+        .await
+        .unwrap();
     assert_eq!(report.tables_checked, 2);
     assert_eq!(report.failed_tables, 0);
 
@@ -144,6 +155,93 @@ async fn syncs_all_namespaces_across_buckets_into_one_snapshot() {
     assert_eq!(version_ids(&registry, &t2), 1);
 }
 
+/// The storage-analysis tail: bucket A gets an unregistered top-level dir and a loose root
+/// object alongside its registered `ns1` namespace; bucket B's registered namespace is nested
+/// (`nsx/deep`) with a sibling dir (`nsx/other`) under the same ancestor. The tail must report
+/// `ns1` as registered (sized by aggregating the registry entries), `junk`/`(root)`/`nsx`/
+/// `nsx/other` as unexplored (name only, no sizes), and `nsx/deep` as registered.
+#[tokio::test]
+async fn sync_tail_writes_storage_stats_with_registered_and_unexplored_rows() {
+    let bucket_a = tempfile::tempdir().unwrap();
+    let bucket_b = tempfile::tempdir().unwrap();
+    let store_a = LocalFileSystem::new_with_prefix(bucket_a.path()).unwrap();
+    let store_b = LocalFileSystem::new_with_prefix(bucket_b.path()).unwrap();
+
+    seed_version(&store_a, "ns1/t1", "2026-01-01_00-00-00").await;
+    seed_version(&store_b, "nsx/deep/t2", "2026-01-01_00-00-00").await;
+
+    // Unregistered top-level dir + a loose root object in bucket A.
+    use object_store::{ObjectStoreExt as _, PutPayload};
+    store_a
+        .put(
+            &ObjPath::from("junk/x.bin"),
+            PutPayload::from(b"junk".to_vec()),
+        )
+        .await
+        .unwrap();
+    store_a
+        .put(
+            &ObjPath::from("stray.txt"),
+            PutPayload::from(b"stray".to_vec()),
+        )
+        .await
+        .unwrap();
+    // A sibling dir under bucket B's registered namespace's ancestor (`nsx`).
+    store_b
+        .put(
+            &ObjPath::from("nsx/other/y.bin"),
+            PutPayload::from(b"sibling".to_vec()),
+        )
+        .await
+        .unwrap();
+
+    let t1 = compose_table_id("r1", "bA", &["ns1".into()], "t1");
+    let t2 = compose_table_id("r1", "bB", &["nsx".into(), "deep".into()], "t2");
+
+    let meta = MetaStore::new(Arc::new(InMemory::new()), ObjPath::from("_catalog/meta"));
+    register(&meta, &t1).await;
+    register(&meta, &t2).await;
+
+    let targets = vec![
+        local_target(bucket_a.path(), "r1", "bA", &["ns1"]),
+        local_target(bucket_b.path(), "r1", "bB", &["nsx", "deep"]),
+    ];
+
+    let dir = tempfile::tempdir().unwrap();
+    let registry_path = registry_path(&dir);
+    let storage_scan_path = storage_scan_path(&dir);
+
+    run_sync(&targets, &registry_path, &storage_scan_path, &meta)
+        .await
+        .unwrap();
+
+    let stats = catalog_core::read_storage_stats(&storage_scan_path)
+        .await
+        .unwrap()
+        .unwrap();
+    let find = |b: &str, p: &str| {
+        stats
+            .iter()
+            .find(|s| s.bucket == b && s.prefix == p)
+            .unwrap_or_else(|| panic!("no stat for {b}/{p}"))
+    };
+
+    let ns1 = find("bA", "ns1");
+    assert!(ns1.registered);
+    assert!(ns1.bytes.unwrap() > 0); // aggregated from the registry entries
+    assert_eq!(ns1.table_count, Some(1));
+
+    let junk = find("bA", "junk");
+    assert!(!junk.registered);
+    assert_eq!(junk.bytes, None); // unexplored: name only
+
+    assert!(!find("bA", "(root)").registered); // loose root objects reported
+
+    assert!(find("bB", "nsx/deep").registered);
+    assert!(!find("bB", "nsx").registered); // ancestor of a nested ns: unexplored
+    assert!(!find("bB", "nsx/other").registered); // sibling: unexplored
+}
+
 #[tokio::test]
 async fn sync_processes_only_registered_tables() {
     let root = tempfile::tempdir().unwrap();
@@ -163,8 +261,11 @@ async fn sync_processes_only_registered_tables() {
 
     let dir = tempfile::tempdir().unwrap();
     let registry_path = registry_path(&dir);
+    let storage_scan_path = storage_scan_path(&dir);
 
-    let report = run_sync(&[target], &registry_path, &meta).await.unwrap();
+    let report = run_sync(&[target], &registry_path, &storage_scan_path, &meta)
+        .await
+        .unwrap();
     // Only the two registered tables are checked; the unregistered one on S3 is never touched.
     assert_eq!(report.tables_checked, 2);
     assert_eq!(report.failed_tables, 0);
@@ -209,11 +310,17 @@ async fn carry_forward_skips_clean_versions_and_resyncs_partial_new_and_deleting
 
     let dir = tempfile::tempdir().unwrap();
     let registry_path = registry_path(&dir);
+    let storage_scan_path = storage_scan_path(&dir);
 
     // Sync #1: everything is new — both versions synced, nothing carried.
-    let r1 = run_sync(std::slice::from_ref(&target), &registry_path, &meta)
-        .await
-        .unwrap();
+    let r1 = run_sync(
+        std::slice::from_ref(&target),
+        &registry_path,
+        &storage_scan_path,
+        &meta,
+    )
+    .await
+    .unwrap();
     assert_eq!((r1.versions_synced, r1.versions_carried), (2, 0));
     let snap1 = catalog_core::read_registry(&registry_path)
         .await
@@ -235,9 +342,14 @@ async fn carry_forward_skips_clean_versions_and_resyncs_partial_new_and_deleting
 
     // Sync #2: nothing changed on S3 — the clean v1 is carried (identical synced_at, no S3
     // re-derive), the partial v2 is re-synced (self-heal path).
-    let r2 = run_sync(std::slice::from_ref(&target), &registry_path, &meta)
-        .await
-        .unwrap();
+    let r2 = run_sync(
+        std::slice::from_ref(&target),
+        &registry_path,
+        &storage_scan_path,
+        &meta,
+    )
+    .await
+    .unwrap();
     assert_eq!((r2.versions_synced, r2.versions_carried), (1, 1));
     let snap2 = catalog_core::read_registry(&registry_path)
         .await
@@ -251,9 +363,14 @@ async fn carry_forward_skips_clean_versions_and_resyncs_partial_new_and_deleting
 
     // Sync #3: a new version lands — only it (plus the ever-partial v2) is synced.
     seed_version(&store, "ns/t", "2026-01-03_00-00-00").await;
-    let r3 = run_sync(std::slice::from_ref(&target), &registry_path, &meta)
-        .await
-        .unwrap();
+    let r3 = run_sync(
+        std::slice::from_ref(&target),
+        &registry_path,
+        &storage_scan_path,
+        &meta,
+    )
+    .await
+    .unwrap();
     assert_eq!((r3.versions_synced, r3.versions_carried), (2, 1));
 
     // Sync #4: mark v1 `deleting` (as a TTL apply would) — a deleting-marked version is never
@@ -265,7 +382,9 @@ async fn carry_forward_skips_clean_versions_and_resyncs_partial_new_and_deleting
     })
     .await
     .unwrap();
-    let r4 = run_sync(&[target], &registry_path, &meta).await.unwrap();
+    let r4 = run_sync(&[target], &registry_path, &storage_scan_path, &meta)
+        .await
+        .unwrap();
     assert_eq!((r4.versions_synced, r4.versions_carried), (3, 0));
 }
 
@@ -282,11 +401,17 @@ async fn deregistering_a_table_drops_it_from_the_snapshot_on_the_next_sync() {
 
     let dir = tempfile::tempdir().unwrap();
     let registry_path = registry_path(&dir);
+    let storage_scan_path = storage_scan_path(&dir);
 
     // First sync: registered, so it lands in the snapshot.
-    run_sync(std::slice::from_ref(&target), &registry_path, &meta)
-        .await
-        .unwrap();
+    run_sync(
+        std::slice::from_ref(&target),
+        &registry_path,
+        &storage_scan_path,
+        &meta,
+    )
+    .await
+    .unwrap();
     let after_register = catalog_core::read_registry(&registry_path)
         .await
         .unwrap()
@@ -295,7 +420,9 @@ async fn deregistering_a_table_drops_it_from_the_snapshot_on_the_next_sync() {
 
     // Deregister (delete the overlay) — the S3 data is untouched — then sync again.
     meta.delete_meta(&tid).await.unwrap();
-    let report = run_sync(&[target], &registry_path, &meta).await.unwrap();
+    let report = run_sync(&[target], &registry_path, &storage_scan_path, &meta)
+        .await
+        .unwrap();
     assert_eq!(report.tables_checked, 0);
 
     // The allowlist shrank to empty, so the snapshot drops the table even though it is still on S3.

@@ -20,7 +20,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use catalog_core::{ttl_eligible_versions, TableEntry, TableVersion, TtlAuditRecord, TtlPolicy};
+use catalog_core::{
+    ttl_eligible_versions, StoragePrefixStat, TableEntry, TableVersion, TtlAuditRecord, TtlPolicy,
+};
 use catalog_store::{MetaStore, SyncConfig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -86,6 +88,8 @@ pub struct ApiState {
     pub sync_cfg: SyncConfig,
     /// URI of the `_catalog/ttl_audit` Lance table TTL `apply` appends to.
     pub ttl_audit_path: String,
+    /// URI of the `_catalog/storage_scan` Lance table the sync's storage-analysis tail writes.
+    pub storage_scan_path: String,
     /// Deployment-scoped config (region, registered bucket/namespaces, admins); declare validates
     /// against it.
     pub catalog_cfg: Arc<CatalogConfig>,
@@ -97,6 +101,7 @@ impl ApiState {
         meta: MetaStore,
         sync_cfg: SyncConfig,
         ttl_audit_path: String,
+        storage_scan_path: String,
         catalog_cfg: Arc<CatalogConfig>,
     ) -> Self {
         Self {
@@ -104,6 +109,7 @@ impl ApiState {
             meta,
             sync_cfg,
             ttl_audit_path,
+            storage_scan_path,
             catalog_cfg,
         }
     }
@@ -296,6 +302,18 @@ async fn ext_list_tables(
     Query(_expand): Query<ExpandQuery>,
 ) -> Json<Vec<TableEntry>> {
     Json(state.catalog.view().await)
+}
+
+/// `GET /ext/v1/storage` -- the current bucket-storage breakdown from the sync's storage-analysis
+/// tail. `[]` when no scan has run yet.
+async fn ext_storage(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<StoragePrefixStat>>, (StatusCode, Json<ErrorResponse>)> {
+    let stats = catalog_core::read_storage_stats(&state.storage_scan_path)
+        .await
+        .map_err(internal_error)?
+        .unwrap_or_default();
+    Ok(Json(stats))
 }
 
 /// `GET /ext/v1/tables/{id}/versions/{vid}` -- single version detail.
@@ -548,6 +566,7 @@ pub fn api_router(state: ApiState) -> Router {
                 .delete(deregister_table),
         )
         .route("/ext/v1/tables", get(ext_list_tables))
+        .route("/ext/v1/storage", get(ext_storage))
         .route("/ext/v1/tables/:id/versions/:vid", get(ext_get_version))
         .route(
             "/ext/v1/tables/:id/versions/:vid/aux/sample",

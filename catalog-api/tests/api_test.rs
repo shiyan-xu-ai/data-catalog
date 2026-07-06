@@ -118,6 +118,19 @@ async fn test_app_with_sync_cfg(
     overlays: Vec<(&str, TableMeta)>,
     sync_cfg: SyncConfig,
 ) -> (Router, String, tempfile::TempDir) {
+    let (router, ttl_audit_path, _storage_scan_path, dir) =
+        test_app_with_sync_cfg_and_storage(entries, overlays, sync_cfg).await;
+    (router, ttl_audit_path, dir)
+}
+
+/// Like `test_app_with_sync_cfg`, but also returns the `_catalog/storage_scan` path so a test can
+/// seed/read it directly (the storage endpoint test needs this; every other caller ignores it via
+/// `test_app_with_sync_cfg`).
+async fn test_app_with_sync_cfg_and_storage(
+    entries: Vec<TableEntry>,
+    overlays: Vec<(&str, TableMeta)>,
+    sync_cfg: SyncConfig,
+) -> (Router, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let registry_path = dir
         .path()
@@ -134,6 +147,12 @@ async fn test_app_with_sync_cfg(
         .to_str()
         .unwrap()
         .to_string();
+    let storage_scan_path = dir
+        .path()
+        .join("storage_scan.lance")
+        .to_str()
+        .unwrap()
+        .to_string();
 
     let meta = MetaStore::new(Arc::new(InMemory::new()), ObjPath::from("_catalog/meta"));
     for (id, tm) in overlays {
@@ -142,8 +161,15 @@ async fn test_app_with_sync_cfg(
 
     let catalog = Catalog::new(registry_path, meta.clone(), Duration::ZERO);
     let catalog_cfg = Arc::new(test_catalog_config());
-    let state = ApiState::new(catalog, meta, sync_cfg, ttl_audit_path.clone(), catalog_cfg);
-    (api_router(state), ttl_audit_path, dir)
+    let state = ApiState::new(
+        catalog,
+        meta,
+        sync_cfg,
+        ttl_audit_path.clone(),
+        storage_scan_path.clone(),
+        catalog_cfg,
+    );
+    (api_router(state), ttl_audit_path, storage_scan_path, dir)
 }
 
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
@@ -770,4 +796,60 @@ async fn aux_sample_endpoint_reads_lance_and_parquet_and_rejects_others() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let resp = get(&app, &format!("{base}?name=missing")).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// `GET /ext/v1/storage` serves whatever the sync's storage-analysis tail last wrote, and `[]`
+/// before any scan has ever run.
+#[tokio::test]
+async fn ext_storage_endpoint_returns_scanned_stats_and_empty_before_any_scan() {
+    let sync_dir = tempfile::tempdir().unwrap();
+    let sync_cfg = common::sync_config(sync_dir.path());
+    let (app, _ttl_audit, storage_scan_path, _dir) =
+        test_app_with_sync_cfg_and_storage(vec![], vec![], sync_cfg).await;
+
+    // No scan has run yet: the dataset doesn't exist, so the endpoint reports an empty list
+    // rather than erroring.
+    let resp = get(&app, "/ext/v1/storage").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await, serde_json::json!([]));
+
+    let scanned_at = Utc.with_ymd_and_hms(2026, 7, 5, 0, 0, 0).unwrap();
+    let stats = vec![
+        catalog_core::StoragePrefixStat {
+            region: "r1".to_string(),
+            bucket: "b1".to_string(),
+            prefix: "ns1".to_string(),
+            registered: true,
+            bytes: Some(1024),
+            objects: Some(3),
+            table_count: Some(1),
+            scanned_at,
+        },
+        catalog_core::StoragePrefixStat {
+            region: "r1".to_string(),
+            bucket: "b1".to_string(),
+            prefix: "junk".to_string(),
+            registered: false,
+            bytes: None,
+            objects: None,
+            table_count: None,
+            scanned_at,
+        },
+    ];
+    catalog_core::write_storage_stats(&storage_scan_path, &stats)
+        .await
+        .unwrap();
+
+    let resp = get(&app, "/ext/v1/storage").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let prefixes: Vec<&str> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["prefix"].as_str().unwrap())
+        .collect();
+    assert_eq!(prefixes.len(), 2);
+    assert!(prefixes.contains(&"ns1"));
+    assert!(prefixes.contains(&"junk"));
 }
