@@ -37,6 +37,16 @@ export const auxEntrySchema = z.object({
 });
 export type AuxEntry = z.infer<typeof auxEntrySchema>;
 
+export const auxSampleResponseSchema = z.object({
+  table_id: z.string(),
+  version_id: z.string(),
+  aux_name: z.string(),
+  format: auxFormatSchema,
+  schema: z.array(z.record(z.string(), z.unknown())).default([]),
+  rows: z.array(z.record(z.string(), z.unknown())).default([]),
+});
+export type AuxSampleResponse = z.infer<typeof auxSampleResponseSchema>;
+
 export const tableVersionSchema = z.object({
   version_id: z.string(),
   timestamp: z.string(),
