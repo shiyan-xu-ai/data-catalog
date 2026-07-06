@@ -59,6 +59,8 @@ fn stub_entry(id: &str) -> TableEntry {
     TableEntry {
         id: id.to_string(),
         name: id.to_string(),
+        region: String::new(),
+        bucket: String::new(),
         namespace: Namespace::new(Vec::<String>::new()),
         root_location: String::new(),
         owner: None,
@@ -164,6 +166,7 @@ mod tests {
             partial: false,
             protected: false,
             storage_bytes_total: 0,
+            object_count: None,
             lance_core_bytes: 0,
             sidecar_bytes: 0,
             segments_bytes: 0,

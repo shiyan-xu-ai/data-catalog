@@ -18,6 +18,8 @@ fn registry_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
+        Field::new("region", DataType::Utf8, true),
+        Field::new("bucket", DataType::Utf8, true),
         Field::new("namespace_json", DataType::Utf8, false),
         Field::new("root_location", DataType::Utf8, false),
         Field::new("owner", DataType::Utf8, true),
@@ -33,6 +35,8 @@ fn entries_to_batch(entries: &[TableEntry]) -> Result<RecordBatch> {
 
     let id: StringArray = entries.iter().map(|e| Some(e.id.as_str())).collect();
     let name: StringArray = entries.iter().map(|e| Some(e.name.as_str())).collect();
+    let region: StringArray = entries.iter().map(|e| Some(e.region.as_str())).collect();
+    let bucket: StringArray = entries.iter().map(|e| Some(e.bucket.as_str())).collect();
     let namespace_json: StringArray = entries
         .iter()
         .map(|e| serde_json::to_string(&e.namespace))
@@ -79,6 +83,8 @@ fn entries_to_batch(entries: &[TableEntry]) -> Result<RecordBatch> {
         vec![
             Arc::new(id),
             Arc::new(name),
+            Arc::new(region),
+            Arc::new(bucket),
             Arc::new(namespace_json),
             Arc::new(root_location),
             Arc::new(owner),
@@ -100,8 +106,18 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
             .with_context(|| format!("column {name} is not Utf8"))
     };
 
+    // `region`/`bucket` are read via an optional-column helper (not `col()`) so a pre-upgrade
+    // dataset written before these columns existed still parses, defaulting both to "".
+    let opt_col = |name: &str| -> Option<&StringArray> {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+    };
+
     let id = col("id")?;
     let name = col("name")?;
+    let region = opt_col("region");
+    let bucket = opt_col("bucket");
     let namespace_json = col("namespace_json")?;
     let root_location = col("root_location")?;
     let owner = col("owner")?;
@@ -136,6 +152,14 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
         entries.push(TableEntry {
             id: id.value(i).to_string(),
             name: name.value(i).to_string(),
+            region: region
+                .filter(|c| !c.is_null(i))
+                .map(|c| c.value(i).to_string())
+                .unwrap_or_default(),
+            bucket: bucket
+                .filter(|c| !c.is_null(i))
+                .map(|c| c.value(i).to_string())
+                .unwrap_or_default(),
             namespace,
             root_location: root_location.value(i).to_string(),
             owner: if owner.is_null(i) {

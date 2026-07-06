@@ -40,6 +40,7 @@ mod tests {
             partial: false,
             protected: false,
             storage_bytes_total: 100,
+            object_count: None,
             lance_core_bytes: 60,
             sidecar_bytes: 0,
             segments_bytes: 40,
@@ -72,6 +73,8 @@ mod tests {
         TableEntry {
             id: "t1".to_string(),
             name: "t1".to_string(),
+            region: String::new(),
+            bucket: String::new(),
             namespace: Namespace::new(["ns"]),
             root_location: "s3://bucket/table".to_string(),
             owner: None,

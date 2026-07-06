@@ -109,6 +109,9 @@ pub struct TableVersion {
     pub protected: bool,
     #[serde(default)]
     pub storage_bytes_total: u64,
+    /// Objects under this version's prefix, from the sync LIST.
+    #[serde(default)]
+    pub object_count: Option<u64>,
     #[serde(default)]
     pub lance_core_bytes: u64,
     #[serde(default)]
@@ -141,6 +144,12 @@ pub struct TableVersion {
 pub struct TableEntry {
     pub id: String,
     pub name: String,
+    /// Deployment region this table's bucket lives in (first id segment).
+    #[serde(default)]
+    pub region: String,
+    /// Target bucket holding the table (second id segment).
+    #[serde(default)]
+    pub bucket: String,
     pub namespace: Namespace,
     pub root_location: String,
     pub owner: Option<String>,

@@ -203,6 +203,8 @@ pub async fn sync_table(
     Ok(TableEntry {
         id: table_name.to_string(),
         name: table_name.to_string(),
+        region: String::new(),
+        bucket: String::new(),
         namespace,
         root_location: cfg.uri_for(table_path),
         owner: None,
@@ -656,6 +658,7 @@ pub async fn sync_version(
             partial,
             protected: false,
             storage_bytes_total,
+            object_count: Some(objects_count),
             lance_core_bytes,
             sidecar_bytes,
             segments_bytes,

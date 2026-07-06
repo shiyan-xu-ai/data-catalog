@@ -40,6 +40,7 @@ fn fixture_version(id: &str) -> TableVersion {
         // Derived snapshot never carries protection; it comes from the overlay at merge time.
         protected: false,
         storage_bytes_total: 100,
+        object_count: None,
         lance_core_bytes: 60,
         sidecar_bytes: 0,
         segments_bytes: 40,
@@ -73,6 +74,8 @@ fn fixture_entry() -> TableEntry {
     TableEntry {
         id: "smoke_test".to_string(),
         name: "smoke_test".to_string(),
+        region: String::new(),
+        bucket: String::new(),
         namespace: Namespace::new(["scenario_dataset_export"]),
         root_location: "s3://bucket/smoke_test".to_string(),
         owner: None,
@@ -394,6 +397,7 @@ fn ttl_fixture_version(
         partial: !matches!(shape, VersionShape::Full),
         protected: false,
         storage_bytes_total: 10,
+        object_count: None,
         lance_core_bytes: 10,
         sidecar_bytes: 0,
         segments_bytes: 0,
@@ -468,6 +472,8 @@ async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture
     let entry = TableEntry {
         id: "t1".to_string(),
         name: "t1".to_string(),
+        region: String::new(),
+        bucket: String::new(),
         namespace: Namespace::new(["ns"]),
         root_location: "whatever".to_string(),
         owner: None,
@@ -524,6 +530,8 @@ async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
     let entry = TableEntry {
         id: "t1".to_string(),
         name: "t1".to_string(),
+        region: String::new(),
+        bucket: String::new(),
         namespace: Namespace::new(["ns"]),
         root_location: "whatever".to_string(),
         owner: None,

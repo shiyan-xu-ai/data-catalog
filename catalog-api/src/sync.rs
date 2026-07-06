@@ -351,6 +351,8 @@ fn assemble_entry(
     TableEntry {
         id: plan.table_id.clone(),
         name: plan.table_id.clone(),
+        region: String::new(),
+        bucket: String::new(),
         namespace,
         root_location: sync_cfg.uri_for(&plan.table_path),
         owner: None,
