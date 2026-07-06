@@ -39,5 +39,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // Process zod through Vite's ESM transform instead of Node's CJS resolution,
+    // which otherwise drops zod's named `z` export under the test runner.
+    server: { deps: { inline: ["zod"] } },
   },
 });

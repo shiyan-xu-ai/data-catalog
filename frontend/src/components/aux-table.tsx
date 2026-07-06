@@ -179,7 +179,7 @@ function SampleGrid({
       : Object.keys(rows[0] ?? {});
 
   return (
-    <div className="max-h-[28rem] overflow-auto rounded-md border">
+    <div className="max-h-112 overflow-auto rounded-md border">
       <table className="w-full text-xs">
         <thead className="sticky top-0 border-b bg-muted text-left uppercase tracking-wide text-muted-foreground">
           <tr>
