@@ -9,7 +9,7 @@
 # runtime are both Debian/glibc, so the dynamically-linked binary runs as-is.
 
 # ── Stage 1: frontend ─────────────────────────────────────────────────────────
-FROM oven/bun:1 AS frontend
+FROM oven/bun:1.3.14 AS frontend
 
 WORKDIR /web
 # Manifest first for layer caching: deps only re-resolve when they change.
