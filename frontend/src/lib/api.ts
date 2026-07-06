@@ -87,7 +87,7 @@ export function listNamespaces(): Promise<ListNamespacesResponse> {
   return getJson("/v1/namespaces", listNamespacesResponseSchema);
 }
 
-// GET /v1/namespaces/:id  (id is dot-joined)
+// GET /v1/namespaces/:id  (id is colon-joined)
 export function describeNamespace(id: string): Promise<DescribeNamespaceResponse> {
   return getJson(`/v1/namespaces/${encodeURIComponent(id)}`, describeNamespaceResponseSchema);
 }

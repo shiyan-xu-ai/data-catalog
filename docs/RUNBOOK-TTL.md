@@ -112,12 +112,12 @@ version.
 
 TTL apply is idempotent by design. When a version's S3 prefix is deleted, its
 `deleting` marker is kept in the overlay as a tombstone: it hides the version
-from reads immediately (the derived snapshot still lists it until the next sweep
+from reads immediately (the derived snapshot still lists it until the next sync
 reconciles it out) and excludes it from the recomputed eligible set. So
 re-applying — whether after a success or after an interruption — only re-attempts
 versions that are still eligible (a failed delete's marker is cleared so its
 retry re-attempts it); an already-deleted version is never re-deleted. The next
-sweep removes the version from the snapshot and clears the stale marker.
+sync removes the version from the snapshot and clears the stale marker.
 
 ## Reading the audit log
 
@@ -212,7 +212,7 @@ The audit is written **before** the marker CAS deliberately. If the process
 crashes between the S3 delete and the audit write, the version is gone from S3
 but not yet audited; that is self-healing because the version still carries its
 `deleting` marker (stamped by CAS #1 before the delete), and the derived
-snapshot still lists it until the next sweep — so a re-apply recomputes it,
+snapshot still lists it until the next sync — so a re-apply recomputes it,
 re-issues the delete (a NotFound no-op — the objects are already gone), and
 appends the audit record then. The residual failure mode is a possible
 *duplicate* audit entry on crash + retry, never a *lost* one.

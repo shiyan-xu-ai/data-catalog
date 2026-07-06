@@ -6,27 +6,39 @@ lives in [`docs/design.md`](docs/design.md).
 ## Overview
 
 One binary, `catalog-api`, runs as a single stateless container on Cloud Run. It
-serves the REST API and the SPA, and runs the S3 sweep and the TTL engine. There
+serves the REST API and the SPA, and runs the S3 sync and the TTL engine. There
 is no leader election, no lock, and no database: **S3 is the sole store**. Any
-instance can serve any request. The sweep runs request-scoped, triggered by
+instance can serve any request. The sync runs request-scoped, triggered by
 Cloud Scheduler — Cloud Run throttles CPU between requests, so a background loop
 would freeze while idle.
 
 ```
-Cloud Scheduler (cron) ─▶ POST /internal/jobs/sweep ─┐
+Cloud Scheduler (cron) ─▶ POST /internal/jobs/sync ─┐
                                                       │
 Browser ─ IAP/Trident ─▶ catalog-api (Cloud Run, axum)
                           ├─ REST /v1 + /ext  (merged read model)
                           ├─ static SPA       (same origin, no CORS)
-                          └─ sweep + TTL      ◀────────┘
+                          └─ sync + TTL      ◀────────┘
                                     │
                                     ▼  S3 (sole store)
   <table>/<ts>/...            immutable version dirs; LIST/open; TTL deletes
-  _catalog/registry          derived snapshot (Lance), sweep-written, last-wins
+  _catalog/registry          derived snapshot (Lance), sync-written, last-wins
   _catalog/meta/<id>.json    authored overlay {owner, ttl_policy, protected[],
                              deleting[]} — ETag-CAS mutations
   _catalog/ttl_audit         append-only audit log (Lance)
+  _catalog/storage_scan      bucket-storage breakdown (Lance), sync-tail-written
+  _catalog/users             recorded users (Lance), merge_insert-upserted
 ```
+
+## Regional deployment
+
+The service is regional: one deployment per region, colocated with that
+region's target buckets. The region, the target buckets, and each bucket's
+registered namespaces are declared in `catalog-config.yaml` (committed,
+baked into the image). Table ids are region-first composites
+(`<region>:<bucket>:<namespace>:<name>`), so a future multi-region setup —
+one deployment per region — can aggregate catalogs without id collisions.
+Catalog state stays in the dedicated catalog bucket, never in target buckets.
 
 ## State model: derived vs authored
 
@@ -35,11 +47,11 @@ Each catalog version is one **immutable** timestamp directory
 immutability splits registry state in two:
 
 1. **Derived state** — versions, shapes, byte splits, row counts, schemas, aux
-   entries. A pure function of immutable S3 content, so any full sweep
+   entries. A pure function of immutable S3 content, so any full sync
    regenerates it. The derived snapshot (`_catalog/registry`, a Lance dataset)
    is therefore written **whole, last-wins, with no coordination**: two
-   concurrent sweeps, or a Scheduler double-fire, cannot corrupt it — the worst
-   case is bounded staleness until the next sweep. Lost-update protection is
+   concurrent syncs, or a Scheduler double-fire, cannot corrupt it — the worst
+   case is bounded staleness until the next sync. Lost-update protection is
    meaningless for recomputable data.
 2. **Authored state** — per-table `owner` + `ttl_policy`, per-version
    `protected`, plus transient `deleting` markers. The only human-mutated data,
@@ -51,9 +63,9 @@ immutability splits registry state in two:
 The overlay also **defines the registered set**: the catalog is a curated
 allowlist, not a mirror of the bucket. A table is registered iff an overlay
 object exists for it (created by `DeclareTable`), and only registered tables are
-swept. This is what lets the same full sweep root serve a scoped catalog — an
-operator registers the handful of tables to track, and unregistered tables on S3
-are never touched.
+synced. This is what lets a whole registered namespace serve a scoped catalog —
+an operator registers the handful of tables to track, and unregistered tables
+on S3 are never touched.
 
 Everything the old k8s leader + write-lock protected was the *entanglement* of
 these two in one read-modify-write blob. Separating them dissolves the
@@ -61,7 +73,7 @@ coordination problem instead of porting it. A read merges the two back into the
 `TableEntry` wire shape the REST API and frontend already expect
 (`catalog-api/src/catalog.rs`): the snapshot supplies derived fields, the
 overlay supplies `owner`/`ttl_policy`/`protected`; a table registered but not yet
-swept (declared before its first sweep) is materialized as a stub.
+synced (declared before its first sync) is materialized as a stub.
 
 ### The authored overlay (`MetaStore`)
 
@@ -75,22 +87,38 @@ contention is effectively never, but the retry makes it correct regardless.
 
 > `object_store`'s `LocalFileSystem` does not implement `PutMode::Update`, so the
 > overlay must be backed by S3 / a MinIO-compatible endpoint (production, local
-> dev) or `InMemory` (tests). The sweep/data path still uses `LocalFileSystem`
+> dev) or `InMemory` (tests). The sync/data path still uses `LocalFileSystem`
 > freely — it does no conditional writes.
 
-## The sweep
+## The sync
 
-`catalog-store/src/sweep.rs` classifies one table's directory
-(`sweep_table`). `catalog-api/src/sweep.rs` wraps it into one request-scoped
-pass: `run_sweep` reads the registered set (the overlay objects), re-derives each
+`catalog-store/src/sync.rs` classifies one table's directory
+(`sync_table`). `catalog-api/src/sync.rs` wraps it into one request-scoped
+pass: `run_sync` reads the registered set (the overlay objects), re-derives each
 registered table's version set from S3, writes the whole snapshot as exactly that
 set (last-wins), reconciles stale overlay markers, and best-effort prunes old
 registry manifest versions. It never enumerates the root, so unregistered tables
 cost nothing and never appear.
 
+### Multi-bucket sync targets
+
+`catalog-config.yaml` declares the buckets and, per bucket, the registered
+namespace prefixes; there is no discovery of namespaces from S3 — a namespace
+becomes syncable only by being listed in the config. Each `(bucket, namespace)`
+pair becomes one `SyncTarget`, sharing one object store per bucket. Discovery
+per target starts with a delimiter LIST of the namespace's own directory to
+find its table dirs; the storage-analysis tail (below) separately
+delimiter-LISTs each bucket's root and partitions what it finds into
+registered (a top-level prefix that is an exact registered namespace) versus
+unexplored (everything else — sibling prefixes, ancestor levels of a nested
+namespace, and loose root objects). All targets' pending versions — across
+every bucket and namespace — feed the **same global `buffer_unordered` version
+queue** described below, so a large namespace in one bucket cannot starve a
+small namespace in another.
+
 ### Execution shape (performance)
 
-Sweeping is S3-latency-bound, so the implementation minimizes round-trips and
+Syncing is S3-latency-bound, so the implementation minimizes round-trips and
 maximizes useful concurrency:
 
 - **One recursive LIST per version.** A version's shape, byte splits (lance-core/
@@ -103,58 +131,58 @@ maximizes useful concurrency:
   can read deletion files, runs only as a fallback when a fragment's count is
   unknown), fragment count, schema, the lance manifest version, and the writer
   version. `load_indices` (extra index-metadata IO) is gated by
-  `CATALOG_SWEEP_DEEP_STATS` (`all`/`latest`/`none`); the open itself always runs,
+  `CATALOG_SYNC_DEEP_STATS` (`all`/`latest`/`none`); the open itself always runs,
   so shape/`partial` classification — and therefore TTL safety semantics — are
-  identical in every mode. The sweep report breaks out cumulative LIST time vs
+  identical in every mode. The sync report breaks out cumulative LIST time vs
   Lance-open time (`list_secs`/`open_secs`/`objects_listed`), so a slow table
   shows *why* it is slow.
 - **The unit of work is the version, not the table.** All registered tables'
   version dirs are discovered first (one delimiter LIST per table, concurrently),
   then every pending version from every table feeds one global
-  `buffer_unordered(CATALOG_SWEEP_CONCURRENCY)` queue — so a 500-version table
+  `buffer_unordered(CATALOG_SYNC_CONCURRENCY)` queue — so a 500-version table
   interleaves with 3-version tables instead of serializing behind them, and wall
   time ≈ `pending versions / concurrency`.
 - **Carry-forward.** Versions are immutable timestamp dirs, so a version already
   in the prior snapshot with a clean (non-partial) classification is copied
-  forward with zero S3 traffic. Only new versions, `partial` versions (re-swept to
+  forward with zero S3 traffic. Only new versions, `partial` versions (re-synced to
   self-heal), and `deleting`-marked versions (a failed TTL delete may have removed
   part of the prefix — carrying would freeze stale byte counts) are actually
-  swept. Steady-state sweeps cost O(new versions), and an interrupted first sweep
+  synced. Steady-state syncs cost O(new versions), and an interrupted first sync
   resumes instead of restarting.
 - **Incremental publication.** As each table's last pending version lands, the
   snapshot is rewritten (throttled to a few seconds apart, plus a final
-  unconditional write) — a long first sweep fills the catalog table-by-table
+  unconditional write) — a long first sync fills the catalog table-by-table
   rather than all-or-nothing, and a crash/timeout keeps everything completed so
   far.
 
 Because the snapshot is rebuilt from the registered set each pass, it stays an
 allowlist automatically: a deregistered table (overlay deleted) is simply not
-swept and drops out of the snapshot, and within a table, a version no longer on
+synced and drops out of the snapshot, and within a table, a version no longer on
 S3 (removed out of band, or by a TTL apply) is gone from the freshly-derived set.
-A registered table with no directory on S3 yet sweeps cleanly to zero versions (a
+A registered table with no directory on S3 yet syncs cleanly to zero versions (a
 stub) until data lands.
 
-A single registered table failing to sweep is isolated — logged, counted, and
+A single registered table failing to sync is isolated — logged, counted, and
 kept from the prior snapshot — rather than aborting the whole cycle and stalling
 every other table's freshness. A version transiently seen as `partial` (e.g. its
-dataset momentarily failed to open) is re-derived cleanly by a later sweep, so it
+dataset momentarily failed to open) is re-derived cleanly by a later sync, so it
 does not stay permanently partial; a transient partial re-observation shows for
 one cycle and self-heals, and the shape safety gate blocks TTL during that window
 (the safe direction).
 
-**Overlay reconciliation.** After writing the snapshot, the sweep prunes overlay
+**Overlay reconciliation.** After writing the snapshot, the sync prunes overlay
 `protected`/`deleting` entries whose version id is no longer in the snapshot —
 clearing the tombstone a TTL apply leaves behind once the version is truly gone
 (see [TTL engine](#ttl-engine)). It never touches `owner`/`ttl_policy`.
 
-**Idempotent under double-fire.** The `/internal/jobs/sweep` endpoint serializes
-sweeps on a single instance with an in-process mutex (so a Scheduler double-fire
+**Idempotent under double-fire.** The `/internal/jobs/sync` endpoint serializes
+syncs on a single instance with an in-process mutex (so a Scheduler double-fire
 doesn't run two at once on the same instance); cross-instance concurrency is safe
 regardless because the snapshot is last-wins.
 
 ### Version discovery
 
-For each registered table the sweep lists that table's directory
+For each registered table the sync lists that table's directory
 (`<root>/<table_id>/`) for timestamp subdirectories. A timestamp directory name
 is parsed as `YYYY-MM-DD_HH-MM-SS` or `YYYY-MM-DD-HH-MM-SS` (name variance is
 handled), normalized to an ISO8601 version id. One timestamp directory = one
@@ -235,37 +263,68 @@ name is recorded as the `role`.
 A layout transition occurred around 2026-06-26:
 
 - **Pre-cutoff** (< 2026-06-26): sidecar directories live *inside*
-  `dataset.lance/` (alongside lance-core directories). The sweep reads them from
+  `dataset.lance/` (alongside lance-core directories). The sync reads them from
   there.
 - **Post-cutoff** (>= 2026-06-26): sidecar directories move to a top-level
   `dataset.sidecar/`; `dataset.lance/` is clean (lance-core only).
 - **Transition** (~2026-06-12): sidecar content is duplicated both inside
-  `dataset.lance/` and at top-level `dataset.sidecar/` (dual-write). The sweep
+  `dataset.lance/` and at top-level `dataset.sidecar/` (dual-write). The sync
   deduplicates: when a top-level `dataset.sidecar/` is present it is preferred;
   otherwise sidecar bytes are read from inside the main lance dir.
 
-The sweep supports both layouts so the full version history is cataloged
+The sync supports both layouts so the full version history is cataloged
 correctly. The real-world layout is captured in
 [`docs/design.md`](docs/design.md), including concrete annotated example tables.
 
 ## The registry (derived snapshot)
 
 The registry is a Lance dataset under `_catalog/registry` (path configurable via
-`CATALOG_REGISTRY_PATH`). It stores one derived `TableEntry` per table: id, name,
-namespace, root_location, last_swept, versions[], and aux_latest[] — plus
-`owner`/`ttl_policy`/per-version `protected` slots that the sweep leaves empty
+`CATALOG_REGISTRY_PATH`). It stores one derived `TableEntry` per table: id
+(the region:bucket:namespace:name composite), name, region, bucket, namespace,
+root_location, last_synced, versions[], and aux_latest[] — plus
+`owner`/`ttl_policy`/per-version `protected` slots that the sync leaves empty
 and the overlay fills in at read time. Each `TableVersion` carries version_id,
 timestamp, snapshot_path, shape, partial, protected, the per-component byte
-totals, row_count, num_fragments, schema_json, num_indices, aux[], and swept_at.
+totals, object_count, row_count, num_fragments, schema_json, num_indices,
+aux[], and synced_at.
 
 The persisted registry types are forward/backward compatible (absent fields
 default), so a schema addition does not break an older reader or a snapshot
-written by an older writer. The sweep tail-calls Lance `cleanup_old_versions` on
-the registry so its manifest history does not grow unbounded (each sweep adds one
+written by an older writer. The sync tail-calls Lance `cleanup_old_versions` on
+the registry so its manifest history does not grow unbounded (each sync adds one
 version).
 
 Registry reads fail closed: `read_registry` returns `Ok(None)` only for a
 genuinely absent dataset (first boot); any other read failure is an `Err`.
+
+### Storage analysis (`_catalog/storage_scan`)
+
+After each sync writes the registry snapshot, a storage-analysis tail step
+(`storage_tail` in `catalog-api/src/sync.rs`) walks each configured bucket's
+top-level layout with delimiter LISTs (never a full recursive enumeration) and
+writes one `StoragePrefixStat` row per top-level prefix (plus a `(root)`
+pseudo-row for loose root objects, and each ancestor level's siblings for a
+nested registered namespace) to `_catalog/storage_scan` (path configurable via
+`CATALOG_STORAGE_SCAN_PATH`). A prefix that exactly matches a registered
+namespace is sized by aggregating that namespace's just-written registry
+entries (bytes, objects, table count); every other prefix is reported
+unexplored (name-only, no size). `GET /ext/v1/storage` serves the latest scan
+as-is; the tail overwrites the whole dataset each run (a point-in-time
+snapshot, not a durable history) and best-effort prunes old manifest versions
+the same way the registry does. A tail failure is logged and does not fail the
+sync.
+
+### Users (`_catalog/users`)
+
+`_catalog/users` (path configurable via `CATALOG_USERS_PATH`) records every
+caller email the identity middleware has seen, upserted with Lance
+`merge_insert` keyed on `email` so a repeat sighting updates `last_seen_at` in
+place instead of duplicating the row. Identity comes from the IAP
+`x-goog-authenticated-user-email` header (`catalog-api/src/identity.rs`);
+`GET /ext/v1/users` and `GET /ext/v1/me` overlay each user's `role` from
+`catalog-config.yaml`'s `admins` list at read time, so the config file remains
+the single source of truth for the admin role and a demotion takes effect
+immediately without rewriting stored rows.
 
 ## The read model (merged view)
 
@@ -276,7 +335,7 @@ refresh loop: the view is revalidated **lazily** — re-read from storage when
 older than `CATALOG_CACHE_TTL_SECS` (default 5s), single-flighted so a burst of
 stale reads triggers one reload — and immediately after a mutation invalidates it
 (read-your-writes on the same instance). On a revalidation error the last good
-view is kept and served; staleness is bounded by the sweep cadence anyway.
+view is kept and served; staleness is bounded by the sync cadence anyway.
 `/readyz` reports ready once the view has loaded at least once.
 
 Mutations re-fetch the overlay fresh inside every write (the cache is for reads
@@ -285,7 +344,7 @@ only): a handler calls `MetaStore::mutate_meta`, then invalidates the read cache
 ## Startup and shutdown
 
 At startup the process fetches AWS credentials from Secret Manager (see
-[Credentials](#credentials)), builds the sweep + overlay object stores, and binds
+[Credentials](#credentials)), builds the sync + overlay object stores, and binds
 one HTTP server on the single port (`PORT` on Cloud Run, else
 `CATALOG_BIND_ADDR`). The server drains in-flight requests on `SIGTERM`/Ctrl-C via
 graceful shutdown before the process exits. Duration config values (`*_SECS`) are
@@ -312,12 +371,14 @@ authoritative source is `catalog-api/src/api.rs::api_router`.
 
 - **Basic ops** (`/v1`): `ListNamespaces`, `DescribeNamespace`, `ListTables`,
   `DescribeTable`, `DeclareTable` (PUT — registers the table by writing its
-  overlay + `owner`/`ttl_policy`, idempotent; the next sweep fills its versions),
+  overlay + `owner`/`ttl_policy`, idempotent; the next sync fills its versions),
   `DeregisterTable` (DELETE — deletes the overlay, unregistering it; the next
-  sweep drops its derived entry). Namespaces are a derived view, not stored state.
+  sync drops its derived entry). Namespaces are a derived view, not stored state.
 - **`/ext` enriched surface**: `GET /ext/v1/tables` (full detail, no pagination),
-  `GET /ext/v1/tables/:id/versions/:vid`, the TTL endpoints (`dryrun`, `apply`,
-  `audit`), and version `protect` (writes the overlay).
+  `GET /ext/v1/tables/:id/versions/:vid`, aux `sample`, version `protect`
+  (writes the overlay), the TTL endpoints (`dryrun`, `apply`, `audit`),
+  `GET /ext/v1/storage` (the storage-analysis breakdown), `GET /ext/v1/users`,
+  and `GET /ext/v1/me` (caller identity + resolved role).
 - Any instance serves any request; there is no leader-only 503.
 
 ## TTL engine
@@ -361,14 +422,14 @@ overlay write instead of a lock:
    markers are cleared.
 4. **CAS #2** — a *succeeded* delete keeps its `deleting` marker as a tombstone:
    the version is gone from S3 but still in the derived snapshot until the next
-   sweep reconciles it out; the marker hides it from reads and keeps re-apply
-   idempotent, and the sweep clears the marker once the snapshot no longer lists
+   sync reconciles it out; the marker hides it from reads and keeps re-apply
+   idempotent, and the sync clears the marker once the snapshot no longer lists
    the version. A *failed* delete's marker is cleared so a retry re-attempts it.
    `protected` is pruned for deleted versions.
 
 Idempotent re-apply: the `deleting` markers exclude already-deleted versions from
 the recomputed eligible set, so re-apply finds nothing. A mid-apply crash leaves
-markers that a later apply or the sweep reconciles. See
+markers that a later apply or the sync reconciles. See
 [`docs/RUNBOOK-TTL.md`](docs/RUNBOOK-TTL.md) for the audit caveats.
 
 ## Frontend
@@ -383,16 +444,16 @@ server serves at `/` (`CATALOG_WEBUI_DIR`).
 
 ## Observability
 
-Structured JSON logs go to stdout for Cloud Logging: the sweep summary
-(tables checked, failed tables, duration), per-table sweep failures, and TTL
+Structured JSON logs go to stdout for Cloud Logging: the sync summary
+(tables checked, failed tables, duration), per-table sync failures, and TTL
 outcomes. HTTP request/latency (RED) metrics come from Cloud Run's built-in
 Cloud Monitoring; there is no Prometheus endpoint or scrape. Log-based metrics
 and alerts can be layered on in Cloud Monitoring later.
 
 ## Notable behaviors and limitations
 
-- **Snapshot last-wins can write an older sweep over a newer one.** Bounded by
-  the sweep cadence and self-healing on the next sweep; acceptable for
+- **Snapshot last-wins can write an older sync over a newer one.** Bounded by
+  the sync cadence and self-healing on the next sync; acceptable for
   recomputable derived state.
 - **TTL audit-vs-registry is not one atomic write.** The audit `Append` precedes
   the marker/snapshot changes, so a mid-apply crash can produce a *duplicate*
@@ -402,7 +463,7 @@ and alerts can be layered on in Cloud Monitoring later.
   [`docs/RUNBOOK-TTL.md`](docs/RUNBOOK-TTL.md) caveat (a).
 - **App-level auth is delegated to the platform.** IAP + Trident authorize human
   requests (`allowed_usergroups`); the Cloud Scheduler service account reaches
-  `/internal/jobs/sweep` via its platform identity. The app does no auth of its
+  `/internal/jobs/sync` via its platform identity. The app does no auth of its
   own.
 - **`/ext/v1/tables` has no pagination.** Fine at admin scale (dozens of tables).
 - **Design features not implemented:** lineage, MCP, Flight SQL, profiling,

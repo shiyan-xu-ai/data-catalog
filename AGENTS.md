@@ -13,9 +13,9 @@ as a single stateless container on Apps Platform (Cloud Run).
 Cargo workspace with three crates:
 
 - `catalog-core` — shared types and the registry model.
-- `catalog-store` — object-store IO and S3 sweep/TTL logic.
-- `catalog-api` — the `catalog-api` binary: axum HTTP server, sweep loop,
-  TTL engine, leader election.
+- `catalog-store` — object-store IO and S3 sync/TTL logic.
+- `catalog-api` — the `catalog-api` binary: axum HTTP server, request-triggered
+  sync, TTL engine.
 
 ## Conventions
 
