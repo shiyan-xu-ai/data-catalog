@@ -57,6 +57,12 @@ mod tests {
                 role: "segments".to_string(),
                 storage_bytes: 40,
                 fingerprint: None,
+                category: None,
+                dataset_path: None,
+                row_count: None,
+                schema_json: None,
+                lance_version: None,
+                writer_version: None,
             }],
             swept_at: ts,
         }

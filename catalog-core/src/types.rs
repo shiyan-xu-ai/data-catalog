@@ -58,6 +58,23 @@ pub struct AuxEntry {
     /// Cheap fingerprint (e.g. LIST-derived hash) for mixed/unknown formats.
     #[serde(default)]
     pub fingerprint: Option<String>,
+    /// Placement taxonomy: `sidecar` (top-level aux: `dataset.sidecar/`, `segments/`, known
+    /// top dirs) or `nested_sidecar` (aux living inside the main lance dir).
+    #[serde(default)]
+    pub category: Option<String>,
+    /// For lance-format aux: the openable dataset root, which may sit deeper than `path`
+    /// (nested bundles). Sampling/query targets this.
+    #[serde(default)]
+    pub dataset_path: Option<String>,
+    /// For lance-format aux (manifest-derived, deep-stats-gated like the main dataset).
+    #[serde(default)]
+    pub row_count: Option<u64>,
+    #[serde(default)]
+    pub schema_json: Option<String>,
+    #[serde(default)]
+    pub lance_version: Option<u64>,
+    #[serde(default)]
+    pub writer_version: Option<String>,
 }
 
 /// Shape of a swept table version, per findings.md.

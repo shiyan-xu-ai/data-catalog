@@ -29,9 +29,14 @@ url.workspace = true
 tower-http = { version = "0.6", features = ["fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 base64 = "0.22"
+arrow-array.workspace = true
+arrow-json = "58"
+datafusion = "53"
+lance.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+arrow-schema.workspace = true
 http = "1"
 tower = "0.5"
 http-body-util = "0.1"

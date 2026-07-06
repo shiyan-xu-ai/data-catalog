@@ -215,6 +215,7 @@ table by S3's conditional writes.
 - `DELETE /v1/table/:id` — deregister (deletes the authored overlay). The table leaves the swept set and the next sweep drops its derived entry. S3 data is untouched.
 - `GET /ext/v1/tables?expand=...` — enriched listing (full detail; no pagination).
 - `GET /ext/v1/tables/:id/versions/:vid` — single version detail.
+- `GET /ext/v1/tables/:id/versions/:vid/aux/sample?name=&limit=` — read up to 100 sample rows from an auxiliary table (lance via the lance scanner, parquet dirs via DataFusion; read-only).
 - `PUT /ext/v1/tables/:id/versions/:vid/protect` — set/clear a version's TTL-exempt `protected` flag.
 - `GET /ext/v1/tables/:id/ttl/dryrun` — list TTL-eligible versions + reclaimable bytes (read-only).
 - `POST /ext/v1/tables/:id/ttl/apply` — hard-delete eligible versions (irreversible, audited).

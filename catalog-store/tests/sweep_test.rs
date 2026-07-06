@@ -396,3 +396,53 @@ async fn deep_stats_latest_and_none_gate_only_the_index_load() {
         .iter()
         .all(|v| !v.partial && v.row_count.is_some()));
 }
+
+/// Nested sidecar bundles: `dataset.lance/` holding ONLY nested datasets (no `_versions` at its
+/// root) keeps the version partial (primary missing — user-locked semantics), while every nested
+/// lance dataset root is surfaced as its own `nested_sidecar` aux entry, named by its relative
+/// path, with a `dataset_path` and manifest-derived stats — all from the same single LIST.
+#[tokio::test]
+async fn nested_sidecar_datasets_get_their_own_enriched_aux_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(LocalFileSystem::new_with_prefix(tmp.path()).unwrap());
+    let nested_rel =
+        "dataset.lance/tag_datasets/nav-tags.lance/lance_tags_with_disengagement/segment_tags.lance";
+    write_lance_dataset(
+        &tmp.path()
+            .join("tableG/2026-06-28_18-38-00")
+            .join(nested_rel),
+    )
+    .await;
+
+    let cfg = cfg(store, tmp.path());
+    let entry = catalog_store::sweep_table(&cfg, "tableG", &ObjPath::from("tableG"))
+        .await
+        .unwrap();
+
+    assert_eq!(entry.versions.len(), 1);
+    let v = &entry.versions[0];
+    // Primary lance table missing => version stays partial (unchanged semantics).
+    assert_eq!(v.shape, VersionShape::LanceOnlyPartial);
+    assert!(v.partial);
+
+    // The nested dataset is its own aux entry, path-named, categorized, enriched.
+    let nested = v
+        .aux
+        .iter()
+        .find(|a| a.name == nested_rel)
+        .expect("nested dataset surfaced as its own aux entry");
+    assert_eq!(nested.category.as_deref(), Some("nested_sidecar"));
+    assert_eq!(nested.format, AuxFormat::Lance);
+    assert!(nested.dataset_path.is_some());
+    assert_eq!(nested.row_count, Some(3), "manifest-derived rows");
+    assert!(nested.schema_json.is_some());
+    assert!(nested.storage_bytes > 0);
+
+    // The container top dir keeps its dir-level entry too (byte contract unchanged).
+    let container = v.aux.iter().find(|a| a.name == "dataset.lance").unwrap();
+    assert_eq!(container.category.as_deref(), Some("sidecar"));
+    assert_eq!(
+        v.storage_bytes_total,
+        v.lance_core_bytes + v.sidecar_bytes + v.segments_bytes + v.other_aux_bytes
+    );
+}

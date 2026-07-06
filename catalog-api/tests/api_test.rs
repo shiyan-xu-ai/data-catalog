@@ -57,6 +57,12 @@ fn fixture_version(id: &str) -> TableVersion {
             role: "segments".to_string(),
             storage_bytes: 40,
             fingerprint: None,
+            category: None,
+            dataset_path: None,
+            row_count: None,
+            schema_json: None,
+            lance_version: None,
+            writer_version: None,
         }],
         swept_at: ts,
     }
@@ -647,4 +653,126 @@ async fn ttl_apply_deletes_objects_writes_audit_hides_version_and_is_idempotent(
         1,
         "re-apply must not write a duplicate audit record"
     );
+}
+
+/// The aux sample endpoint: lance aux scans its dataset_path, parquet aux dirs scan via
+/// DataFusion, limits clamp, and non-tabular formats are refused — all read-only.
+#[tokio::test]
+async fn aux_sample_endpoint_reads_lance_and_parquet_and_rejects_others() {
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+        "id",
+        DataType::Int32,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+    )
+    .unwrap();
+
+    // Real lance aux dataset.
+    let lance_path = data_dir
+        .path()
+        .join("tags.lance")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], schema.clone());
+    lance::Dataset::write(reader, &lance_path, None::<lance::dataset::WriteParams>)
+        .await
+        .unwrap();
+
+    // Real parquet aux dir (one part file), written via DataFusion.
+    let parquet_dir = data_dir
+        .path()
+        .join("segments")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let ctx = datafusion::execution::context::SessionContext::new();
+    ctx.register_batch("t", batch).unwrap();
+    ctx.table("t")
+        .await
+        .unwrap()
+        .write_parquet(
+            &format!("{parquet_dir}/part-00000.parquet"),
+            datafusion::dataframe::DataFrameWriteOptions::new().with_single_file_output(true),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // A version whose aux list points at the two real targets + one unsupported format.
+    let mut version = fixture_version("2026-06-26T12:00:00Z");
+    version.aux = vec![
+        AuxEntry {
+            name: "tags".into(),
+            path: lance_path.clone(),
+            format: AuxFormat::Lance,
+            role: "tags".into(),
+            storage_bytes: 1,
+            fingerprint: None,
+            category: Some("nested_sidecar".into()),
+            dataset_path: Some(lance_path),
+            row_count: Some(3),
+            schema_json: None,
+            lance_version: None,
+            writer_version: None,
+        },
+        AuxEntry {
+            name: "segments".into(),
+            path: parquet_dir,
+            format: AuxFormat::Parquet,
+            role: "segments".into(),
+            storage_bytes: 1,
+            fingerprint: None,
+            category: Some("sidecar".into()),
+            dataset_path: None,
+            row_count: None,
+            schema_json: None,
+            lance_version: None,
+            writer_version: None,
+        },
+        AuxEntry {
+            name: "notes".into(),
+            path: "/nowhere".into(),
+            format: AuxFormat::Csv,
+            role: "notes".into(),
+            storage_bytes: 1,
+            fingerprint: None,
+            category: Some("sidecar".into()),
+            dataset_path: None,
+            row_count: None,
+            schema_json: None,
+            lance_version: None,
+            writer_version: None,
+        },
+    ];
+    let mut entry = fixture_entry();
+    entry.versions = vec![version];
+    let (app, _r, _s) = test_app(vec![entry], vec![]).await;
+
+    let base = "/ext/v1/tables/smoke_test/versions/2026-06-26T12:00:00Z/aux/sample";
+
+    // Lance aux: all 3 rows come back with a schema; limit=2 clamps.
+    let json = body_json(get(&app, &format!("{base}?name=tags")).await).await;
+    assert_eq!(json["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(json["schema"][0]["name"], "id");
+    let json = body_json(get(&app, &format!("{base}?name=tags&limit=2")).await).await;
+    assert_eq!(json["rows"].as_array().unwrap().len(), 2);
+
+    // Parquet aux dir via DataFusion.
+    let json = body_json(get(&app, &format!("{base}?name=segments&limit=10")).await).await;
+    assert_eq!(json["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(json["format"], "parquet");
+
+    // Unsupported format is a 400; unknown aux a 404.
+    let resp = get(&app, &format!("{base}?name=notes")).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = get(&app, &format!("{base}?name=missing")).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
