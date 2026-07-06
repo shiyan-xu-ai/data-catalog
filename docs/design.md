@@ -493,6 +493,20 @@ split per-component (`lance_core_bytes`, `sidecar_bytes`, `segments_bytes`,
 `other_aux_bytes`) so pre-cutoff versions attribute sidecar bytes correctly
 rather than lumping them into lance-core.
 
+Aux datasets are additionally tagged by placement: `sidecar` for top-level
+directories (`dataset.sidecar/`, `segments/`, and other known top-level aux
+dirs) versus `nested_sidecar` for a lance dataset discovered nested inside
+the main `dataset.lance/` itself (e.g. `index_datasets/`, `tag_datasets/`).
+A nested sidecar is found by scanning the version's already-fetched object
+listing for any `_versions/`-rooted directory, at zero extra S3 cost, and is
+enriched with row count, schema, and writer version read from its own
+manifest. If a version's `dataset.lance/` holds only nested sidecars and no
+primary dataset at its own root, the version is flagged `partial`. Aux
+tables in either category are sampled on demand via
+`GET /ext/v1/tables/:id/versions/:vid/aux/sample` (Lance scan or DataFusion
+parquet read, capped at 100 rows) — an early, REST-native delivery of the
+`sample_rows` capability §6 designs as an MCP tool.
+
 ### Real-world example tables (the surveyed layout)
 
 The sweep root `s3://onroad-perception-datasets/scenario_dataset_export/`
@@ -570,3 +584,28 @@ v1.0.0 concretizes this to a per-table API policy with hard-delete semantics:
 The full TTL safety guidance (including the non-atomic audit-vs-registry
 write caveat and the partial-failure no-rollback behavior) is in
 [`docs/RUNBOOK-TTL.md`](RUNBOOK-TTL.md).
+
+### Deployment & coordination model (§11, §12) — S3-only, no leader election
+
+Design §11 assumed a Kubernetes `catalog-controller`/`catalog-api` split with
+k8s-Lease leader election (kube-rs), and §12 assumed Prometheus + Grafana
+provisioned via kustomize. The service instead runs as a single stateless
+container on Apps Platform (Cloud Run):
+
+- **No leader, no lock, no database.** S3 remains the sole store. Because
+  every version directory is immutable once written, catalog state splits
+  cleanly into **derived** state (versions, shapes, byte splits, row counts,
+  schemas, aux entries — a pure function of S3 content, written whole by
+  each sweep, last-wins with no coordination needed) and **authored** state
+  (`owner`, `ttl_policy`, per-version `protected` — the only human-mutated
+  data, a small per-table JSON object under `_catalog/meta/<table_id>.json`
+  guarded by S3 conditional-put ETag CAS). Any sweep's output is a valid
+  full snapshot, so concurrent writers need no fencing.
+- **Sweep is triggered, not looped.** Cloud Run freezes background work
+  between requests, so a Cloud Scheduler cron calls
+  `POST /internal/jobs/sweep` instead of an in-process interval loop; the
+  endpoint runs one sweep pass inline and is safe under double-fire retries.
+- **Observability via Cloud Logging.** No Prometheus/Grafana/kustomize —
+  structured tracing (sweep summaries, per-table failures, TTL outcomes)
+  goes to Cloud Logging, and HTTP RED metrics come from Cloud Run's
+  built-in request metrics rather than a scraped `/metrics` endpoint.
