@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Play, Save, Trash2 } from "lucide-react";
-import { ttlApply, ttlDryRun } from "@/lib/api";
+import { ttlDryRun } from "@/lib/api";
 import type { TtlAuditRecord, TtlPolicy } from "@/lib/schemas";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
-import { ConfirmDialog } from "@/components/confirm-dialog";
 import { formatBytes, formatTime, ttlPolicyString } from "@/lib/format";
 import { declareTable } from "@/lib/api";
 
@@ -42,18 +41,6 @@ export function TtlPanel({ tableId, policy, audit }: Props) {
       toast.success("TTL policy saved");
       qc.invalidateQueries({ queryKey: ["table", tableId] });
       qc.invalidateQueries({ queryKey: ["tables"] });
-    },
-    onError: (e: unknown) => toast.error((e as Error).message),
-  });
-
-  const applyMut = useMutation({
-    mutationFn: () => ttlApply(tableId),
-    onSuccess: (res) => {
-      toast.success(`Deleted ${res.deleted.length} version(s), reclaimed ${formatBytes(res.reclaimed_bytes)}`);
-      qc.invalidateQueries({ queryKey: ["table", tableId] });
-      qc.invalidateQueries({ queryKey: ["tables"] });
-      qc.invalidateQueries({ queryKey: ["ttl-dryrun", tableId] });
-      qc.invalidateQueries({ queryKey: ["ttl-audit", tableId] });
     },
     onError: (e: unknown) => toast.error((e as Error).message),
   });
@@ -116,25 +103,17 @@ export function TtlPanel({ tableId, policy, audit }: Props) {
         <div className="space-y-2 border-t pt-4">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-medium">Apply</h4>
-            <ConfirmDialog
-              trigger={
-                <Button size="sm" variant="destructive" disabled={!dryRun.data?.candidates.length || applyMut.isPending}>
-                  <Trash2 className="h-4 w-4" /> Apply
-                </Button>
-              }
-              title="Apply TTL — irreversible hard delete"
-              description={
-                dryRun.data
-                  ? `This will hard-delete ${dryRun.data.candidates.length} version(s) and reclaim ${formatBytes(dryRun.data.reclaimable_bytes)}. This cannot be undone.`
-                  : "This will hard-delete all TTL-eligible versions. This cannot be undone."
-              }
-              confirmLabel="Delete versions"
-              destructive
-              onConfirm={async () => { await applyMut.mutateAsync(); }}
-            />
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled
+              title="TTL apply is not implemented in this deployment"
+            >
+              <Trash2 className="h-4 w-4" /> Apply
+            </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Apply deletes eligible versions from S3 and appends audit records. Protected versions are exempt.
+            TTL apply is not implemented in this deployment — hard-delete is disabled. The dry-run above shows what would be eligible.
           </p>
         </div>
 

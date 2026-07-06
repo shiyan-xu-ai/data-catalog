@@ -21,7 +21,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use catalog_core::{ttl_eligible_versions, TableEntry, TableVersion, TtlAuditRecord, TtlPolicy};
-use catalog_store::{MetaStore, SweepConfig, TableMeta};
+use catalog_store::{MetaStore, SweepConfig};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -466,29 +466,6 @@ struct TtlDryRunResponse {
     reclaimable_bytes: u64,
 }
 
-/// Compute the TTL-eligible versions of `versions` under the authored `meta`, as of `now`.
-/// Protection comes from the overlay, and versions already marked `deleting` (a prior apply
-/// deleted them; awaiting sweep reconciliation) are excluded so re-apply is idempotent.
-fn eligible_under(
-    meta: &TableMeta,
-    versions: &[TableVersion],
-    now: chrono::DateTime<chrono::Utc>,
-) -> Vec<TableVersion> {
-    let mut candidates: Vec<TableVersion> = versions
-        .iter()
-        .filter(|v| !meta.deleting.contains(&v.version_id))
-        .cloned()
-        .collect();
-    for v in &mut candidates {
-        v.protected = meta.protected.contains(&v.version_id);
-    }
-    let policy = meta.ttl_policy.unwrap_or_default();
-    ttl_eligible_versions(&policy, &candidates, now)
-        .into_iter()
-        .cloned()
-        .collect()
-}
-
 /// `GET /ext/v1/tables/{id}/ttl/dryrun` -- read-only eligible-version preview.
 async fn ttl_dryrun(
     State(state): State<ApiState>,
@@ -531,131 +508,24 @@ struct TtlApplyResponse {
     reclaimed_bytes: u64,
 }
 
-/// `POST /ext/v1/tables/{id}/ttl/apply` -- IRREVERSIBLE hard delete.
+/// `POST /ext/v1/tables/{id}/ttl/apply` -- not implemented.
 ///
-/// The protect-vs-apply race is closed by a conditional overlay write: eligibility is recomputed
-/// against the *fresh* overlay inside a CAS that stamps `deleting` markers, so a concurrent
-/// `protect` forces a retry that excludes the newly-protected version. Then each eligible
-/// version's prefix is deleted, the audit records are appended (durable evidence, before the
-/// markers are cleared), and a second CAS clears the markers and prunes `protected` for the
-/// deleted versions. Idempotent: re-apply re-deletes gone prefixes as no-ops. A mid-apply crash
-/// leaves markers that a later apply or the sweep reconciles; the derived versions remain listed
-/// until the next sweep removes them from S3-truth.
+/// This deployment does not delete cataloged data: apply always reports 501 without touching the
+/// authored overlay, S3, or the audit log. Dry-run and the audit log stay live so the rest of the
+/// TTL surface (policy, preview, history) still works; only the hard-delete action is disabled.
 async fn ttl_apply(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<Json<TtlApplyResponse>, (StatusCode, Json<ErrorResponse>)> {
     let view = state.catalog.view().await;
-    let table = view
-        .iter()
+    view.iter()
         .find(|e| e.id == id)
         .ok_or_else(|| table_not_found(&id))?;
-    // Derived versions are immutable; strip any view-applied protection so `eligible_under` uses
-    // the fresh overlay's protection instead.
-    let versions: Vec<TableVersion> = table
-        .versions
-        .iter()
-        .cloned()
-        .map(|mut v| {
-            v.protected = false;
-            v
-        })
-        .collect();
-    let now = chrono::Utc::now();
-
-    // CAS #1: recompute eligibility against the fresh overlay and stamp delete markers.
-    let mut eligible: Vec<TableVersion> = Vec::new();
-    state
-        .meta
-        .mutate_meta(&id, |m| {
-            eligible = eligible_under(m, &versions, now);
-            for v in &eligible {
-                m.deleting.insert(v.version_id.clone());
-            }
-        })
-        .await
-        .map_err(internal_error)?;
-
-    let mut deleted = Vec::new();
-    let mut reclaimed_bytes = 0u64;
-    let mut audit_records: Vec<TtlAuditRecord> = Vec::new();
-    let mut failed_versions: Vec<String> = Vec::new();
-    let policy_snapshot = state
-        .meta
-        .get_meta(&id)
-        .await
-        .map_err(internal_error)?
-        .and_then(|m| m.ttl_policy)
-        .unwrap_or_default();
-
-    for v in &eligible {
-        let prefix = match state.sweep_cfg.path_for(&v.snapshot_path) {
-            Ok(prefix) => prefix,
-            Err(e) => {
-                tracing::error!(table = %id, version = %v.version_id, error = %e, "ttl delete: unresolvable snapshot path");
-                failed_versions.push(v.version_id.clone());
-                continue;
-            }
-        };
-        match catalog_store::delete_prefix(state.sweep_cfg.store.as_ref(), &prefix).await {
-            Ok(()) => {
-                audit_records.push(TtlAuditRecord {
-                    table_id: id.clone(),
-                    version_id: v.version_id.clone(),
-                    deleted_at: now,
-                    reclaimed_bytes: v.storage_bytes_total,
-                    policy_snapshot,
-                    actor: "ttl-engine".to_string(),
-                });
-                reclaimed_bytes += v.storage_bytes_total;
-                deleted.push(v.version_id.clone());
-            }
-            Err(e) => {
-                tracing::error!(table = %id, version = %v.version_id, error = %e, "ttl delete failed");
-                failed_versions.push(v.version_id.clone());
-            }
-        }
-    }
-
-    // Durable evidence first: audit before clearing the markers.
-    if !audit_records.is_empty() {
-        catalog_core::append_ttl_audit(&state.ttl_audit_path, &audit_records)
-            .await
-            .map_err(internal_error)?;
-    }
-
-    // CAS #2: a successful delete keeps its `deleting` marker as a tombstone (the version is
-    // gone from S3 but still in the derived snapshot until the next sweep — the marker hides it
-    // from reads and keeps re-apply idempotent, and the sweep clears it once the snapshot no
-    // longer lists the version). A failed delete's marker is cleared so a retry re-attempts it.
-    // `protected` is pruned for deleted versions (they no longer exist).
-    state
-        .meta
-        .mutate_meta(&id, |m| {
-            for vid in &failed_versions {
-                m.deleting.remove(vid);
-            }
-            for vid in &deleted {
-                m.protected.remove(vid);
-            }
-        })
-        .await
-        .map_err(internal_error)?;
-    state.catalog.invalidate().await;
-
-    if !failed_versions.is_empty() {
-        return Err(error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            0,
-            format!("failed to delete versions: {}", failed_versions.join(", ")),
-        ));
-    }
-
-    Ok(Json(TtlApplyResponse {
-        table_id: id,
-        deleted,
-        reclaimed_bytes,
-    }))
+    Err(error(
+        StatusCode::NOT_IMPLEMENTED,
+        0,
+        "TTL apply is not implemented: this deployment does not delete data",
+    ))
 }
 
 /// Build the public `/v1` + `/ext/v1` router wired to `state`.

@@ -1,5 +1,12 @@
 # TTL safety runbook
 
+**TTL apply is currently disabled.** `POST .../ttl/apply` always returns
+`501 Not Implemented`; the backend has no code path that deletes cataloged
+data from S3. Policy configuration, dry-run, `protected`, and the audit log
+all remain fully functional — only the hard-delete action itself is stubbed
+out. The rest of this runbook documents apply as designed, for when
+hard-delete is reimplemented.
+
 The TTL engine hard-deletes old timestamp version directories from S3. This is
 an **irreversible, destructive** operation. This runbook documents the
 policy semantics, the mandatory workflow, and the known caveats an operator
@@ -66,19 +73,25 @@ shape wasn't cleanly classified.
    by an apply under the table's current policy, as of now. If the list is
    empty, an apply is a no-op.
 
-2. **Apply** (irreversible):
+2. **Apply** (irreversible, when implemented):
 
    ```sh
    curl -s -X POST "http://localhost:8080/ext/v1/tables/<id>/ttl/apply" | python3 -m json.tool
    ```
 
-   Response:
+   Currently this always returns `501 Not Implemented` and deletes nothing:
+
+   ```json
+   {"error_code": 0, "message": "TTL apply is not implemented: this deployment does not delete data"}
+   ```
+
+   The response shape below (`deleted`/`reclaimed_bytes`) is what apply
+   returns once hard-delete is reimplemented; `deleted` would be the list of
+   version ids actually hard-deleted by that call.
 
    ```json
    {"table_id": "<id>", "deleted": ["2024-01-01T00:00:00", ...], "reclaimed_bytes": 12345}
    ```
-
-   `deleted` is the list of version ids actually hard-deleted by this call.
 
 ### Any instance can apply
 
