@@ -4,6 +4,7 @@
 pub mod api;
 pub mod catalog;
 pub mod config;
+pub mod sample;
 pub mod secrets;
 pub mod shutdown;
 pub mod sweep;

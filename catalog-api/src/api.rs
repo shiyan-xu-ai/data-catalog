@@ -317,6 +317,98 @@ async fn ext_get_version(
 }
 
 #[derive(Debug, Deserialize)]
+struct SampleQuery {
+    /// Aux entry name within the version (may contain `/` for nested sidecars).
+    name: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct SampleResponse {
+    table_id: String,
+    version_id: String,
+    aux_name: String,
+    format: catalog_core::AuxFormat,
+    schema: Vec<serde_json::Value>,
+    rows: Vec<serde_json::Value>,
+}
+
+/// `GET /ext/v1/tables/{id}/versions/{vid}/aux/sample?name=&limit=` — read up to `limit`
+/// (default 20, max 100) rows from an auxiliary table. Lance aux scans its `dataset_path`;
+/// parquet aux dirs scan via DataFusion. Read-only; 30s bound.
+async fn ext_sample_aux(
+    State(state): State<ApiState>,
+    Path((id, vid)): Path<(String, String)>,
+    Query(q): Query<SampleQuery>,
+) -> Result<Json<SampleResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let view = state.catalog.view().await;
+    let table = view
+        .iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| table_not_found(&id))?;
+    let version = table
+        .versions
+        .iter()
+        .find(|v| v.version_id == vid)
+        .ok_or_else(|| {
+            error(
+                StatusCode::NOT_FOUND,
+                error_code::TABLE_VERSION_NOT_FOUND,
+                format!("version not found: {id}/{vid}"),
+            )
+        })?;
+    let entry = version
+        .aux
+        .iter()
+        .find(|a| a.name == q.name)
+        .ok_or_else(|| {
+            error(
+                StatusCode::NOT_FOUND,
+                0,
+                format!("aux not found on {id}/{vid}: {}", q.name),
+            )
+        })?;
+
+    let limit = q
+        .limit
+        .unwrap_or(crate::sample::DEFAULT_SAMPLE_ROWS)
+        .clamp(1, crate::sample::MAX_SAMPLE_ROWS);
+    const SAMPLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let sampled = match entry.format {
+        catalog_core::AuxFormat::Lance => {
+            let uri = entry.dataset_path.as_deref().unwrap_or(&entry.path);
+            tokio::time::timeout(SAMPLE_TIMEOUT, crate::sample::sample_lance(uri, limit)).await
+        }
+        catalog_core::AuxFormat::Parquet => {
+            tokio::time::timeout(
+                SAMPLE_TIMEOUT,
+                crate::sample::sample_parquet(&state.sweep_cfg, &entry.path, limit),
+            )
+            .await
+        }
+        other => {
+            return Err(error(
+                StatusCode::BAD_REQUEST,
+                0,
+                format!("sampling is not supported for {other:?} aux"),
+            ))
+        }
+    };
+    let sample = sampled
+        .map_err(|_| anyhow::anyhow!("aux sample timed out after {SAMPLE_TIMEOUT:?}"))
+        .and_then(|r| r)
+        .map_err(internal_error)?;
+    Ok(Json(SampleResponse {
+        table_id: id,
+        version_id: vid,
+        aux_name: q.name,
+        format: entry.format,
+        schema: sample.schema,
+        rows: sample.rows,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
 struct ProtectRequest {
     protected: bool,
 }
@@ -580,6 +672,10 @@ pub fn api_router(state: ApiState) -> Router {
         )
         .route("/ext/v1/tables", get(ext_list_tables))
         .route("/ext/v1/tables/:id/versions/:vid", get(ext_get_version))
+        .route(
+            "/ext/v1/tables/:id/versions/:vid/aux/sample",
+            get(ext_sample_aux),
+        )
         .route(
             "/ext/v1/tables/:id/versions/:vid/protect",
             put(ext_protect_version),

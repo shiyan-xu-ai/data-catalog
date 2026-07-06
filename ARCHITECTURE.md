@@ -201,6 +201,22 @@ correctly decomposed:
 [TTL runbook](docs/RUNBOOK-TTL.md) for the logical-vs-physical distinction that
 matters for `reclaimable_bytes`.
 
+### Auxiliary tables (sidecar / nested sidecar)
+
+Aux entries carry a placement taxonomy: **`sidecar`** for top-level aux
+(`dataset.sidecar/`, `segments/`, known top dirs) and **`nested_sidecar`** for
+aux living inside the main lance dir. Every nested lance dataset root (a dir
+with `_versions/`, at any depth — e.g.
+`dataset.lance/tag_datasets/<n>.lance/.../segment_tags.lance`) is discovered
+from the version's single object LIST at zero extra request cost: an existing
+aux entry whose path is a root is enriched in place, and deeper roots become
+their own entries named by relative path, with `dataset_path` pointing at the
+openable root. Lance aux entries get manifest-derived `row_count`/schema/writer
+stats (deep-stats-gated, manifest-only — no index loads). A version whose main
+lance dir holds only nested datasets stays `partial` (primary missing). The
+sample endpoint reads rows through `dataset_path` (lance) or the entry path
+(parquet, via DataFusion) — strictly read-only, clamped, and timeout-bounded.
+
 ### Aux format detection
 
 Aux directories (`segments/`, `dataset.sidecar/`, `curated_csv/`, `row_counts/`,

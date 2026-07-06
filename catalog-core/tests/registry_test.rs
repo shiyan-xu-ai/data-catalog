@@ -17,6 +17,12 @@ fn sample_entry(id: &str) -> TableEntry {
         role: "segments".to_string(),
         storage_bytes: 4096,
         fingerprint: None,
+        category: None,
+        dataset_path: None,
+        row_count: None,
+        schema_json: None,
+        lance_version: None,
+        writer_version: None,
     }];
     let version = TableVersion {
         version_id: "2026-06-26T12:00:00Z".to_string(),

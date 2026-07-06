@@ -276,6 +276,10 @@ async fn try_open_dataset(cfg: &SweepConfig, path: &ObjPath, deep: bool) -> Opti
     })
 }
 
+/// Placement taxonomy values for [`AuxEntry::category`].
+const CATEGORY_SIDECAR: &str = "sidecar";
+const CATEGORY_NESTED_SIDECAR: &str = "nested_sidecar";
+
 /// Build an aux entry for `path` from the pre-fetched object list: real recursive size plus
 /// detected format (and fingerprint for mixed/unknown). Pure — no IO.
 fn aux_entry_for(
@@ -283,6 +287,7 @@ fn aux_entry_for(
     objects: &[ObjectMeta],
     name: &str,
     path: &ObjPath,
+    category: &str,
 ) -> AuxEntry {
     let storage_bytes = bytes_under(objects, path);
     let (format, fingerprint) = detect_format(objects, path);
@@ -293,7 +298,55 @@ fn aux_entry_for(
         role: name.to_string(),
         storage_bytes,
         fingerprint,
+        category: Some(category.to_string()),
+        dataset_path: None,
+        row_count: None,
+        schema_json: None,
+        lance_version: None,
+        writer_version: None,
     }
+}
+
+/// Every lance dataset root strictly under `base`, found purely from the pre-fetched object
+/// list: any directory with a `_versions/` child is a dataset root, at ANY depth — which is how
+/// nested sidecar bundles (`dataset.lance/tag_datasets/<n>.lance/.../segment_tags.lance`) are
+/// surfaced without a single extra request. Sorted, deduplicated.
+fn lance_dataset_roots(objects: &[ObjectMeta], base: &ObjPath) -> Vec<ObjPath> {
+    let base_str = format!("{}/", base.as_ref().trim_end_matches('/'));
+    let mut roots = std::collections::BTreeSet::new();
+    for meta in objects {
+        let loc = meta.location.as_ref();
+        if !loc.starts_with(&base_str) {
+            continue;
+        }
+        if let Some(idx) = loc.find("/_versions/") {
+            let root = &loc[..idx];
+            if root.len() > base_str.len() {
+                roots.insert(root.to_string());
+            }
+        }
+    }
+    roots.into_iter().map(ObjPath::from).collect()
+}
+
+/// Open a lance-format aux dataset and fill the entry's manifest-derived stats. Aux stats are
+/// intentionally cheaper than the main dataset's: manifest-only row counts (no `count_rows`
+/// fallback) and no index loading.
+async fn enrich_lance_aux(cfg: &SweepConfig, entry: &mut AuxEntry, root: &ObjPath) {
+    let uri = cfg.uri_for(root);
+    let Ok(dataset) = Dataset::open(&uri).await else {
+        return;
+    };
+    let manifest = dataset.manifest();
+    if manifest.fragments.iter().all(|f| f.num_rows().is_some()) {
+        entry.row_count = Some(manifest.summary().total_rows);
+    }
+    entry.schema_json = schema_to_json(dataset.schema()).ok();
+    entry.lance_version = Some(manifest.version);
+    entry.writer_version = manifest
+        .writer_version
+        .as_ref()
+        .map(|w| format!("{}/{}", w.library, w.version));
 }
 
 /// One swept version plus where its wall time went, so a sweep can report the LIST-vs-Lance
@@ -409,7 +462,13 @@ pub async fn sweep_version(
             {
                 let child = main_path.clone().join(name.as_str());
                 other_aux_bytes += bytes_under(&objects, &child);
-                aux.push(aux_entry_for(cfg, &objects, name, &child));
+                aux.push(aux_entry_for(
+                    cfg,
+                    &objects,
+                    name,
+                    &child,
+                    CATEGORY_NESTED_SIDECAR,
+                ));
             }
         }
 
@@ -427,16 +486,29 @@ pub async fn sweep_version(
                 &objects,
                 TOP_LEVEL_SIDECAR_NAME,
                 sidecar_path,
+                CATEGORY_SIDECAR,
             ));
             for name in &inside_sidecar_names {
                 let child = main_path.clone().join(name.as_str());
-                aux.push(aux_entry_for(cfg, &objects, name, &child));
+                aux.push(aux_entry_for(
+                    cfg,
+                    &objects,
+                    name,
+                    &child,
+                    CATEGORY_NESTED_SIDECAR,
+                ));
             }
         } else {
             for name in &inside_sidecar_names {
                 let child = main_path.clone().join(name.as_str());
                 sidecar_bytes += bytes_under(&objects, &child);
-                aux.push(aux_entry_for(cfg, &objects, name, &child));
+                aux.push(aux_entry_for(
+                    cfg,
+                    &objects,
+                    name,
+                    &child,
+                    CATEGORY_NESTED_SIDECAR,
+                ));
             }
         }
 
@@ -483,7 +555,7 @@ pub async fn sweep_version(
     // silently dropped from the version's size accounting.
     for (name, path) in &leftovers {
         other_aux_bytes += bytes_under(&objects, path);
-        aux.push(aux_entry_for(cfg, &objects, name, path));
+        aux.push(aux_entry_for(cfg, &objects, name, path, CATEGORY_SIDECAR));
     }
 
     // Segments + other known top-level aux are independent of shape classification.
@@ -494,11 +566,12 @@ pub async fn sweep_version(
             &objects,
             TOP_LEVEL_SEGMENTS_NAME,
             segments_path,
+            CATEGORY_SIDECAR,
         ));
     }
     for (name, path) in &top_known_aux {
         other_aux_bytes += bytes_under(&objects, path);
-        aux.push(aux_entry_for(cfg, &objects, name, path));
+        aux.push(aux_entry_for(cfg, &objects, name, path, CATEGORY_SIDECAR));
     }
     // A top-level `dataset.sidecar/` with no valid main lance dir at all (main_dir is
     // None) still counts toward storage/aux even though there's nothing to dedup against.
@@ -510,9 +583,56 @@ pub async fn sweep_version(
                 &objects,
                 TOP_LEVEL_SIDECAR_NAME,
                 sidecar_path,
+                CATEGORY_SIDECAR,
             ));
         }
     }
+
+    // ── Nested lance datasets. Every dataset root under this version (any depth) is already
+    // visible in the object list. An existing aux entry whose path IS a root gets enriched in
+    // place; a root deeper than any entry (nested bundles like
+    // `dataset.lance/tag_datasets/<n>.lance/.../segment_tags.lance`) becomes its own entry,
+    // named by its path relative to the version dir. Byte-split buckets are untouched — a
+    // nested entry's bytes are a subset of its top dir's, by design. Category: roots under a
+    // main-candidate dir (`dataset.lance`-like) are `nested_sidecar`; the rest are `sidecar`.
+    // Opens are deep-gated like the main dataset's expensive stats.
+    let enrich_started = Instant::now();
+    let ts_prefix = format!("{}/", ts_path.as_ref().trim_end_matches('/'));
+    let candidate_names: Vec<&str> = candidates.iter().map(|(n, _)| n.as_str()).collect();
+    let main_root = main_dir.as_ref().map(|(_, p, _)| p.as_ref().to_string());
+    for root in lance_dataset_roots(&objects, ts_path) {
+        let root_str = root.as_ref().to_string();
+        if main_root.as_deref() == Some(root_str.as_str()) {
+            continue; // the main dataset, not aux
+        }
+        let rel = root_str
+            .strip_prefix(&ts_prefix)
+            .unwrap_or(root_str.as_str())
+            .to_string();
+        let top_segment = rel.split('/').next().unwrap_or_default();
+        let category = if candidate_names.contains(&top_segment) {
+            CATEGORY_NESTED_SIDECAR
+        } else {
+            CATEGORY_SIDECAR
+        };
+        let uri = cfg.uri_for(&root);
+        let entry = match aux.iter_mut().find(|a| a.path == uri) {
+            Some(existing) => {
+                existing.dataset_path = Some(uri.clone());
+                existing
+            }
+            None => {
+                let mut e = aux_entry_for(cfg, &objects, &rel, &root, category);
+                e.dataset_path = Some(uri.clone());
+                aux.push(e);
+                aux.last_mut().expect("just pushed")
+            }
+        };
+        if deep {
+            enrich_lance_aux(cfg, entry, &root).await;
+        }
+    }
+    open_ms += enrich_started.elapsed().as_millis() as u64;
 
     let storage_bytes_total = lance_core_bytes + sidecar_bytes + segments_bytes + other_aux_bytes;
 

@@ -28,6 +28,12 @@ export const auxEntrySchema = z.object({
   role: z.string().default(""),
   storage_bytes: z.number().default(0),
   fingerprint: z.string().nullable().default(null),
+  category: z.string().nullable().default(null),
+  dataset_path: z.string().nullable().default(null),
+  row_count: z.number().nullable().default(null),
+  schema_json: z.string().nullable().default(null),
+  lance_version: z.number().nullable().default(null),
+  writer_version: z.string().nullable().default(null),
 });
 export type AuxEntry = z.infer<typeof auxEntrySchema>;
 
