@@ -35,7 +35,7 @@ function groupByBucket(stats: StoragePrefixStat[]): BucketGroup[] {
 }
 
 function key(g: BucketGroup): string {
-  return `${g.bucket}:${g.region}`;
+  return `${g.region}:${g.bucket}`;
 }
 
 function StoragePage() {

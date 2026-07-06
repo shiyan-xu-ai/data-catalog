@@ -122,8 +122,14 @@ export const errorResponseSchema = z.object({
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
 
 // Namespaces
+export const namespaceRefSchema = z.object({
+  bucket: z.string(),
+  namespace: z.array(z.string()),
+});
+export type NamespaceRef = z.infer<typeof namespaceRefSchema>;
+
 export const listNamespacesResponseSchema = z.object({
-  namespaces: z.array(z.array(z.string())),
+  namespaces: z.array(namespaceRefSchema),
 });
 export type ListNamespacesResponse = z.infer<typeof listNamespacesResponseSchema>;
 

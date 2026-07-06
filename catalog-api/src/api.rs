@@ -124,17 +124,28 @@ impl ApiState {
 // Basic ops
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct ListNamespacesResponse {
-    namespaces: Vec<Vec<String>>,
+#[derive(Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+struct NamespaceRef {
+    bucket: String,
+    namespace: Vec<String>,
 }
 
-/// `ListNamespaces` -- distinct `namespace` values present on cataloged tables.
+#[derive(Debug, Serialize)]
+struct ListNamespacesResponse {
+    namespaces: Vec<NamespaceRef>,
+}
+
+/// `ListNamespaces` -- distinct `(bucket, namespace)` pairs present on cataloged tables. Each
+/// entry carries its bucket so the id `describe_namespace` expects (`bucket:prefix[:prefix...]`)
+/// can be reconstructed by callers.
 async fn list_namespaces(State(state): State<ApiState>) -> Json<ListNamespacesResponse> {
     let view = state.catalog.view().await;
-    let mut namespaces: Vec<Vec<String>> = view
+    let mut namespaces: Vec<NamespaceRef> = view
         .iter()
-        .map(|e| e.namespace.segments().to_vec())
+        .map(|e| NamespaceRef {
+            bucket: e.bucket.clone(),
+            namespace: e.namespace.segments().to_vec(),
+        })
         .collect();
     namespaces.sort();
     namespaces.dedup();

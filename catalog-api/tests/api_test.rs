@@ -379,6 +379,19 @@ async fn declare_accepts_only_ids_scoped_to_a_registered_namespace() {
     }
 }
 
+/// `list_namespaces` returns each distinct `(bucket, namespace)` pair, not bare namespace
+/// segments -- the bucket is required to build the composite id `describe_namespace` expects.
+#[tokio::test]
+async fn list_namespaces_carries_bucket_per_entry() {
+    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
+
+    let json = body_json(get(&app, "/v1/namespaces").await).await;
+    let namespaces = json["namespaces"].as_array().unwrap();
+    assert_eq!(namespaces.len(), 1);
+    assert_eq!(namespaces[0]["bucket"], "b1");
+    assert_eq!(namespaces[0]["namespace"], serde_json::json!(["ns1"]));
+}
+
 /// `describe_namespace`'s id is now `bucket:prefix[:prefix...]` (colon-split, not dot-split):
 /// the first segment is the bucket, the rest is the namespace prefix to match against entries.
 #[tokio::test]
