@@ -67,19 +67,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ubuntu-latest ships many GB of preinstalled toolchains (Android SDK,
-      # .NET, GHC, CodeQL) we never use. Reclaim them before the build so the
-      # linker has headroom — SIGBUS-on-link is commonly disk-mmap exhaustion.
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      - name: Show available disk space
-        run: df -h
+      # No disk reclaim step: CARGO_PROFILE_*_DEBUG=0 + lld keep artifacts small
+      # enough to build within the runner's stock free space. The "Disk space
+      # after build" step below is the standing guard — if headroom ever gets
+      # tight, add `jlumbroso/free-disk-space` back before the build.
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -123,6 +114,13 @@ jobs:
       # are no doctests in this workspace, so --all-targets skips nothing.
       - name: cargo test --workspace
         run: cargo test --workspace --all-targets
+
+      # Standing guard for the trimmed Free-disk-space step above: shows how much
+      # headroom the full build actually left. Runs even on failure so an ENOSPC
+      # is easy to diagnose.
+      - name: Disk space after build
+        if: always()
+        run: df -h /
 
   # The static frontend hand-mirrors the serde-serialized API shapes; typechecking + building it
   # in CI catches drift against those shapes. Lightweight and independent of the Rust build, so
