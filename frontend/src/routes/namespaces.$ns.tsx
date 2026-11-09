@@ -2,10 +2,9 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { describeNamespace, listTables } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { ErrorState } from "@/components/error-state";
 import { EmptyState } from "@/components/empty-state";
-import { formatBytes, ttlPolicyString } from "@/lib/format";
+import { formatBytes } from "@/lib/format";
 
 export const Route = createFileRoute("/namespaces/$ns")({
   component: NamespacePage,
@@ -72,7 +71,6 @@ function NamespacePage() {
                   <th className="px-3 py-2">Table</th>
                   <th className="px-3 py-2 text-right">Versions</th>
                   <th className="px-3 py-2 text-right">Size</th>
-                  <th className="px-3 py-2">TTL</th>
                 </tr>
               </thead>
               <tbody>
@@ -87,9 +85,6 @@ function NamespacePage() {
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">{t.versions.length}</td>
                       <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatBytes(total)}</td>
-                      <td className="px-3 py-2">
-                        {t.ttl_policy ? <Badge variant="secondary">{ttlPolicyString(t.ttl_policy)}</Badge> : <span className="text-muted-foreground">none</span>}
-                      </td>
                     </tr>
                   );
                 })}

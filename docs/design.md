@@ -1,5 +1,10 @@
 # Lance Data Catalog Service — Design Document (v3, consolidated)
 
+> Long-term design and historical implementation notes, not the current feature
+> contract. See [README.md](../README.md) and
+> [ARCHITECTURE.md](../ARCHITECTURE.md) for supported behavior. TTL, bucket
+> overview, and application identity features are not part of the current catalog.
+
 A custom data catalog service, implemented in Rust, that reports on and manages Lance tables — and their auxiliary sidecar tables — stored on S3. It provides table discovery, data inspection, manifest inspection, data profiling, lineage tracking, version management, retention/TTL control, cost analysis, self-monitoring, and an MCP interface for agents. It conforms to the Lance Namespace REST spec at the basic-operations tier and extends it with governance/reporting capabilities. It runs on Kubernetes, targets 10k QPS, and manages 10k+ tables.
 
 This supersedes the earlier v1 recap, v2 design, the conformance review, and the monitoring component — all corrections and additions are folded in here.
@@ -582,8 +587,8 @@ v1.0.0 concretizes this to a per-table API policy with hard-delete semantics:
 - `protected` flag exempts a version from TTL (API-set).
 
 The full TTL safety guidance (including the non-atomic audit-vs-registry
-write caveat and the partial-failure no-rollback behavior) is in
-[`docs/RUNBOOK-TTL.md`](RUNBOOK-TTL.md).
+write caveat and the partial-failure no-rollback behavior) belonged to the
+retired TTL runbook; this section is historical, not an operational procedure.
 
 ### Deployment & coordination model (§11, §12) — S3-only, no leader election
 

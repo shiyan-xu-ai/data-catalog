@@ -1,4 +1,3 @@
-import type { TtlPolicy } from "./schemas";
 import { getTz, type TzMode } from "./timezone";
 
 export function formatBytes(n: number | null | undefined): string {
@@ -58,14 +57,6 @@ export function nsToString(segments: string[]): string {
 /** Composite namespace id (`bucket:prefix[:prefix...]`) used by `describeNamespace`/`/namespaces/$ns`. */
 export function namespaceId(bucket: string, segments: string[]): string {
   return [bucket, ...segments].join(":");
-}
-
-export function ttlPolicyString(p: TtlPolicy | null | undefined): string {
-  if (!p) return "none";
-  const parts: string[] = [];
-  if (p.keep_last_n != null) parts.push(`keep last ${p.keep_last_n}`);
-  if (p.max_age_days != null) parts.push(`max age ${p.max_age_days}d`);
-  return parts.length ? parts.join(", ") : "none";
 }
 
 export function shapeLabel(s: string): string {

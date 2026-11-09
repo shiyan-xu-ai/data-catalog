@@ -1,8 +1,4 @@
 //! Registry Lance table: writer/reader for `TableEntry` rows.
-//!
-//! Nested fields (`namespace`, `ttl_policy`, `versions`, `aux_latest`) are JSON-encoded
-//! into `Utf8` columns rather than modeled as deep Arrow structs — kept minimal for this
-//! phase per the v1.0.0 plan.
 
 use std::sync::Arc;
 
@@ -12,7 +8,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use lance::dataset::{WriteMode, WriteParams};
 use lance::Dataset;
 
-use crate::types::{Namespace, TableEntry, TtlPolicy};
+use crate::types::{Namespace, TableEntry};
 
 fn registry_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -23,7 +19,6 @@ fn registry_schema() -> SchemaRef {
         Field::new("namespace_json", DataType::Utf8, false),
         Field::new("root_location", DataType::Utf8, false),
         Field::new("owner", DataType::Utf8, true),
-        Field::new("ttl_policy_json", DataType::Utf8, true),
         Field::new("last_synced", DataType::Utf8, true),
         Field::new("versions_json", DataType::Utf8, false),
         Field::new("aux_latest_json", DataType::Utf8, false),
@@ -50,13 +45,6 @@ fn entries_to_batch(entries: &[TableEntry]) -> Result<RecordBatch> {
         .map(|e| Some(e.root_location.as_str()))
         .collect();
     let owner: StringArray = entries.iter().map(|e| e.owner.as_deref()).collect();
-    let ttl_policy_json: StringArray = entries
-        .iter()
-        .map(|e| e.ttl_policy.as_ref().map(serde_json::to_string).transpose())
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("serialize ttl_policy")?
-        .into_iter()
-        .collect();
     let last_synced: StringArray = entries
         .iter()
         .map(|e| e.last_synced.map(|ts| ts.to_rfc3339()))
@@ -88,7 +76,6 @@ fn entries_to_batch(entries: &[TableEntry]) -> Result<RecordBatch> {
             Arc::new(namespace_json),
             Arc::new(root_location),
             Arc::new(owner),
-            Arc::new(ttl_policy_json),
             Arc::new(last_synced),
             Arc::new(versions_json),
             Arc::new(aux_latest_json),
@@ -121,7 +108,6 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
     let namespace_json = col("namespace_json")?;
     let root_location = col("root_location")?;
     let owner = col("owner")?;
-    let ttl_policy_json = col("ttl_policy_json")?;
     let last_synced = col("last_synced")?;
     let versions_json = col("versions_json")?;
     let aux_latest_json = col("aux_latest_json")?;
@@ -130,11 +116,6 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
     for i in 0..batch.num_rows() {
         let namespace: Namespace =
             serde_json::from_str(namespace_json.value(i)).context("deserialize namespace")?;
-        let ttl_policy: Option<TtlPolicy> = if ttl_policy_json.is_null(i) {
-            None
-        } else {
-            Some(serde_json::from_str(ttl_policy_json.value(i)).context("deserialize ttl_policy")?)
-        };
         let last_synced = if last_synced.is_null(i) {
             None
         } else {
@@ -167,7 +148,6 @@ fn batch_to_entries(batch: &RecordBatch) -> Result<Vec<TableEntry>> {
             } else {
                 Some(owner.value(i).to_string())
             },
-            ttl_policy,
             last_synced,
             versions,
             aux_latest,
@@ -215,8 +195,7 @@ pub async fn cleanup_registry(path: &str, older_than: chrono::Duration) -> Resul
 /// boot, before any sync has written it). Every other failure -- transient object-store
 /// errors, throttling, corrupt manifests, deserialization failures -- is propagated as `Err`.
 /// Callers MUST NOT treat an `Err` as "empty registry": doing so lets a transient read failure
-/// rebuild the registry from scratch, and because `write_registry` uses `WriteMode::Overwrite`
-/// that silently drops every table's API-assigned `owner`/`ttl_policy`/`protected` state.
+/// rebuild the derived snapshot from scratch and lose retained table metadata.
 pub async fn read_registry(path: &str) -> Result<Option<Vec<TableEntry>>> {
     let dataset = match Dataset::open(path).await {
         Ok(dataset) => dataset,

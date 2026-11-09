@@ -1175,13 +1175,11 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "chrono",
- "futures",
  "lance",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "uuid",
 ]
 
 [[package]]

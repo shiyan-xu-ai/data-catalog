@@ -9,7 +9,6 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as StorageRouteImport } from './routes/storage'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TablesIndexRouteImport } from './routes/tables.index'
 import { Route as NamespacesIndexRouteImport } from './routes/namespaces.index'
@@ -17,11 +16,6 @@ import { Route as NamespacesNsRouteImport } from './routes/namespaces.$ns'
 import { Route as TablesTableIdIndexRouteImport } from './routes/tables.$tableId.index'
 import { Route as TablesTableIdVersionsVersionIdRouteImport } from './routes/tables.$tableId.versions.$versionId'
 
-const StorageRoute = StorageRouteImport.update({
-  id: '/storage',
-  path: '/storage',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -56,7 +50,6 @@ const TablesTableIdVersionsVersionIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/storage': typeof StorageRoute
   '/namespaces/$ns': typeof NamespacesNsRoute
   '/namespaces/': typeof NamespacesIndexRoute
   '/tables/': typeof TablesIndexRoute
@@ -65,7 +58,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/storage': typeof StorageRoute
   '/namespaces/$ns': typeof NamespacesNsRoute
   '/namespaces': typeof NamespacesIndexRoute
   '/tables': typeof TablesIndexRoute
@@ -75,7 +67,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/storage': typeof StorageRoute
   '/namespaces/$ns': typeof NamespacesNsRoute
   '/namespaces/': typeof NamespacesIndexRoute
   '/tables/': typeof TablesIndexRoute
@@ -86,7 +77,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/storage'
     | '/namespaces/$ns'
     | '/namespaces/'
     | '/tables/'
@@ -95,7 +85,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/storage'
     | '/namespaces/$ns'
     | '/namespaces'
     | '/tables'
@@ -104,7 +93,6 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
-    | '/storage'
     | '/namespaces/$ns'
     | '/namespaces/'
     | '/tables/'
@@ -114,7 +102,6 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  StorageRoute: typeof StorageRoute
   NamespacesNsRoute: typeof NamespacesNsRoute
   NamespacesIndexRoute: typeof NamespacesIndexRoute
   TablesIndexRoute: typeof TablesIndexRoute
@@ -124,13 +111,6 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/storage': {
-      id: '/storage'
-      path: '/storage'
-      fullPath: '/storage'
-      preLoaderRoute: typeof StorageRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -178,7 +158,6 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  StorageRoute: StorageRoute,
   NamespacesNsRoute: NamespacesNsRoute,
   NamespacesIndexRoute: NamespacesIndexRoute,
   TablesIndexRoute: TablesIndexRoute,

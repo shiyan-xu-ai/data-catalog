@@ -45,7 +45,6 @@ struct SyncState {
     /// the whole set, writing all namespaces into the one registry snapshot.
     targets: Arc<Vec<SyncTarget>>,
     registry_path: String,
-    storage_scan_path: String,
     meta: catalog_store::MetaStore,
     catalog: Arc<Catalog>,
     /// Serializes syncs on this instance so a Cloud Scheduler double-fire doesn't run two at
@@ -58,7 +57,7 @@ struct SyncState {
 /// identity); this endpoint does no app-level auth.
 async fn run_sync_endpoint(State(s): State<SyncState>) -> axum::response::Response {
     let _guard = s.lock.lock().await;
-    match run_sync(&s.targets, &s.registry_path, &s.storage_scan_path, &s.meta).await {
+    match run_sync(&s.targets, &s.registry_path, &s.meta).await {
         Ok(report) => {
             s.catalog.invalidate().await;
             (StatusCode::OK, Json(report)).into_response()
@@ -124,26 +123,20 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
 
-    // The API's object-store handle for TTL hard-delete + sample reads is rooted at the first
-    // bucket, so `path_for`/`uri_for` resolve any of that bucket's version URIs.
     let first_bucket = &catalog_cfg.buckets[0];
     let sync_cfg = build_sync_config(&format!("s3://{}", first_bucket.name), &aws_opts)?;
     let meta = build_meta_store(&cfg.meta_base_uri, &aws_opts)?;
     let catalog = Catalog::new(cfg.registry_path.clone(), meta.clone(), cfg.cache_ttl);
 
-    let api_state = ApiState::new(
-        catalog.clone(),
-        meta.clone(),
+    let api_state = ApiState {
+        catalog: catalog.clone(),
+        meta: meta.clone(),
         sync_cfg,
-        cfg.ttl_audit_path.clone(),
-        cfg.storage_scan_path.clone(),
-        cfg.users_path.clone(),
-        catalog_cfg.clone(),
-    );
+        catalog_cfg,
+    };
     let sync_state = SyncState {
         targets: Arc::new(targets),
         registry_path: cfg.registry_path.clone(),
-        storage_scan_path: cfg.storage_scan_path.clone(),
         meta,
         catalog: catalog.clone(),
         lock: Arc::new(Mutex::new(())),

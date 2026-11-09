@@ -4,19 +4,13 @@ A Lance data catalog service: an S3-native metadata catalog for Lance tables,
 written in Rust (axum, the `lance` crate, `object_store`). It runs as a single
 stateless container on Applied's Apps Platform (Cloud Run).
 
-The service is regional: one deployment per region, colocated with that
-region's target buckets, declared in a committed [`catalog-config.yaml`](catalog-config.yaml)
-(region, buckets, each bucket's registered namespaces, admins — see
-[Catalog config](#catalog-config-catalog-configyaml)). The catalog is a
-curated allowlist within that scope: an operator registers the tables to track
-(`PUT /v1/table/:id`, id `<region>:<bucket>:<namespace>:<name>`), and the sync
-records per-version metadata (shape, storage size split by component, row
-count, schema, aux entries) for exactly those registered tables — from
-timestamp-path versioned Lance tables under each registered namespace — into a
-Lance-backed registry under `_catalog/`. Unregistered tables on S3 are ignored.
-A REST API exposes the catalog (basic ops + an enriched `/ext` listing,
-storage analysis, and user/identity endpoints) and a per-table TTL engine. A
-static SPA is served from the same origin as the API for browsing.
+The service is regional: one deployment per region, scoped to the buckets and
+namespaces in [`catalog-config.yaml`](catalog-config.yaml). An operator registers
+the tables to track (`PUT /v1/table/:id`, id
+`<region>:<bucket>:<namespace>:<name>`). Sync records timestamp-path versions,
+shape, per-component storage size, row counts, schemas, and auxiliary metadata
+for those tables in a Lance-backed registry. Unregistered tables are ignored.
+A REST API and same-origin React SPA expose the inventory.
 
 The full long-term design lives in [`docs/design.md`](docs/design.md). The
 as-built architecture is documented in [`ARCHITECTURE.md`](ARCHITECTURE.md).
@@ -31,11 +25,10 @@ lock). All catalog state lives on S3, split by how it is produced:
   sync re-derives the registered tables and writes the whole `_catalog/registry`
   Lance dataset **last-wins**, with no coordination: concurrent or double-fired
   syncs are safe.
-- **Authored state** — per-table `owner` + `ttl_policy` and per-version
-  `protected`. The only human-mutated data, stored as one small JSON object per
-  table at `_catalog/meta/<table_id>.json` and updated with object-store
-  conditional writes (ETag compare-and-set). A per-table object is its own
-  conflict domain, so S3 itself serializes concurrent edits — no app lock.
+- **Authored state** — registration and optional per-table `owner`, stored as
+  one JSON object per table at `_catalog/meta/<table_id>.json`. Conditional
+  writes (ETag compare-and-set) preserve concurrent owner updates. An empty
+  object still registers a table.
 
 A read merges the two back into the `TableEntry` wire shape the REST API and
 frontend expect. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full model.
@@ -44,25 +37,15 @@ frontend expect. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full model.
 
 Cargo workspace with three crates:
 
-- `catalog-core` — shared types (`TableEntry`, `TableVersion`, `TtlPolicy`,
-  `TtlAuditRecord`, `AuxEntry`, `Namespace`, `VersionShape`, `AuxFormat`,
-  `StoragePrefixStat`, `UserRecord`), the composite table-id parser/composer,
-  the Lance registry/storage-scan/users readers and writers, `aux_latest`
-  derivation, and the TTL eligibility computation.
-- `catalog-store` — object-store IO, the S3 sync (discovery, timestamp-path
-  version classification, shape detection, per-component size split, aux format
-  detection, pre+post cutoff layout handling), the TTL hard-delete helper, and
-  the authored-overlay ETag-CAS store (`MetaStore`).
-- `catalog-api` — the `catalog-api` binary: the axum HTTP server, the deployment
-  catalog config loader, the merged read model, the multi-bucket
-  request-triggered sync (with its storage-analysis tail), the IAP identity
-  middleware, and the TTL engine.
-
-Additional directories:
-
-- `frontend/` — vanilla TS + Vite static SPA (table list, drill-down, TTL
-  dry-run/apply/audit). Built into the container and served same-origin.
-- `docs/` — design doc, deploy + TTL runbooks.
+- `catalog-core` — shared table/version/auxiliary types, table-id handling,
+  and the Lance registry reader and writer.
+- `catalog-store` — object-store IO, version discovery, shape/size/auxiliary
+  classification, and per-table registration storage.
+- `catalog-api` — HTTP server, regional config, merged read view, auxiliary
+  sampling, and request-triggered sync.
+- `frontend/` — React + Vite SPA for registration, namespace/table/version
+  browsing, schemas, and auxiliary samples. Served from the API container.
+- `docs/` — architecture, design, and deployment documentation.
 
 ## Quickstart (run the API standalone)
 
@@ -88,9 +71,6 @@ export AWS_ALLOW_HTTP=true
 export AWS_VIRTUAL_HOSTED_STYLE_REQUEST=false
 
 CATALOG_REGISTRY_PATH=/tmp/catalog/registry.lance \
-CATALOG_TTL_AUDIT_PATH=/tmp/catalog/ttl_audit.lance \
-CATALOG_STORAGE_SCAN_PATH=/tmp/catalog/storage_scan.lance \
-CATALOG_USERS_PATH=/tmp/catalog/users.lance \
 CATALOG_META_BASE_URI=memory \
 CATALOG_WEBUI_DIR=frontend/dist \
 cargo run -p catalog-api
@@ -156,9 +136,6 @@ export AWS_VIRTUAL_HOSTED_STYLE_REQUEST=false
 export AWS_DEFAULT_REGION=us-phoenix-1
 export CATALOG_META_BASE_URI=memory
 export CATALOG_REGISTRY_PATH=/tmp/catalog/registry.lance
-export CATALOG_TTL_AUDIT_PATH=/tmp/catalog/ttl_audit.lance
-export CATALOG_STORAGE_SCAN_PATH=/tmp/catalog/storage_scan.lance
-export CATALOG_USERS_PATH=/tmp/catalog/users.lance
 
 # 3. verify BEFORE starting — must print the oracle endpoint, or the server
 #    will silently fall back to real AWS S3 and fail to find the bucket there.
@@ -178,9 +155,9 @@ curl -X POST localhost:8080/internal/jobs/sync
 curl localhost:8080/v1/table/us-phoenix-1:onroad-perception-datasets:scenario_dataset_export:<real-table-name>   # real versions come back
 ```
 
-**Safety:** `CATALOG_META_BASE_URI=memory` means registering a table writes
-nothing to the bucket, and the sync itself only ever does `LIST`/`GET` — never
-run `POST .../ttl/apply` against this (see [RUNBOOK-TTL.md](docs/RUNBOOK-TTL.md)); it hard-deletes real data.
+**Safety:** Source datasets are read-only. Registration and deregistration
+change catalog metadata, not source objects. `CATALOG_META_BASE_URI=memory`
+keeps registration state in memory for local testing.
 
 **Troubleshooting:**
 - `Address already in use (os error 98)` — a previous run is still listening on
@@ -191,8 +168,8 @@ run `POST .../ttl/apply` against this (see [RUNBOOK-TTL.md](docs/RUNBOOK-TTL.md)
   running. Re-run step 3 above to confirm, then fully restart (step 1) with all
   vars exported in the *same* shell you launch `cargo run` from — a different
   terminal tab won't have them.
-- Always set `CATALOG_REGISTRY_PATH`/`CATALOG_TTL_AUDIT_PATH` explicitly (e.g.
-  under `/tmp`). Left at their defaults (`_catalog/registry`, relative to the
+- Always set `CATALOG_REGISTRY_PATH` explicitly (e.g. under `/tmp`). Left at
+  its default (`_catalog/registry`, relative to the
   working directory), a run from the repo root writes a Lance dataset into the
   checkout itself.
 
@@ -205,15 +182,12 @@ authoritative source). Defaults suit local dev / tests.
 |---|---|---|
 | `PORT` | — | Injected by Cloud Run; when set, the server binds `0.0.0.0:$PORT`. |
 | `CATALOG_BIND_ADDR` | `0.0.0.0:8080` | Bind address when `PORT` is unset. |
-| `CATALOG_CONFIG_PATH` | `catalog-config.yaml` | Path to the deployment-scoped catalog config (region, buckets, namespaces, admins) — see [Catalog config](#catalog-config-catalog-configyaml) below. |
+| `CATALOG_CONFIG_PATH` | `catalog-config.yaml` | Deployment-scoped region, buckets, and namespaces. |
 | `CATALOG_REGISTRY_PATH` | `_catalog/registry` | URI (or path) of the derived-snapshot Lance dataset. |
-| `CATALOG_TTL_AUDIT_PATH` | `_catalog/ttl_audit` | URI (or path) of the TTL audit Lance dataset. |
-| `CATALOG_STORAGE_SCAN_PATH` | `_catalog/storage_scan` | URI (or path) of the storage-analysis Lance dataset (the sync's storage tail). |
-| `CATALOG_USERS_PATH` | `_catalog/users` | URI (or path) of the recorded-users Lance dataset. |
 | `CATALOG_META_BASE_URI` | `memory` | Base of the authored overlay objects: `memory` (in-memory, non-persistent) or `s3://bucket/prefix` (S3/MinIO). A plain filesystem path is rejected — the overlay needs conditional writes. |
 | `CATALOG_CACHE_TTL_SECS` | `5` | How long the merged read view is served before it revalidates against storage. |
 | `CATALOG_SYNC_CONCURRENCY` | `16` | How many versions the sync processes concurrently (in-flight LISTs + Lance dataset opens). |
-| `CATALOG_SYNC_DEEP_STATS` | `all` | Which versions get the extra-IO Lance stats (`load_indices`, and the `count_rows` fallback when a manifest lacks per-fragment row counts): `all`, `latest` (each table's newest version only), or `none`. Shape/TTL-safety classification is identical in every mode; skipped versions just report `num_indices: null`. |
+| `CATALOG_SYNC_DEEP_STATS` | `all` | Extra-IO Lance stats for `all`, `latest`, or `none` of the newly processed versions. Skipped index counts and fallback row counts may be null; shape classification is unchanged. |
 | `CATALOG_WEBUI_DIR` | `frontend/dist` | Directory of the built SPA to serve at `/`. Absent → API-only. |
 | `CATALOG_SECRET_PREFIX` | `K_SERVICE` | Secret Manager name prefix for AWS credentials (Cloud Run sets `K_SERVICE` to the service name). |
 
@@ -232,10 +206,7 @@ serves, and its scope — region, buckets, and each bucket's registered
 namespace prefixes — is declared in a committed YAML file, baked into the
 image (path overridable via `CATALOG_CONFIG_PATH`). An operator changes scope
 (adds a bucket, adds a namespace) with a PR + redeploy, not a runtime config
-flip. `admins` is a plain email allowlist overlaid onto recorded users at read time
-(never persisted per-user) — see [`GET /ext/v1/users`](#rest-api-surface) and
-[`GET /ext/v1/me`](#rest-api-surface). The repo-root
-[`catalog-config.yaml`](catalog-config.yaml) currently declares:
+flip. The repo-root [`catalog-config.yaml`](catalog-config.yaml) currently declares:
 
 ```yaml
 region: us-phoenix-1
@@ -245,8 +216,6 @@ buckets:
     namespaces:
       - scenario_dataset_export
 
-admins:
-  - shiyan.xu@applied.co
 ```
 
 Table ids are region-first composites, `<region>:<bucket>:<namespace>:<name>`
@@ -268,23 +237,27 @@ table by S3's conditional writes.
 - `GET /v1/namespaces/:id` — describe a namespace (id is `:`-joined `bucket:prefix[:prefix...]`).
 - `GET /v1/tables` — list table ids.
 - `GET /v1/table/:id` — describe a table (full `TableEntry`).
-- `PUT /v1/table/:id` — register a table (set `owner`/`ttl_policy`; idempotent). Registering adds it to the synced set; its versions appear on the next sync. `:id`'s `(bucket, namespace)` must be declared in `catalog-config.yaml`.
+- `PUT /v1/table/:id` — register a table and optionally set `owner` (idempotent). Its versions appear on the next sync. Its region, bucket, and namespace must match `catalog-config.yaml`.
 - `DELETE /v1/table/:id` — deregister (deletes the authored overlay). The table leaves the synced set and the next sync drops its derived entry. S3 data is untouched.
 - `GET /ext/v1/tables?expand=...` — enriched listing (full detail; no pagination).
-- `GET /ext/v1/storage` — the current bucket-storage breakdown from the sync's storage-analysis tail (registered namespaces sized from the registry; other top-level prefixes reported unexplored).
-- `GET /ext/v1/me` — the caller's identity as seen by IAP, with its role resolved against `catalog-config.yaml`'s `admins` list.
-- `GET /ext/v1/users` — users recorded by the identity layer, with `role` overlaid from `admins` at read time.
 - `GET /ext/v1/tables/:id/versions/:vid` — single version detail.
 - `GET /ext/v1/tables/:id/versions/:vid/aux/sample?name=&limit=` — read up to 100 sample rows from an auxiliary table (lance via the lance scanner, parquet dirs via DataFusion; read-only).
-- `PUT /ext/v1/tables/:id/versions/:vid/protect` — set/clear a version's TTL-exempt `protected` flag.
-- `GET /ext/v1/tables/:id/ttl/dryrun` — list TTL-eligible versions + reclaimable bytes (read-only).
-- `POST /ext/v1/tables/:id/ttl/apply` — hard-delete eligible versions (irreversible, audited).
-- `GET /ext/v1/tables/:id/ttl/audit` — read a table's TTL audit log.
 - `POST /internal/jobs/sync` — run one sync pass. Triggered by Cloud Scheduler; idempotent under retry/double-fire.
+
+## Stats freshness
+
+Stats use a **pull model**. Cloud Scheduler or an operator calls the sync
+endpoint; the catalog lists object storage and reads Lance metadata. Writers
+do not push stats, and browsing does not trigger a source-data sync.
+New versions appear after a successful sync. Clean versions are carried forward
+under the assumption that timestamp directories are immutable; modifying an
+existing clean version in place can leave its stats stale. Partial versions
+are retried. Changing the deep-stats setting does not force a rescan of carried
+versions. The read cache's five-second default is separate from sync freshness.
 
 ## Observability
 
-Structured JSON logs (sync summaries, per-table sync failures, TTL outcomes)
+Structured JSON logs (sync summaries and per-table sync failures)
 go to stdout for Cloud Logging. HTTP request/latency (RED) metrics come from
 Cloud Run's built-in Cloud Monitoring; there is no Prometheus endpoint.
 `RUST_LOG` tunes log verbosity (default `info`, with Lance's per-operation

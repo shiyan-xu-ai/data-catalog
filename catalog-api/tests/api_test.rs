@@ -5,9 +5,8 @@
 //! the sync in production, seeded here) plus an authored overlay ([`catalog_store::MetaStore`])
 //! backed by `InMemory` -- object-store conditional writes (ETag CAS) are the whole point of the
 //! overlay, and `LocalFileSystem` doesn't implement them, so the overlay must be `InMemory` in
-//! tests while the sync/TTL data path stays on `LocalFileSystem`.
+//! tests while the sync data path stays on `LocalFileSystem`.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,13 +16,10 @@ use axum::Router;
 use catalog_api_lib::api::{api_router, ApiState};
 use catalog_api_lib::catalog::Catalog;
 use catalog_api_lib::catalog_config::CatalogConfig;
-use catalog_core::{
-    AuxEntry, AuxFormat, Namespace, TableEntry, TableVersion, TtlPolicy, VersionShape,
-};
-use catalog_store::{MetaStore, SyncConfig, TableMeta};
+use catalog_core::{AuxEntry, AuxFormat, Namespace, TableEntry, TableVersion, VersionShape};
+use catalog_store::{MetaStore, TableMeta};
 use chrono::{TimeZone, Utc};
 use http_body_util::BodyExt;
-use object_store::local::LocalFileSystem;
 use object_store::memory::InMemory;
 use object_store::path::Path as ObjPath;
 use tower::ServiceExt;
@@ -45,8 +41,6 @@ fn fixture_version(id: &str) -> TableVersion {
         snapshot_path: format!("s3://bucket/smoke_test/{id}"),
         shape: VersionShape::Full,
         partial: false,
-        // Derived snapshot never carries protection; it comes from the overlay at merge time.
-        protected: false,
         storage_bytes_total: 100,
         object_count: None,
         lance_core_bytes: 60,
@@ -87,50 +81,20 @@ fn fixture_entry() -> TableEntry {
         namespace: Namespace::new(["ns1"]),
         root_location: "s3://bucket/smoke_test".to_string(),
         owner: None,
-        ttl_policy: None,
         last_synced: Some(Utc.with_ymd_and_hms(2026, 6, 26, 12, 0, 0).unwrap()),
         versions: vec![version.clone()],
         aux_latest: version.aux,
     }
 }
 
-/// Build a test app: a fresh Lance registry snapshot on disk seeded with `entries` (the derived
-/// state the sync produces) plus an `InMemory` authored overlay seeded with `overlays` (the
-/// owner/ttl_policy/protected the API mutates). `cache_ttl` is zero so every read revalidates
-/// against storage -- read-your-writes is deterministic without depending on cache timing. The
-/// `sync_cfg` points at a throwaway, never-populated sync root, fine for every test except TTL
-/// `apply`, which uses `test_app_with_sync_cfg` so it can seed real objects to delete.
+/// Build a test app with a derived snapshot on disk and in-memory registration metadata.
+/// The zero cache lifetime makes read-your-writes independent of cache timing.
 async fn test_app(
     entries: Vec<TableEntry>,
     overlays: Vec<(&str, TableMeta)>,
 ) -> (Router, tempfile::TempDir, tempfile::TempDir) {
     let sync_dir = tempfile::tempdir().unwrap();
     let sync_cfg = common::sync_config(sync_dir.path());
-    let (app, _ttl_audit, reg_dir) = test_app_with_sync_cfg(entries, overlays, sync_cfg).await;
-    (app, reg_dir, sync_dir)
-}
-
-/// Like `test_app`, but the caller supplies (and keeps alive) the `SyncConfig` wired into
-/// `ApiState` -- needed by the TTL `apply` test, which seeds real objects into the same object
-/// store `ttl_apply` deletes from. Returns the audit-log path so the test can read it back.
-async fn test_app_with_sync_cfg(
-    entries: Vec<TableEntry>,
-    overlays: Vec<(&str, TableMeta)>,
-    sync_cfg: SyncConfig,
-) -> (Router, String, tempfile::TempDir) {
-    let (router, ttl_audit_path, _storage_scan_path, dir) =
-        test_app_with_sync_cfg_and_storage(entries, overlays, sync_cfg).await;
-    (router, ttl_audit_path, dir)
-}
-
-/// Like `test_app_with_sync_cfg`, but also returns the `_catalog/storage_scan` path so a test can
-/// seed/read it directly (the storage endpoint test needs this; every other caller ignores it via
-/// `test_app_with_sync_cfg`).
-async fn test_app_with_sync_cfg_and_storage(
-    entries: Vec<TableEntry>,
-    overlays: Vec<(&str, TableMeta)>,
-    sync_cfg: SyncConfig,
-) -> (Router, String, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let registry_path = dir
         .path()
@@ -141,37 +105,19 @@ async fn test_app_with_sync_cfg_and_storage(
     catalog_core::write_registry(&registry_path, &entries)
         .await
         .unwrap();
-    let ttl_audit_path = dir
-        .path()
-        .join("ttl_audit.lance")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let storage_scan_path = dir
-        .path()
-        .join("storage_scan.lance")
-        .to_str()
-        .unwrap()
-        .to_string();
-    let users_path = dir.path().join("users.lance").to_str().unwrap().to_string();
-
     let meta = MetaStore::new(Arc::new(InMemory::new()), ObjPath::from("_catalog/meta"));
     for (id, tm) in overlays {
         meta.mutate_meta(id, |m| *m = tm.clone()).await.unwrap();
     }
-
     let catalog = Catalog::new(registry_path, meta.clone(), Duration::ZERO);
-    let catalog_cfg = Arc::new(test_catalog_config());
-    let state = ApiState::new(
+    let state = ApiState {
         catalog,
         meta,
         sync_cfg,
-        ttl_audit_path.clone(),
-        storage_scan_path.clone(),
-        users_path,
-        catalog_cfg,
-    );
-    (api_router(state), ttl_audit_path, storage_scan_path, dir)
+        catalog_cfg: Arc::new(test_catalog_config()),
+    };
+    let app = api_router(state);
+    (app, dir, sync_dir)
 }
 
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
@@ -182,24 +128,6 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 async fn get(app: &Router, uri: &str) -> axum::response::Response {
     app.clone()
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
-        .await
-        .unwrap()
-}
-
-async fn get_with_header(
-    app: &Router,
-    uri: &str,
-    header: &str,
-    value: &str,
-) -> axum::response::Response {
-    app.clone()
-        .oneshot(
-            Request::builder()
-                .uri(uri)
-                .header(header, value)
-                .body(Body::empty())
-                .unwrap(),
-        )
         .await
         .unwrap()
 }
@@ -273,8 +201,7 @@ async fn declare_table_writes_owner_to_overlay_and_is_visible_immediately() {
 async fn bare_put_registers_a_table_with_no_body_and_rejects_malformed_json() {
     let (app, _r, _s) = test_app(vec![], vec![]).await;
 
-    // A bare PUT (no body, no content-type) registers the table with no owner/policy — the
-    // primary "add this table to the allowlist" action must not require a JSON envelope.
+    // A bare PUT registers the table without requiring a JSON envelope.
     let resp = app
         .clone()
         .oneshot(
@@ -409,7 +336,6 @@ async fn deregister_clears_authored_overlay_but_keeps_the_derived_entry() {
         "r1:b1:ns1:smoke_test",
         TableMeta {
             owner: Some("raymond".into()),
-            ..Default::default()
         },
     );
     let (app, _r, _s) = test_app(vec![fixture_entry()], vec![overlay]).await;
@@ -466,247 +392,6 @@ async fn ext_get_version_returns_detail_and_404s_for_unknown_version() {
     let resp = get(&app, "/ext/v1/tables/r1:b1:ns1:smoke_test/versions/nope").await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(body_json(resp).await["error_code"], 11);
-}
-
-#[tokio::test]
-async fn protect_endpoint_writes_the_flag_to_the_overlay_and_it_merges_into_the_view() {
-    let (app, _r, _s) = test_app(vec![fixture_entry()], vec![]).await;
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/ext/v1/tables/r1:b1:ns1:smoke_test/versions/2026-06-26T12:00:00Z/protect")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"protected":true}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["protected"], true);
-
-    let json = body_json(
-        get(
-            &app,
-            "/ext/v1/tables/r1:b1:ns1:smoke_test/versions/2026-06-26T12:00:00Z",
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(json["protected"], true);
-}
-
-/// Build a TTL fixture `TableVersion` whose `snapshot_path` resolves (via `sync_cfg.uri_for`)
-/// to `<table>/<ts_dir>` in `sync_cfg`'s backing object store -- so `ttl_apply`'s
-/// `path_for(snapshot_path)` round-trips back to the real prefix a test seeded objects under.
-fn ttl_fixture_version(
-    sync_cfg: &SyncConfig,
-    table: &str,
-    ts_dir: &str,
-    days_ago: i64,
-    shape: VersionShape,
-) -> TableVersion {
-    let ts = Utc::now() - chrono::Duration::days(days_ago);
-    let snapshot_path = sync_cfg.uri_for(&ObjPath::from(format!("{table}/{ts_dir}")));
-    TableVersion {
-        version_id: ts_dir.to_string(),
-        timestamp: ts,
-        snapshot_path,
-        shape,
-        partial: !matches!(shape, VersionShape::Full),
-        protected: false,
-        storage_bytes_total: 10,
-        object_count: None,
-        lance_core_bytes: 10,
-        sidecar_bytes: 0,
-        segments_bytes: 0,
-        other_aux_bytes: 0,
-        row_count: None,
-        num_fragments: None,
-        schema_json: None,
-        num_indices: None,
-        lance_version: None,
-        writer_version: None,
-        aux: Vec::new(),
-        synced_at: ts,
-    }
-}
-
-/// The overlay a TTL test seeds: the authored policy plus the protected version id. `eligible_under`
-/// reads the policy and protection from the fresh overlay, so both must live here, not on the
-/// derived snapshot entry.
-fn ttl_overlay(protected: &str) -> TableMeta {
-    TableMeta {
-        ttl_policy: Some(TtlPolicy {
-            keep_last_n: Some(1),
-            max_age_days: Some(30),
-        }),
-        protected: BTreeSet::from([protected.to_string()]),
-        ..Default::default()
-    }
-}
-
-async fn write_fake_object(store: &LocalFileSystem, path: &str, content: &[u8]) {
-    use object_store::{ObjectStoreExt, PutPayload};
-    store
-        .put(&ObjPath::from(path), PutPayload::from(content.to_vec()))
-        .await
-        .expect("write fake object");
-}
-
-#[tokio::test]
-async fn ttl_dryrun_returns_candidates_and_reclaimable_bytes_for_a_mixed_fixture() {
-    let sync_root_dir = tempfile::tempdir().unwrap();
-    let sync_cfg = common::sync_config(sync_root_dir.path());
-
-    let eligible_old = ttl_fixture_version(
-        &sync_cfg,
-        "t1",
-        "2020-01-01T00-00-00",
-        2000,
-        VersionShape::Full,
-    );
-    let recent = ttl_fixture_version(
-        &sync_cfg,
-        "t1",
-        "2026-07-01T00-00-00",
-        1,
-        VersionShape::Full,
-    );
-    let protected_old = ttl_fixture_version(
-        &sync_cfg,
-        "t1",
-        "2020-06-01T00-00-00",
-        1900,
-        VersionShape::Full,
-    );
-    let partial_old = ttl_fixture_version(
-        &sync_cfg,
-        "t1",
-        "2019-01-01T00-00-00",
-        2500,
-        VersionShape::LanceOnlyPartial,
-    );
-
-    let entry = TableEntry {
-        id: "r1:b1:ns1:t1".to_string(),
-        name: "t1".to_string(),
-        region: "r1".to_string(),
-        bucket: "b1".to_string(),
-        namespace: Namespace::new(["ns1"]),
-        root_location: "whatever".to_string(),
-        owner: None,
-        ttl_policy: None,
-        last_synced: None,
-        versions: vec![
-            eligible_old.clone(),
-            recent.clone(),
-            protected_old.clone(),
-            partial_old.clone(),
-        ],
-        aux_latest: Vec::new(),
-    };
-    let overlay = ("r1:b1:ns1:t1", ttl_overlay(&protected_old.version_id));
-
-    let (app, _ttl_audit, _dir) =
-        test_app_with_sync_cfg(vec![entry], vec![overlay], sync_cfg).await;
-
-    let resp = get(&app, "/ext/v1/tables/r1:b1:ns1:t1/ttl/dryrun").await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    // Only `eligible_old` clears both thresholds; `recent` is within keep_last_n, `protected_old`
-    // is exempt via the overlay, and `partial_old`'s shape fails the safety gate.
-    assert_eq!(
-        json["candidates"],
-        serde_json::json!([eligible_old.version_id])
-    );
-    assert_eq!(json["reclaimable_bytes"], eligible_old.storage_bytes_total);
-}
-
-/// TTL apply is not implemented: it must report 501 and leave S3, the view, and the audit log
-/// completely untouched, even when a version is genuinely eligible under the policy.
-#[tokio::test]
-async fn ttl_apply_is_not_implemented_and_deletes_nothing() {
-    let sync_root_dir = tempfile::tempdir().unwrap();
-    let store = LocalFileSystem::new_with_prefix(sync_root_dir.path()).unwrap();
-    let sync_cfg = common::sync_config(sync_root_dir.path());
-
-    write_fake_object(
-        &store,
-        "t1/2020-01-01T00-00-00/dataset.lance/_versions/1.manifest",
-        b"old",
-    )
-    .await;
-
-    let eligible_old = ttl_fixture_version(
-        &sync_cfg,
-        "t1",
-        "2020-01-01T00-00-00",
-        2000,
-        VersionShape::Full,
-    );
-
-    let entry = TableEntry {
-        id: "r1:b1:ns1:t1".to_string(),
-        name: "t1".to_string(),
-        region: "r1".to_string(),
-        bucket: "b1".to_string(),
-        namespace: Namespace::new(["ns1"]),
-        root_location: "whatever".to_string(),
-        owner: None,
-        ttl_policy: None,
-        last_synced: None,
-        versions: vec![eligible_old.clone()],
-        aux_latest: Vec::new(),
-    };
-
-    let (app, ttl_audit_path, _dir) =
-        test_app_with_sync_cfg(vec![entry], vec![], sync_cfg.clone()).await;
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/ext/v1/tables/r1:b1:ns1:t1/ttl/apply")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
-    let json = body_json(resp).await;
-    assert!(json["message"]
-        .as_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("not implemented"));
-
-    // The "eligible" version's objects are untouched.
-    let prefix = sync_cfg.path_for(&eligible_old.snapshot_path).unwrap();
-    let bytes = catalog_store::recursive_bytes(sync_cfg.store.as_ref(), &prefix)
-        .await
-        .unwrap();
-    assert!(bytes > 0, "apply must not delete any objects");
-
-    // The view still lists the version untouched.
-    let json = body_json(get(&app, "/v1/table/r1:b1:ns1:t1").await).await;
-    let version_ids: Vec<String> = json["versions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v["version_id"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(version_ids, vec![eligible_old.version_id.clone()]);
-
-    // No audit record is ever written.
-    let audit = catalog_core::read_ttl_audit(&ttl_audit_path).await.unwrap();
-    assert!(
-        audit.unwrap_or_default().is_empty(),
-        "apply must never write an audit record"
-    );
 }
 
 /// The aux sample endpoint: lance aux scans its dataset_path, parquet aux dirs scan via
@@ -831,127 +516,59 @@ async fn aux_sample_endpoint_reads_lance_and_parquet_and_rejects_others() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// `GET /ext/v1/storage` serves whatever the sync's storage-analysis tail last wrote, and `[]`
-/// before any scan has ever run.
 #[tokio::test]
-async fn ext_storage_endpoint_returns_scanned_stats_and_empty_before_any_scan() {
-    let sync_dir = tempfile::tempdir().unwrap();
-    let sync_cfg = common::sync_config(sync_dir.path());
-    let (app, _ttl_audit, storage_scan_path, _dir) =
-        test_app_with_sync_cfg_and_storage(vec![], vec![], sync_cfg).await;
-
-    // No scan has run yet: the dataset doesn't exist, so the endpoint reports an empty list
-    // rather than erroring.
-    let resp = get(&app, "/ext/v1/storage").await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await, serde_json::json!([]));
-
-    let scanned_at = Utc.with_ymd_and_hms(2026, 7, 5, 0, 0, 0).unwrap();
-    let stats = vec![
-        catalog_core::StoragePrefixStat {
-            region: "r1".to_string(),
-            bucket: "b1".to_string(),
-            prefix: "ns1".to_string(),
-            registered: true,
-            bytes: Some(1024),
-            objects: Some(3),
-            table_count: Some(1),
-            scanned_at,
-        },
-        catalog_core::StoragePrefixStat {
-            region: "r1".to_string(),
-            bucket: "b1".to_string(),
-            prefix: "junk".to_string(),
-            registered: false,
-            bytes: None,
-            objects: None,
-            table_count: None,
-            scanned_at,
-        },
-    ];
-    catalog_core::write_storage_stats(&storage_scan_path, &stats)
-        .await
-        .unwrap();
-
-    let resp = get(&app, "/ext/v1/storage").await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let json = body_json(resp).await;
-    let prefixes: Vec<&str> = json
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|s| s["prefix"].as_str().unwrap())
-        .collect();
-    assert_eq!(prefixes.len(), 2);
-    assert!(prefixes.contains(&"ns1"));
-    assert!(prefixes.contains(&"junk"));
-}
-
-/// `CatalogConfig` fixture whose admin list contains `boss@x.co`, for the identity/me/users test.
-fn admin_catalog_config() -> CatalogConfig {
-    let yaml = "region: r1\nbuckets:\n  - name: b1\n    namespaces: [ns1]\nadmins: [boss@x.co]\n";
-    serde_yaml::from_str(yaml).unwrap()
-}
-
-/// The identity middleware maps the IAP header to `/me`, resolves the role against the admin list,
-/// records the sighting into the users table, and `/ext/v1/users` lists it with the role overlaid.
-#[tokio::test]
-async fn me_reflects_iap_header_and_admin_list_and_users_endpoint_lists_seen_users() {
-    let dir = tempfile::tempdir().unwrap();
-    let registry_path = dir
-        .path()
-        .join("registry.lance")
-        .to_str()
-        .unwrap()
-        .to_string();
-    catalog_core::write_registry(&registry_path, &[])
-        .await
-        .unwrap();
-    let users_path = dir.path().join("users.lance").to_str().unwrap().to_string();
-    let sync_dir = tempfile::tempdir().unwrap();
-    let sync_cfg = common::sync_config(sync_dir.path());
-
-    let meta = MetaStore::new(Arc::new(InMemory::new()), ObjPath::from("_catalog/meta"));
-    let catalog = Catalog::new(registry_path, meta.clone(), Duration::ZERO);
-    let state = ApiState::new(
-        catalog,
-        meta,
-        sync_cfg,
-        dir.path().join("ttl_audit.lance").to_str().unwrap().into(),
-        dir.path()
-            .join("storage_scan.lance")
-            .to_str()
-            .unwrap()
-            .into(),
-        users_path,
-        Arc::new(admin_catalog_config()),
-    );
-    let app = api_router(state);
-
-    // Anonymous: no IAP header -> null email, viewer role.
-    let anon = body_json(get(&app, "/ext/v1/me").await).await;
-    assert_eq!(anon["email"], serde_json::Value::Null);
-    assert_eq!(anon["role"], "viewer");
-
-    // With the IAP header: the `accounts.google.com:` prefix is stripped and the email lowercased;
-    // `boss@x.co` is an admin per the fixture.
-    let me = body_json(
-        get_with_header(
-            &app,
-            "/ext/v1/me",
-            "x-goog-authenticated-user-email",
-            "accounts.google.com:Boss@x.co",
-        )
-        .await,
+async fn retired_catalog_features_are_not_exposed() {
+    let (app, _registry, _sync) = test_app(
+        vec![fixture_entry()],
+        vec![("r1:b1:ns1:smoke_test", TableMeta::default())],
     )
     .await;
-    assert_eq!(me["email"], "boss@x.co");
-    assert_eq!(me["role"], "admin");
+    for (method, uri) in [
+        ("GET", "/ext/v1/storage"),
+        ("GET", "/ext/v1/me"),
+        ("GET", "/ext/v1/users"),
+        ("GET", "/ext/v1/tables/r1:b1:ns1:smoke_test/ttl/dryrun"),
+        ("GET", "/ext/v1/tables/r1:b1:ns1:smoke_test/ttl/audit"),
+        ("POST", "/ext/v1/tables/r1:b1:ns1:smoke_test/ttl/apply"),
+        (
+            "PUT",
+            "/ext/v1/tables/r1:b1:ns1:smoke_test/versions/2026-06-26T12:00:00Z/protect",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+}
 
-    // The request above recorded the user via a spawned write; give it a beat to land.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let users = body_json(get(&app, "/ext/v1/users").await).await;
-    assert_eq!(users.as_array().unwrap().len(), 1);
-    assert_eq!(users[0]["email"], "boss@x.co");
-    assert_eq!(users[0]["role"], "admin"); // overlaid from the admin list at read
+#[tokio::test]
+async fn api_misses_stay_404_when_the_spa_is_served() {
+    let (api, _registry, _sync) = test_app(vec![fixture_entry()], vec![]).await;
+    let ui = tempfile::tempdir().unwrap();
+    std::fs::write(ui.path().join("index.html"), "catalog app").unwrap();
+    let app = api.merge(catalog_api_lib::webui::router(ui.path().to_str().unwrap()).unwrap());
+
+    for uri in [
+        "/ext/v1/storage",
+        "/ext/v1/me",
+        "/ext/v1/users",
+        "/v1/unknown",
+    ] {
+        assert_eq!(
+            get(&app, uri).await.status(),
+            StatusCode::NOT_FOUND,
+            "{uri}"
+        );
+    }
+    assert_eq!(get(&app, "/v1/tables").await.status(), StatusCode::OK);
+    assert_eq!(get(&app, "/tables/example").await.status(), StatusCode::OK);
 }

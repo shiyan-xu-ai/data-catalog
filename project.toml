@@ -23,7 +23,6 @@ use_static_egress_ip = false
 # Non-secret runtime config. Adjust bucket names / region per environment.
 AWS_DEFAULT_REGION = "us-east-1"
 CATALOG_REGISTRY_PATH = "s3://catalog-staging-data/_catalog/registry"
-CATALOG_TTL_AUDIT_PATH = "s3://catalog-staging-data/_catalog/ttl_audit"
 CATALOG_META_BASE_URI = "s3://catalog-staging-data/_catalog/meta"
 RUST_LOG = "info"
 

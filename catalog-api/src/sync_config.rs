@@ -84,7 +84,7 @@ pub fn build_sync_config(root_uri: &str, extra_opts: &[(String, String)]) -> Res
 /// Build the sync targets for every registered namespace across all configured buckets: ONE
 /// object store per bucket (rooted at `s3://<bucket>`), cloned into one [`SyncTarget`] per
 /// namespace under that bucket. Each target's `cfg.root_path` is the namespace prefix path and
-/// its `cfg.root_uri` is `s3://<bucket>/<namespace>`, so `uri_for`/`path_for` resolve the same
+/// its `cfg.root_uri` is `s3://<bucket>/<namespace>`, so `uri_for` resolves the same
 /// on-store location. `extra_opts` are the Secret-Manager credentials appended to the `AWS_*`
 /// env options, exactly as [`build_sync_config`] does.
 pub fn build_sync_targets(

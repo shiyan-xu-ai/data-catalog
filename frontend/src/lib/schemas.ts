@@ -53,7 +53,6 @@ export const tableVersionSchema = z.object({
   snapshot_path: z.string(),
   shape: versionShapeSchema,
   partial: z.boolean().default(false),
-  protected: z.boolean().default(false),
   storage_bytes_total: z.number().default(0),
   lance_core_bytes: z.number().default(0),
   sidecar_bytes: z.number().default(0),
@@ -70,12 +69,6 @@ export const tableVersionSchema = z.object({
 });
 export type TableVersion = z.infer<typeof tableVersionSchema>;
 
-export const ttlPolicySchema = z.object({
-  keep_last_n: z.number().nullable().default(null),
-  max_age_days: z.number().nullable().default(null),
-});
-export type TtlPolicy = z.infer<typeof ttlPolicySchema>;
-
 export const tableEntrySchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -84,36 +77,11 @@ export const tableEntrySchema = z.object({
   namespace: z.array(z.string()),
   root_location: z.string(),
   owner: z.string().nullable(),
-  ttl_policy: ttlPolicySchema.nullable(),
   last_synced: z.string().nullable(),
   versions: z.array(tableVersionSchema),
   aux_latest: z.array(auxEntrySchema),
 });
 export type TableEntry = z.infer<typeof tableEntrySchema>;
-
-export const ttlAuditRecordSchema = z.object({
-  table_id: z.string(),
-  version_id: z.string(),
-  deleted_at: z.string(),
-  reclaimed_bytes: z.number().default(0),
-  policy_snapshot: ttlPolicySchema,
-  actor: z.string().default(""),
-});
-export type TtlAuditRecord = z.infer<typeof ttlAuditRecordSchema>;
-
-export const ttlDryRunResponseSchema = z.object({
-  table_id: z.string(),
-  candidates: z.array(z.string()),
-  reclaimable_bytes: z.number(),
-});
-export type TtlDryRunResponse = z.infer<typeof ttlDryRunResponseSchema>;
-
-export const ttlApplyResponseSchema = z.object({
-  table_id: z.string(),
-  deleted: z.array(z.string()),
-  reclaimed_bytes: z.number(),
-});
-export type TtlApplyResponse = z.infer<typeof ttlApplyResponseSchema>;
 
 export const errorResponseSchema = z.object({
   error_code: z.number(),
@@ -138,32 +106,3 @@ export const describeNamespaceResponseSchema = z.object({
   table_count: z.number(),
 });
 export type DescribeNamespaceResponse = z.infer<typeof describeNamespaceResponseSchema>;
-
-// Storage analysis
-export const storagePrefixStatSchema = z.object({
-  region: z.string(),
-  bucket: z.string(),
-  prefix: z.string(),
-  registered: z.boolean(),
-  bytes: z.number().nullable().default(null),
-  objects: z.number().nullable().default(null),
-  table_count: z.number().nullable().default(null),
-  scanned_at: z.string(),
-});
-export type StoragePrefixStat = z.infer<typeof storagePrefixStatSchema>;
-
-// Users / identity
-export const userSchema = z.object({
-  id: z.string(),
-  email: z.string(),
-  role: z.string(),
-  created_at: z.string(),
-  last_seen_at: z.string(),
-});
-export type CatalogUser = z.infer<typeof userSchema>;
-
-export const meResponseSchema = z.object({
-  email: z.string().nullable(),
-  role: z.string(),
-});
-export type MeResponse = z.infer<typeof meResponseSchema>;

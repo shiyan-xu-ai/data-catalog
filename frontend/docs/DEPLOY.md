@@ -1,6 +1,6 @@
 # Frontend
 
-The catalog frontend is a static SPA (vanilla TS + Vite). It is **built into the
+The catalog frontend is a React + Vite + TypeScript SPA. It is **built into the
 `catalog-api` container and served same-origin** — there is no separate frontend
 host or deploy step.
 
@@ -8,8 +8,8 @@ host or deploy step.
 
 The repo-root `Dockerfile` has a `frontend` build stage that runs
 `bun install --frozen-lockfile && bun run build`, producing `dist/` (an
-`index.html` + hashed JS/CSS assets; hash-based routing, so any deep link works
-without server rewrites). The runtime image copies `dist/` to `/app/webui` and
+`index.html` + hashed JS/CSS assets). The server falls back to `index.html` for
+SPA deep links. The runtime image copies `dist/` to `/app/webui` and
 the server serves it at `/` (`CATALOG_WEBUI_DIR`). Because the SPA calls the API
 at the same origin (default base `""`), no CORS configuration is needed. Deploy
 is just deploying the container — see
@@ -33,5 +33,5 @@ deploy avoids).
 bun run build      # tsc --noEmit && vite build → dist/
 ```
 
-The build typechecks against the hand-mirrored API shapes in `src/types.ts`, so
-it catches drift from the serde-serialized responses. CI runs this on every PR.
+The build checks the runtime schemas in `src/lib/schemas.ts` against their
+TypeScript callers. These hand-mirror the Rust API; CI builds the UI on frontend changes.

@@ -7,7 +7,3 @@ buckets:
   - name: onroad-perception-datasets
     namespaces:
       - scenario_dataset_export
-
-# Source of truth for the admin role (overlaid at read time; never persisted).
-admins:
-  - shiyan.xu@applied.co

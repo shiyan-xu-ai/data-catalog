@@ -9,10 +9,10 @@ Rust binary + bundled SPA).
 
 - The `apps-platform` CLI, authenticated (`apps-platform auth login`).
 - Docker (the Rust container is built with `--local`).
-- AWS credentials (access key id + secret) with `list` + `get` + `delete` on
-  every bucket declared in [`catalog-config.yaml`](../catalog-config.yaml) and
-  `get`/`put` on the `_catalog/` prefixes (the overlay needs conditional
-  `PutMode::Create`/`Update`, i.e. `If-None-Match`/`If-Match`).
+- AWS credentials (access key id + secret) with `list` + `get` on every source
+  bucket declared in [`catalog-config.yaml`](../catalog-config.yaml), and
+  `list`/`get`/`put`/`delete` on the catalog metadata prefix. Source data is
+  read-only; deleting a registration removes only its catalog JSON object.
 
 ## 1. Pick an environment
 
@@ -21,19 +21,15 @@ apps-platform app environment list
 apps-platform app environment use experimental-staging
 ```
 
-> The target buckets hold customer-derived perception data (vehicle data,
-> simulation results) and the TTL engine hard-deletes it — the platform's
-> sensitive-data policy flags this category as needing extra care on
-> `experimental`/`experimental-staging`. The `anaheim` and `internal`
-> environments are isolated from platform-team access for exactly this case;
-> request access before pointing `catalog-config.yaml` at a real bucket outside
-> local/scratch testing.
+> The target buckets hold customer-derived perception data. Use an environment
+> approved for that data and retain the platform's IAP/Trident access boundary.
+> The application has no user directory, roles, or identity middleware.
 
 ## 2. Review `catalog-config.yaml`
 
-[`catalog-config.yaml`](../catalog-config.yaml) (repo root, committed, baked
-into the image) declares this deployment's region, target buckets, each
-bucket's registered namespace prefixes, and the admin email list. The service
+[`catalog-config.yaml`](../catalog-config.yaml) (committed, baked into the image)
+declares the deployment's region, target buckets, and each bucket's namespace
+prefixes. The service
 is regional: it must run in the same region as the buckets it declares.
 Changing scope (a new bucket, a new namespace) is a PR + redeploy, not a
 runtime config flip — review it before every deploy to a new environment, and
@@ -43,9 +39,8 @@ confirm the region matches the target Cloud Run environment.
 
 [`project.toml`](../project.toml) sets the service name (`lance-catalog`),
 `enable_secrets = true`, Cloud Run resources, and the non-secret runtime config
-(`[cloudrun.env_vars]`: registry/audit/storage-scan/users/meta URIs, AWS
-region, `RUST_LOG`). By default any Applied FTE can reach the app (IAP +
-Trident); restrict with `allowed_usergroups` if needed. The active environment
+(registry/meta URIs, AWS region, `RUST_LOG`). By default any Applied FTE can
+reach the app (IAP + Trident); restrict with `allowed_usergroups` if needed. The active environment
 profile's own `[cloudrun]`/env var settings, if any, take precedence over
 `project.toml`'s — check `apps-platform app environment show <name>` if a
 deploy doesn't seem to pick up a value set here.
@@ -128,10 +123,9 @@ auth "$URL/readyz" -o /dev/null -w '%{http_code}\n'         # 200 once loaded
 # the composite <region>:<bucket>:<namespace>:<name> — the (bucket, namespace)
 # must be declared in catalog-config.yaml.
 auth -X PUT "$URL/v1/table/<id>" -H 'content-type: application/json' \
-  -d '{"owner":"you@applied.co","ttl_policy":{"keep_last_n":10,"max_age_days":90}}'
+  -d '{"owner":"you@applied.co"}'
 auth -X POST "$URL/internal/jobs/sync" | python3 -m json.tool   # {tables_checked,...}
 auth "$URL/v1/tables" | python3 -m json.tool                # registered tables
-auth "$URL/ext/v1/tables/<id>/ttl/dryrun" | python3 -m json.tool   # review before any apply
 ```
 
 Open `$URL/` in a browser for the SPA. Tail logs with:
@@ -140,9 +134,9 @@ Open `$URL/` in a browser for the SPA. Tail logs with:
 apps-platform app tail
 ```
 
-For a first TTL apply, run it against a scratch namespace (a throwaway bucket
-and namespace declared in `catalog-config.yaml`) before pointing at real
-data — the delete is irreversible. See [`RUNBOOK-TTL.md`](RUNBOOK-TTL.md).
+The service does not delete source datasets. Deregistration removes catalog
+metadata only. Existing retired-feature datasets are not deleted or migrated
+by deploying this version.
 
 ## Networking note (static egress IP)
 

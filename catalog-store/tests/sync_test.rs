@@ -360,7 +360,7 @@ async fn unknown_top_level_dir_is_accounted_not_dropped() {
 
 /// Deep-stats gating: `Latest` gives the expensive index load only to each table's newest
 /// version; `None` to no version. In every mode the dataset still OPENS, so shape/`partial`
-/// (the TTL safety inputs) and the manifest-derived stats (rows/fragments/schema/writer) are
+/// and the manifest-derived stats (rows/fragments/schema/writer) are
 /// identical — only `num_indices` degrades to `None` on the skipped versions.
 #[tokio::test]
 async fn deep_stats_latest_and_none_gate_only_the_index_load() {

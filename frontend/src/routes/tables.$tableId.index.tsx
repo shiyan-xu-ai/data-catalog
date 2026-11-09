@@ -1,14 +1,12 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { describeTable, ttlAudit } from "@/lib/api";
+import { describeTable } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { ErrorState } from "@/components/error-state";
 import { EmptyState } from "@/components/empty-state";
-import { TtlPanel } from "@/components/ttl-panel";
 import { VersionsTable } from "@/components/versions-table";
 import { AuxTable } from "@/components/aux-table";
-import { formatBytes, formatRelative, formatTime, namespaceId, nsToString, ttlPolicyString } from "@/lib/format";
+import { formatBytes, formatRelative, formatTime, namespaceId, nsToString } from "@/lib/format";
 import { useTz } from "@/lib/timezone";
 
 export const Route = createFileRoute("/tables/$tableId/")({
@@ -30,11 +28,6 @@ function TableDetailPage() {
   const { data: table, isLoading, error } = useQuery({
     queryKey: ["table", tableId],
     queryFn: () => describeTable(tableId),
-  });
-  const { data: audit } = useQuery({
-    queryKey: ["ttl-audit", tableId],
-    queryFn: () => ttlAudit(tableId),
-    enabled: !!table,
   });
 
   if (error) return <ErrorState message={(error as Error).message} />;
@@ -72,7 +65,6 @@ function TableDetailPage() {
             </MetaRow>
             <MetaRow label="Root">{<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{table.root_location}</code>}</MetaRow>
             <MetaRow label="Owner">{table.owner ?? "—"}</MetaRow>
-            <MetaRow label="TTL policy">{table.ttl_policy ? <Badge variant="secondary">{ttlPolicyString(table.ttl_policy)}</Badge> : "none"}</MetaRow>
             <MetaRow label="Versions">{table.versions.length}</MetaRow>
             <MetaRow label="Total size">{formatBytes(totalBytes)}</MetaRow>
             <MetaRow label="Last synced">{formatTime(table.last_synced, tz)} <span className="text-muted-foreground">({formatRelative(table.last_synced)})</span></MetaRow>
@@ -114,8 +106,6 @@ function TableDetailPage() {
           )}
         </CardContent>
       </Card>
-
-      <TtlPanel tableId={table.id} policy={table.ttl_policy} audit={audit ?? []} />
     </div>
   );
 }

@@ -4,7 +4,7 @@
 //! State is split by how it is produced (see `catalog_store::overlay`): the **derived snapshot**
 //! (`_catalog/registry`, a Lance dataset) is written whole by the sync and holds versions,
 //! shapes, sizes, schemas, aux — everything recomputable from immutable S3 content. The
-//! **authored overlays** (`_catalog/meta/<id>.json`) hold owner/ttl_policy/protected. A read
+//! **authored overlays** (`_catalog/meta/<id>.json`) hold registration and owner metadata. A read
 //! merges the two back into the `TableEntry` wire shape the API and frontend already expect.
 //!
 //! Cloud Run throttles CPU between requests, so there is no background refresh loop: the view is
@@ -24,40 +24,20 @@ use tokio::sync::{Mutex, RwLock};
 /// Merge the authored overlays over the derived snapshot into the wire-shape `TableEntry` list.
 ///
 /// Snapshot entries carry no authored state (the sync never writes it), so the overlay is
-/// authoritative for `owner`/`ttl_policy` and per-version `protected`. A table that exists only
-/// in an overlay (declared before its first sync) is materialized as a stub. Output is sorted
-/// by id for stable listing.
+/// authoritative for `owner`. Tables registered before their first sync have no derived metadata.
+/// Output is sorted by id for stable listing.
 pub fn merge(snapshot: Vec<TableEntry>, overlays: HashMap<String, TableMeta>) -> Vec<TableEntry> {
     let mut by_id: HashMap<String, TableEntry> =
         snapshot.into_iter().map(|e| (e.id.clone(), e)).collect();
     for (id, meta) in overlays {
         let entry = by_id.entry(id.clone()).or_insert_with(|| stub_entry(&id));
-        apply_overlay(entry, &meta);
+        entry.owner = meta.owner;
     }
     let mut out: Vec<TableEntry> = by_id.into_values().collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
-fn apply_overlay(entry: &mut TableEntry, meta: &TableMeta) {
-    entry.owner = meta.owner.clone();
-    entry.ttl_policy = meta.ttl_policy;
-    // Versions marked `deleting` were hard-deleted from S3 by a TTL apply but are still in the
-    // derived snapshot until the next sync reconciles them out; hide them from reads so a
-    // deleted version disappears immediately, not up to a sync interval later.
-    entry
-        .versions
-        .retain(|v| !meta.deleting.contains(&v.version_id));
-    for v in &mut entry.versions {
-        v.protected = meta.protected.contains(&v.version_id);
-    }
-    catalog_core::recompute_aux_latest(entry);
-}
-
-/// A table declared (owner/ttl_policy set) before any sync has observed it on S3. The id is
-/// parsed to fill `region`/`bucket`/`namespace`/`name` so a declared-before-sync stub still
-/// carries its scope; an id that doesn't parse (shouldn't happen post-declare-validation, but
-/// cheap to handle) falls back to empties with the whole id as the name.
 fn stub_entry(id: &str) -> TableEntry {
     let parsed = catalog_core::parse_table_id(id);
     let (region, bucket, namespace, name) = match parsed {
@@ -72,7 +52,6 @@ fn stub_entry(id: &str) -> TableEntry {
         namespace: Namespace::new(namespace),
         root_location: String::new(),
         owner: None,
-        ttl_policy: None,
         last_synced: None,
         versions: Vec::new(),
         aux_latest: Vec::new(),
@@ -162,8 +141,7 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use catalog_core::{TableVersion, TtlPolicy, VersionShape};
-    use std::collections::BTreeSet;
+    use catalog_core::{TableVersion, VersionShape};
 
     fn version(id: &str) -> TableVersion {
         TableVersion {
@@ -172,7 +150,6 @@ mod tests {
             snapshot_path: format!("s3://b/t/{id}"),
             shape: VersionShape::Full,
             partial: false,
-            protected: false,
             storage_bytes_total: 0,
             object_count: None,
             lance_core_bytes: 0,
@@ -201,12 +178,6 @@ mod tests {
             "synced".to_string(),
             TableMeta {
                 owner: Some("alice".into()),
-                ttl_policy: Some(TtlPolicy {
-                    keep_last_n: Some(5),
-                    max_age_days: None,
-                }),
-                protected: BTreeSet::from(["v1".to_string()]),
-                deleting: BTreeSet::new(),
             },
         );
         // An overlay for a table the sync hasn't observed yet -> stub in the view.
@@ -214,7 +185,6 @@ mod tests {
             "declared_only".to_string(),
             TableMeta {
                 owner: Some("bob".into()),
-                ..Default::default()
             },
         );
 
@@ -223,23 +193,9 @@ mod tests {
 
         let synced = view.iter().find(|e| e.id == "synced").unwrap();
         assert_eq!(synced.owner.as_deref(), Some("alice"));
-        assert_eq!(synced.ttl_policy.unwrap().keep_last_n, Some(5));
-        assert!(
-            synced
-                .versions
-                .iter()
-                .find(|v| v.version_id == "v1")
-                .unwrap()
-                .protected
-        );
-        assert!(
-            !synced
-                .versions
-                .iter()
-                .find(|v| v.version_id == "v2")
-                .unwrap()
-                .protected
-        );
+        assert_eq!(synced.versions.len(), 2);
+        assert_eq!(synced.versions[0].version_id, "v1");
+        assert_eq!(synced.versions[1].version_id, "v2");
 
         let declared = view.iter().find(|e| e.id == "declared_only").unwrap();
         assert_eq!(declared.owner.as_deref(), Some("bob"));

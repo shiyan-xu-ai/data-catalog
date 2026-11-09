@@ -1,42 +1,18 @@
 //! Authored-metadata overlay: the small, human-mutated slice of catalog state, stored as one
 //! JSON object per table under `_catalog/meta/<table_id>.json` and mutated with object-store
 //! conditional writes (ETag compare-and-set) instead of a lock or leader.
-//!
-//! ## Why an overlay
-//!
-//! Registry state splits in two by how it is produced. **Derived** fields (versions, shapes,
-//! byte splits, row counts, schemas, aux) are a pure function of immutable S3 content — any
-//! sync re-derives them, so the derived snapshot is written whole, last-wins, with no
-//! coordination. **Authored** fields (`owner`, `ttl_policy`, per-version `protected`) are the
-//! only thing humans mutate; this overlay holds exactly those, keyed per table, so a mutation
-//! touches a few hundred bytes and races are resolved by S3's own conditional write rather than
-//! an application lock.
-//!
-//! ## Concurrency
-//!
-//! `mutate_meta` is the read-modify-write primitive: GET the object (or start fresh if absent),
-//! apply the caller's closure, then `PutMode::Update` pinned to the observed ETag (or
-//! `PutMode::Create` if it was absent). If another writer committed in between, the store
-//! returns `Precondition`/`AlreadyExists`; we re-read and re-apply the closure on the fresh
-//! state, bounded by `MAX_ATTEMPTS`. At the catalog's admin write volume contention is
-//! effectively never, but the retry makes it correct regardless.
-//!
 //! NOTE: `object_store`'s `LocalFileSystem` does not implement `PutMode::Update`, so this store
 //! must be backed by S3 / a MinIO-compatible endpoint (production, local dev) or `InMemory`
 //! (tests). The sync/data path still uses `LocalFileSystem` freely — it does no conditional
 //! writes.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use catalog_core::TtlPolicy;
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-/// Bound on conditional-write retries before giving up (surfaces as an error the caller maps to
-/// a 500; a client can retry). Contention here is admin-scale, so this is only a safety ceiling.
 const MAX_ATTEMPTS: usize = 16;
 
 /// The authored slice of one table's catalog state. Everything here is human-set via the API;
@@ -46,26 +22,6 @@ const MAX_ATTEMPTS: usize = 16;
 pub struct TableMeta {
     #[serde(default)]
     pub owner: Option<String>,
-    #[serde(default)]
-    pub ttl_policy: Option<TtlPolicy>,
-    /// Version ids the operator has marked TTL-exempt.
-    #[serde(default)]
-    pub protected: BTreeSet<String>,
-    /// Version ids a TTL apply has begun deleting (the pending-delete marker that lets a
-    /// crashed apply resume idempotently and proves a snapshot postdates any concurrent
-    /// `protect`). Empty in steady state.
-    #[serde(default)]
-    pub deleting: BTreeSet<String>,
-}
-
-impl TableMeta {
-    /// True when the overlay carries no authored state (safe to treat as absent).
-    pub fn is_empty(&self) -> bool {
-        self.owner.is_none()
-            && self.ttl_policy.is_none()
-            && self.protected.is_empty()
-            && self.deleting.is_empty()
-    }
 }
 
 /// Per-table authored-overlay store over an object store that supports conditional writes.
@@ -207,39 +163,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_mutations_both_survive_via_cas_retry() {
+    async fn concurrent_owner_mutations_survive_via_cas_retry() {
         let ms = store();
-        ms.mutate_meta("t1", |m| m.owner = Some("alice".into()))
+        ms.mutate_meta("t1", |m| m.owner = Some(String::new()))
             .await
             .unwrap();
 
-        // Two independent authored changes race on the same overlay object; the CAS retry must
-        // land both without either clobbering the other or the pre-existing owner.
         let (a, b) = tokio::join!(
-            ms.mutate_meta("t1", |m| {
-                m.protected.insert("v1".into());
-            }),
-            ms.mutate_meta("t1", |m| {
-                m.ttl_policy = Some(TtlPolicy {
-                    keep_last_n: Some(3),
-                    max_age_days: None,
-                });
-            }),
+            ms.mutate_meta("t1", |m| m.owner.as_mut().unwrap().push('a')),
+            ms.mutate_meta("t1", |m| m.owner.as_mut().unwrap().push('b')),
         );
         a.unwrap();
         b.unwrap();
 
-        let final_meta = ms.get_meta("t1").await.unwrap().unwrap();
-        assert_eq!(
-            final_meta.owner.as_deref(),
-            Some("alice"),
-            "owner preserved"
+        let owner = ms.get_meta("t1").await.unwrap().unwrap().owner.unwrap();
+        assert!(
+            owner == "ab" || owner == "ba",
+            "both mutations survive: {owner}"
         );
-        assert!(final_meta.protected.contains("v1"), "protect landed");
+    }
+
+    #[tokio::test]
+    async fn older_registration_json_preserves_owner_and_empty_registration() {
+        let store = Arc::new(InMemory::new());
+        let ms = MetaStore::new(store.clone(), ObjPath::from("_catalog/meta"));
+        for (id, json) in [
+            (
+                "owned",
+                r#"{"owner":"alice","ttl_policy":{"keep_last_n":3},"protected":["v1"],"deleting":["v2"]}"#,
+            ),
+            (
+                "empty",
+                r#"{"ttl_policy":null,"protected":[],"deleting":[]}"#,
+            ),
+        ] {
+            store
+                .put(&ms.path(id), PutPayload::from(json.as_bytes().to_vec()))
+                .await
+                .unwrap();
+        }
+
         assert_eq!(
-            final_meta.ttl_policy.unwrap().keep_last_n,
-            Some(3),
-            "ttl policy landed"
+            ms.get_meta("owned")
+                .await
+                .unwrap()
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("alice")
         );
+        assert_eq!(
+            ms.get_meta("empty").await.unwrap(),
+            Some(TableMeta::default())
+        );
+        assert_eq!(ms.list_meta().await.unwrap().len(), 2);
+
+        ms.mutate_meta("owned", |m| m.owner = Some("bob".into()))
+            .await
+            .unwrap();
+        let bytes = store
+            .get(&ms.path("owned"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let written: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(written, serde_json::json!({"owner": "bob"}));
     }
 }

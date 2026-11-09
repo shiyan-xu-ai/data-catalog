@@ -4,7 +4,7 @@
 
 use catalog_core::{
     read_registry, write_registry, AuxEntry, AuxFormat, Namespace, TableEntry, TableVersion,
-    TtlPolicy, VersionShape,
+    VersionShape,
 };
 use chrono::{TimeZone, Utc};
 
@@ -30,7 +30,6 @@ fn sample_entry(id: &str) -> TableEntry {
         snapshot_path: format!("s3://bucket/{id}/2026-06-26_12-00-00"),
         shape: VersionShape::Full,
         partial: false,
-        protected: false,
         storage_bytes_total: 12288,
         lance_core_bytes: 8192,
         sidecar_bytes: 0,
@@ -54,10 +53,6 @@ fn sample_entry(id: &str) -> TableEntry {
         owner: Some("raymond".to_string()),
         region: "us-phoenix-1".into(),
         bucket: "bkt".into(),
-        ttl_policy: Some(TtlPolicy {
-            keep_last_n: Some(5),
-            max_age_days: Some(30),
-        }),
         last_synced: Some(ts),
         versions: vec![version],
         aux_latest: aux,
@@ -83,4 +78,89 @@ async fn registry_round_trips_table_entries() {
     expected.sort_by(|a, b| a.id.cmp(&b.id));
 
     assert_eq!(read_back, expected);
+}
+
+#[test]
+fn older_table_json_ignores_retired_fields_without_losing_metadata() {
+    let expected = sample_entry("legacy");
+    let mut json = serde_json::to_value(&expected).unwrap();
+    json["ttl_policy"] = serde_json::json!({"keep_last_n": 5});
+    json["versions"][0]["protected"] = serde_json::json!(true);
+    json["versions"][0]["deleting"] = serde_json::json!(true);
+
+    let read_back: TableEntry = serde_json::from_value(json).unwrap();
+    assert_eq!(read_back, expected);
+    let written = serde_json::to_value(read_back).unwrap();
+    assert!(written.get("ttl_policy").is_none());
+    assert!(written["versions"][0].get("protected").is_none());
+    assert!(written["versions"][0].get("deleting").is_none());
+}
+
+#[tokio::test]
+async fn older_registry_column_and_version_json_remain_readable() {
+    use std::sync::Arc;
+
+    use arrow_array::{ArrayRef, RecordBatch, RecordBatchIterator, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.lance");
+    let path = path.to_str().unwrap();
+    let expected = sample_entry("legacy");
+    let mut versions = serde_json::to_value(&expected.versions).unwrap();
+    versions[0]["protected"] = serde_json::json!(true);
+    let columns = [
+        ("id", Some(expected.id.clone())),
+        ("name", Some(expected.name.clone())),
+        ("region", Some(expected.region.clone())),
+        ("bucket", Some(expected.bucket.clone())),
+        (
+            "namespace_json",
+            Some(serde_json::to_string(&expected.namespace).unwrap()),
+        ),
+        ("root_location", Some(expected.root_location.clone())),
+        ("owner", expected.owner.clone()),
+        (
+            "ttl_policy_json",
+            Some(r#"{"keep_last_n":5,"max_age_days":30}"#.into()),
+        ),
+        ("last_synced", expected.last_synced.map(|t| t.to_rfc3339())),
+        (
+            "versions_json",
+            Some(serde_json::to_string(&versions).unwrap()),
+        ),
+        (
+            "aux_latest_json",
+            Some(serde_json::to_string(&expected.aux_latest).unwrap()),
+        ),
+    ];
+    let schema = Arc::new(Schema::new(
+        columns
+            .iter()
+            .map(|(name, _)| Field::new(*name, DataType::Utf8, true))
+            .collect::<Vec<_>>(),
+    ));
+    let arrays: Vec<ArrayRef> = columns
+        .into_iter()
+        .map(|(_, value)| Arc::new(StringArray::from(vec![value])) as ArrayRef)
+        .collect();
+    let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+    let reader = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    lance::Dataset::write(reader, path, None::<lance::dataset::WriteParams>)
+        .await
+        .unwrap();
+
+    let read_back = read_registry(path).await.unwrap().unwrap();
+    assert_eq!(read_back, vec![expected]);
+
+    write_registry(path, &read_back).await.unwrap();
+    let rewritten = lance::Dataset::open(path)
+        .await
+        .unwrap()
+        .scan()
+        .try_into_batch()
+        .await
+        .unwrap();
+    assert!(rewritten.column_by_name("ttl_policy_json").is_none());
+    assert_eq!(read_registry(path).await.unwrap().unwrap(), read_back);
 }

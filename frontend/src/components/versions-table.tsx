@@ -1,19 +1,11 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
-import { Shield, ShieldOff, ChevronLeft, ChevronRight } from "lucide-react";
-import { protectVersion } from "@/lib/api";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { TableVersion } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { ShapeBadge } from "@/components/shape-badge";
-import { formatBytes, formatTime } from "@/lib/format";
+import { formatBytes, formatCount, formatTime } from "@/lib/format";
 import { useTz } from "@/lib/timezone";
 
 interface Props {
@@ -22,9 +14,7 @@ interface Props {
 }
 
 export function VersionsTable({ tableId, versions }: Props) {
-  const qc = useQueryClient();
   const { mode: tz } = useTz();
-  const [pending, setPending] = useState<string | null>(null);
   const [page, setPage] = useState(0);
 
   const pageSize = 20;
@@ -34,19 +24,6 @@ export function VersionsTable({ tableId, versions }: Props) {
   const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const pageVersions = sorted.slice(currentPage * pageSize, currentPage * pageSize + pageSize);
-
-  const protectMut = useMutation({
-    mutationFn: ({ vid, protect }: { vid: string; protect: boolean }) =>
-      protectVersion(tableId, vid, protect),
-    onMutate: ({ vid }) => setPending(vid),
-    onSettled: () => setPending(null),
-    onSuccess: (version) => {
-      toast.success(version.protected ? `Protected ${version.version_id}` : `Unprotected ${version.version_id}`);
-      qc.invalidateQueries({ queryKey: ["table", tableId] });
-      qc.invalidateQueries({ queryKey: ["tables"] });
-    },
-    onError: (e: unknown) => toast.error((e as Error).message),
-  });
 
   return (
     <div className="space-y-3">
@@ -59,7 +36,6 @@ export function VersionsTable({ tableId, versions }: Props) {
               <th className="px-3 py-2 text-right">Size</th>
               <th className="px-3 py-2 text-right">Rows</th>
               <th className="px-3 py-2">Synced</th>
-              <th className="px-3 py-2 text-right">Protect</th>
             </tr>
           </thead>
           <tbody>
@@ -77,23 +53,8 @@ export function VersionsTable({ tableId, versions }: Props) {
                 </td>
                 <td className="px-3 py-2"><ShapeBadge shape={v.shape} /></td>
                 <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatBytes(v.storage_bytes_total)}</td>
-                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{v.row_count != null ? v.row_count.toLocaleString() : "—"}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatCount(v.row_count)}</td>
                 <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">{formatTime(v.synced_at, tz)}</td>
-                <td className="px-3 py-2 text-right">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        size="icon"
-                        variant={v.protected ? "default" : "ghost"}
-                        disabled={pending === v.version_id}
-                        onClick={() => protectMut.mutate({ vid: v.version_id, protect: !v.protected })}
-                      >
-                        {v.protected ? <Shield className="h-4 w-4" /> : <ShieldOff className="h-4 w-4" />}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{v.protected ? "Protected — click to unprotect" : "Click to protect from TTL"}</TooltipContent>
-                  </Tooltip>
-                </td>
               </tr>
             ))}
           </tbody>

@@ -1,11 +1,9 @@
 import { Outlet, Link, createRootRouteWithContext } from "@tanstack/react-router";
-import { QueryClient, useQuery } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TimezoneToggle } from "@/components/timezone-toggle";
-import { Badge } from "@/components/ui/badge";
-import { getMe } from "@/lib/api";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -14,17 +12,6 @@ interface RouterContext {
 export const Route = createRootRouteWithContext<RouterContext>()({
   component: RootComponent,
 });
-
-function IdentityBadge() {
-  const { data } = useQuery({ queryKey: ["me"], queryFn: getMe });
-  if (!data) return null;
-  return (
-    <div className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
-      <span>{data.email ?? "anonymous"}</span>
-      <Badge variant="outline">{data.role}</Badge>
-    </div>
-  );
-}
 
 function RootComponent() {
   return (
@@ -50,15 +37,8 @@ function RootComponent() {
               >
                 Namespaces
               </Link>
-              <Link
-                to="/storage"
-                className="text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground [&.active]:font-medium"
-              >
-                Storage
-              </Link>
             </nav>
             <div className="ml-auto flex items-center gap-2">
-              <IdentityBadge />
               <TimezoneToggle />
               <ThemeToggle />
             </div>

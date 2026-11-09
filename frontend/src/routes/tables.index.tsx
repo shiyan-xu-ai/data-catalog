@@ -14,10 +14,9 @@ import {
 import { Plus, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { listTables } from "@/lib/api";
 import type { TableEntry } from "@/lib/schemas";
-import { formatBytes, formatRelative, namespaceId, nsToString, ttlPolicyString } from "@/lib/format";
+import { formatBytes, formatCount, formatRelative, namespaceId, nsToString } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { RegisterDialog } from "@/components/register-dialog";
@@ -48,8 +47,8 @@ const columns: ColumnDef<TableEntry>[] = [
     accessorFn: (r) => nsToString(r.namespace),
     id: "namespace",
     header: "Namespace",
-    cell: ({ row }) => {
-      const ns = nsToString(row.original.namespace);
+    cell: ({ row, getValue }) => {
+      const ns = getValue<string>();
       const id = namespaceId(row.original.bucket, row.original.namespace);
       return ns ? (
         <Link to="/namespaces/$ns" params={{ ns: id }} className="text-muted-foreground hover:underline">
@@ -62,30 +61,20 @@ const columns: ColumnDef<TableEntry>[] = [
     accessorFn: (r) => r.versions.length,
     id: "versions",
     header: "Versions",
-    cell: ({ row }) => <span className="tabular-nums">{row.original.versions.length}</span>,
+    cell: ({ getValue }) => <span className="tabular-nums">{formatCount(getValue<number>())}</span>,
   },
   {
     accessorFn: (r) => r.versions.reduce((s, v) => s + v.storage_bytes_total, 0),
     id: "bytes",
     header: "Total size",
-    cell: ({ row }) => {
-      const total = row.original.versions.reduce((s, v) => s + v.storage_bytes_total, 0);
-      return <span className="tabular-nums text-muted-foreground">{formatBytes(total)}</span>;
-    },
+    cell: ({ getValue }) => (
+      <span className="tabular-nums text-muted-foreground">{formatBytes(getValue<number>())}</span>
+    ),
   },
   {
     accessorKey: "owner",
     header: "Owner",
     cell: ({ row }) => <span className="text-muted-foreground">{row.original.owner ?? "—"}</span>,
-  },
-  {
-    accessorFn: (r) => (r.ttl_policy ? ttlPolicyString(r.ttl_policy) : ""),
-    id: "ttl",
-    header: "TTL",
-    cell: ({ row }) =>
-      row.original.ttl_policy ? (
-        <Badge variant="secondary">{ttlPolicyString(row.original.ttl_policy)}</Badge>
-      ) : <span className="text-muted-foreground">none</span>,
   },
   {
     accessorKey: "last_synced",

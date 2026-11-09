@@ -2,6 +2,17 @@
 
 First release of the Lance data catalog service.
 
+> Historical release notes. The supported surface is documented in
+> [README.md](../README.md) and [ARCHITECTURE.md](../ARCHITECTURE.md).
+
+## Current changes
+
+- Removed TTL policies, protection, dry-run/apply/audit APIs, and source-delete helpers.
+- Removed bucket overview, its storage-scan dataset, and bucket-root scanning.
+- Removed application identity, user recording, and admin roles. Platform access controls and object-store credentials remain required.
+- Retained table registration/owners, namespace and version browsing, per-version stats, auxiliary sampling, and pull-based sync.
+- Older catalog data remains readable; retired fields are ignored. No stored data is deleted by this change.
+
 ## Features
 
 - **S3 sweep with full-history timestamp-path versioning.** Periodically
@@ -58,9 +69,8 @@ Key vars: `CATALOG_SWEEP_ROOT_URI`, `CATALOG_REGISTRY_PATH`,
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md) — as-built architecture.
 - [`docs/RUNBOOK-DEPLOY.md`](RUNBOOK-DEPLOY.md) — deploy (local/staging/prod),
   leader-election validation, frontend deploy.
-- [`docs/RUNBOOK-TTL.md`](RUNBOOK-TTL.md) — TTL policy semantics, dry-run/
-  apply/audit workflow, `protected` flag, known caveats.
-- [`docs/smoke-test.md`](smoke-test.md) — kind smoke-test procedure.
+- The TTL runbook and kind smoke-test instructions described by this release
+  are retired; use the current deployment runbook.
 - [`docs/design.md`](design.md) — long-term design (v1.0.0 as-built notes
   appended).
 

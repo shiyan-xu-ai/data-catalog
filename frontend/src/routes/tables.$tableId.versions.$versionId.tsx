@@ -1,18 +1,14 @@
-import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
-import { Shield, ShieldOff } from "lucide-react";
-import { getVersion, protectVersion } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { getVersion } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ErrorState } from "@/components/error-state";
 import { EmptyState } from "@/components/empty-state";
 import { ShapeBadge } from "@/components/shape-badge";
 import { AuxTable } from "@/components/aux-table";
 import { SchemaView } from "@/components/schema-view";
-import { formatBytes, formatTime } from "@/lib/format";
+import { formatBytes, formatCount, formatTime } from "@/lib/format";
 import { useTz } from "@/lib/timezone";
 
 export const Route = createFileRoute("/tables/$tableId/versions/$versionId")({
@@ -39,25 +35,11 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
 
 function VersionDetailPage() {
   const { tableId, versionId } = Route.useParams();
-  const qc = useQueryClient();
   const { mode: tz } = useTz();
-  const [protecting, setProtecting] = useState(false);
 
   const { data: version, isLoading, error } = useQuery({
     queryKey: ["version", tableId, versionId],
     queryFn: () => getVersion(tableId, versionId),
-  });
-
-  const protectMut = useMutation({
-    mutationFn: (protect: boolean) => protectVersion(tableId, versionId, protect),
-    onMutate: () => setProtecting(true),
-    onSettled: () => setProtecting(false),
-    onSuccess: (v) => {
-      toast.success(v.protected ? "Protected" : "Unprotected");
-      qc.invalidateQueries({ queryKey: ["version", tableId, versionId] });
-      qc.invalidateQueries({ queryKey: ["table", tableId] });
-    },
-    onError: (e: unknown) => toast.error((e as Error).message),
   });
 
   if (error) return <ErrorState message={(error as Error).message} />;
@@ -78,20 +60,7 @@ function VersionDetailPage() {
           <h1 className="font-mono text-xl">{version.version_id}</h1>
           <ShapeBadge shape={version.shape} />
           {version.partial && <Badge variant="warning">partial</Badge>}
-          {version.protected && <Badge variant="success">protected</Badge>}
         </div>
-      </div>
-
-      <div className="flex gap-2">
-        <Button
-          size="sm"
-          variant={version.protected ? "default" : "outline"}
-          disabled={protecting}
-          onClick={() => protectMut.mutate(!version.protected)}
-        >
-          {version.protected ? <ShieldOff className="h-4 w-4" /> : <Shield className="h-4 w-4" />}
-          {version.protected ? "Unprotect" : "Protect"}
-        </Button>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -113,9 +82,9 @@ function VersionDetailPage() {
           <CardContent>
             <dl>
               <Stat label="Timestamp" value={formatTime(version.timestamp, tz)} />
-              <Stat label="Rows" value={version.row_count != null ? version.row_count.toLocaleString() : "—"} />
-              <Stat label="Fragments" value={version.num_fragments != null ? version.num_fragments.toLocaleString() : "—"} />
-              <Stat label="Indices" value={version.num_indices != null ? version.num_indices.toLocaleString() : "—"} />
+              <Stat label="Rows" value={formatCount(version.row_count)} />
+              <Stat label="Fragments" value={formatCount(version.num_fragments)} />
+              <Stat label="Indices" value={formatCount(version.num_indices)} />
               <Stat label="Synced" value={formatTime(version.synced_at, tz)} />
               <Stat label="Snapshot" value={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{version.snapshot_path}</code>} />
             </dl>

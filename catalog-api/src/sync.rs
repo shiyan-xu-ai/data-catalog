@@ -21,7 +21,7 @@
 //! `/internal/jobs/sync`), not as a background loop — CPU is throttled between requests, so a
 //! `tokio`-spawned loop would freeze. `run_sync` is idempotent and safe under Scheduler
 //! double-fire/retry: the snapshot is a complete derived state written last-wins, with no lock
-//! or leader (only the sync writes it). Authored state (owner/ttl_policy/protected) lives in
+//! or leader (only the sync writes it). Authored state (registration and owner) lives in
 //! the overlay and is never touched here.
 
 use std::collections::{HashMap, HashSet};
@@ -31,7 +31,7 @@ use anyhow::{Context, Result};
 use catalog_core::{
     parse_table_id, read_registry, write_registry, Namespace, TableEntry, TableVersion,
 };
-use catalog_store::{deep_for, MetaStore, SyncConfig, TableMeta, VersionDirRef};
+use catalog_store::{deep_for, MetaStore, SyncConfig, VersionDirRef};
 use futures::StreamExt;
 use object_store::path::Path as ObjPath;
 use serde::Serialize;
@@ -59,7 +59,7 @@ const INCREMENTAL_WRITE_INTERVAL: Duration = Duration::from_secs(3);
 pub struct SyncReport {
     pub tables_checked: u64,
     pub failed_tables: u64,
-    /// Versions actually synced from S3 this pass (new, partial, or deleting-marked).
+    /// Versions actually synced from S3 this pass (new or partial).
     pub versions_synced: u64,
     /// Versions copied from the prior snapshot without any S3 traffic (immutable + clean).
     pub versions_carried: u64,
@@ -96,15 +96,11 @@ struct TablePlan {
 pub async fn run_sync(
     targets: &[SyncTarget],
     registry_path: &str,
-    storage_scan_path: &str,
     meta: &MetaStore,
 ) -> Result<SyncReport> {
     let started = Instant::now();
     let now = chrono::Utc::now();
 
-    // The registered set = the tables that have an authored overlay. Only these are synced.
-    // The overlays also carry the `deleting` markers that veto carry-forward below. `list_meta`
-    // runs ONCE for the whole pass; every target filters this same map.
     let registered = meta.list_meta().await.context("list registered tables")?;
 
     let prior: HashMap<String, TableEntry> = read_registry(registry_path)
@@ -167,8 +163,6 @@ pub async fn run_sync(
     let concurrency = targets.iter().map(|t| t.cfg.concurrency).max().unwrap_or(1);
 
     // ── Discovery: one delimiter LIST per routed table, concurrently across ALL targets.
-    // Partition each table's version dirs into carried (immutable + clean in prior, not marked
-    // deleting) vs work (new / partial / deleting-marked → re-sync).
     let discovery_items: Vec<(usize, usize, ObjPath)> = routed
         .iter()
         .enumerate()
@@ -190,11 +184,7 @@ pub async fn run_sync(
         match dirs {
             Ok(dirs) => {
                 let latest_id = dirs.iter().map(|d| d.version_id.clone()).max();
-                let (carried, work) = partition_carry_forward(
-                    dirs,
-                    prior.get(&r.table_id),
-                    registered.get(&r.table_id),
-                );
+                let (carried, work) = partition_carry_forward(dirs, prior.get(&r.table_id));
                 versions_carried += carried.len() as u64;
                 plans.push(TablePlan {
                     table_id: r.table_id.clone(),
@@ -328,14 +318,6 @@ pub async fn run_sync(
         }
     }
 
-    // Reconcile stale overlay markers to the new snapshot truth: a `protected`/`deleting` entry
-    // for a version no longer in the snapshot (TTL-deleted then synced out, or gone out of band)
-    // is pruned. This clears the tombstones a TTL apply leaves behind once the version is truly
-    // gone. Best-effort — a failure here doesn't fail the sync.
-    if let Err(e) = reconcile_overlays(meta, &state).await {
-        tracing::warn!(error = %e, "overlay reconciliation failed (non-fatal)");
-    }
-
     // Final last-wins whole-snapshot write — no coordination needed for recomputable derived
     // state.
     let merged: Vec<TableEntry> = state.into_values().collect();
@@ -347,19 +329,6 @@ pub async fn run_sync(
     // incremental writes, adds a handful).
     if let Err(e) = catalog_core::cleanup_registry(registry_path, chrono::Duration::days(1)).await {
         tracing::warn!(error = %e, "registry version cleanup failed (non-fatal)");
-    }
-
-    // Storage analysis tail: a bucket-wide breakdown of registered vs. unexplored prefixes,
-    // derived from the snapshot just written. Level-triggered — a failure here is logged and
-    // does not fail the sync; the next pass just retries from scratch (the scan is a point-in-
-    // time snapshot, not a durable history).
-    if let Err(e) = storage_tail(targets, &merged, storage_scan_path, now).await {
-        tracing::warn!(error = %e, "storage analysis tail failed (non-fatal)");
-    }
-    if let Err(e) =
-        catalog_core::cleanup_storage_stats(storage_scan_path, chrono::Duration::days(1)).await
-    {
-        tracing::warn!(error = %e, "storage_scan version cleanup failed (non-fatal)");
     }
 
     let report = SyncReport {
@@ -388,112 +357,18 @@ pub async fn run_sync(
     Ok(report)
 }
 
-/// Storage analysis: for each bucket, report its top-level layout as registered-namespace rows
-/// (sized by aggregating the just-written registry `entries`) or unexplored, name-only rows —
-/// covering top-level prefixes, loose root objects (the `(root)` pseudo-prefix), and, for each
-/// nested registered namespace, its ancestor levels' siblings. Every listing here is a delimiter
-/// LIST (`list_with_delimiter`); nothing recurses into a prefix's contents, so this never pays
-/// for a full object enumeration the way the version sync does.
-async fn storage_tail(
-    targets: &[SyncTarget],
-    entries: &[TableEntry],
-    storage_scan_path: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> anyhow::Result<usize> {
-    use std::collections::{BTreeMap, BTreeSet};
-    // One store per bucket (targets share Arc'd stores).
-    let mut by_bucket: BTreeMap<&str, (&SyncTarget, Vec<&SyncTarget>)> = BTreeMap::new();
-    for t in targets {
-        by_bucket
-            .entry(t.bucket.as_str())
-            .or_insert((t, Vec::new()))
-            .1
-            .push(t);
-    }
-    let mut stats = Vec::new();
-    for (bucket, (any, ns_targets)) in &by_bucket {
-        let store = any.cfg.store.as_ref();
-        let registered: BTreeSet<String> =
-            ns_targets.iter().map(|t| t.namespace.join("/")).collect();
-        let mut emitted: BTreeSet<String> = BTreeSet::new();
-
-        // 1. Bucket root: top-level prefixes + loose objects.
-        let root = store.list_with_delimiter(None).await?;
-        for p in &root.common_prefixes {
-            emitted.insert(p.as_ref().to_string());
-        }
-        if !root.objects.is_empty() {
-            emitted.insert("(root)".to_string());
-        }
-        // 2. Ancestors of nested namespaces: surface each level's siblings.
-        for ns in &registered {
-            let segs: Vec<&str> = ns.split('/').collect();
-            for depth in 1..segs.len() {
-                let ancestor = segs[..depth].join("/");
-                let listing = store
-                    .list_with_delimiter(Some(&ObjPath::from(ancestor.clone())))
-                    .await?;
-                emitted.insert(ancestor);
-                for p in &listing.common_prefixes {
-                    emitted.insert(p.as_ref().to_string());
-                }
-            }
-        }
-        // 3. Rows: a prefix IS registered only if it exactly matches a registered namespace;
-        // ancestors and siblings stay unexplored (name-only).
-        for prefix in emitted {
-            let is_ns = registered.contains(&prefix);
-            let (bytes, objects, table_count) = if is_ns {
-                let in_ns: Vec<&TableEntry> = entries
-                    .iter()
-                    .filter(|e| e.bucket == *bucket && e.namespace.segments().join("/") == prefix)
-                    .collect();
-                let bytes: u64 = in_ns
-                    .iter()
-                    .flat_map(|e| &e.versions)
-                    .map(|v| v.storage_bytes_total)
-                    .sum();
-                let objects: u64 = in_ns
-                    .iter()
-                    .flat_map(|e| &e.versions)
-                    .filter_map(|v| v.object_count)
-                    .sum();
-                (Some(bytes), Some(objects), Some(in_ns.len() as u32))
-            } else {
-                (None, None, None)
-            };
-            stats.push(catalog_core::StoragePrefixStat {
-                region: any.region.clone(),
-                bucket: (*bucket).to_string(),
-                prefix,
-                registered: is_ns,
-                bytes,
-                objects,
-                table_count,
-                scanned_at: now,
-            });
-        }
-    }
-    let n = stats.len();
-    catalog_core::write_storage_stats(storage_scan_path, &stats).await?;
-    Ok(n)
-}
-
 /// Split a table's listed version dirs into carried-forward prior versions and dirs that need
 /// a real sync. A version carries forward iff it exists in the prior snapshot with a clean
-/// (non-partial) classification and is not marked `deleting` in the overlay:
+/// (non-partial) classification:
 /// - Immutable timestamp dirs mean a clean version's derived stats can never change, so
 ///   re-deriving them is pure waste.
 /// - A `partial` prior version is re-synced so a transient mis-classification self-heals.
-/// - A `deleting`-marked version is re-synced because a failed TTL delete may have removed part
-///   of its prefix — carrying it would freeze pre-delete byte counts.
 ///
 /// Versions in the prior snapshot but absent from the listing are simply dropped (deleted from
 /// S3): they appear in neither output.
 fn partition_carry_forward(
     dirs: Vec<VersionDirRef>,
     prior: Option<&TableEntry>,
-    overlay: Option<&TableMeta>,
 ) -> (Vec<TableVersion>, Vec<VersionDirRef>) {
     let prior_versions: HashMap<&str, &TableVersion> = prior
         .map(|e| {
@@ -503,14 +378,12 @@ fn partition_carry_forward(
                 .collect()
         })
         .unwrap_or_default();
-    let deleting: Option<&std::collections::BTreeSet<String>> = overlay.map(|m| &m.deleting);
 
     let mut carried = Vec::new();
     let mut work = Vec::new();
     for dir in dirs {
-        let marked_deleting = deleting.is_some_and(|d| d.contains(&dir.version_id));
         match prior_versions.get(dir.version_id.as_str()) {
-            Some(prev) if !prev.partial && !marked_deleting => carried.push((*prev).clone()),
+            Some(prev) if !prev.partial => carried.push((*prev).clone()),
             _ => work.push(dir),
         }
     }
@@ -541,45 +414,8 @@ fn assemble_entry(
         namespace: Namespace::new(target.namespace.clone()),
         root_location: format!("{root_uri}/{}", plan.name),
         owner: None,
-        ttl_policy: None,
         last_synced: Some(now),
         versions,
         aux_latest,
     }
-}
-
-/// Prune overlay `protected`/`deleting` version ids that no longer exist in the snapshot for
-/// their table (TTL-deleted-and-synced, or removed out of band). Leaves owner/ttl_policy alone.
-async fn reconcile_overlays(
-    meta: &MetaStore,
-    snapshot: &HashMap<String, TableEntry>,
-) -> Result<()> {
-    for (table_id, overlay) in meta.list_meta().await? {
-        if overlay.protected.is_empty() && overlay.deleting.is_empty() {
-            continue;
-        }
-        let live: HashSet<&str> = snapshot
-            .get(&table_id)
-            .map(|e| e.versions.iter().map(|v| v.version_id.as_str()).collect())
-            .unwrap_or_default();
-        let has_stale = overlay
-            .protected
-            .iter()
-            .chain(overlay.deleting.iter())
-            .any(|vid| !live.contains(vid.as_str()));
-        if !has_stale {
-            continue;
-        }
-        // Rebuild the live set inside the closure (owned) since the CAS may retry.
-        let live_ids: HashSet<String> = snapshot
-            .get(&table_id)
-            .map(|e| e.versions.iter().map(|v| v.version_id.clone()).collect())
-            .unwrap_or_default();
-        meta.mutate_meta(&table_id, |m| {
-            m.protected.retain(|vid| live_ids.contains(vid));
-            m.deleting.retain(|vid| live_ids.contains(vid));
-        })
-        .await?;
-    }
-    Ok(())
 }

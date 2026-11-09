@@ -1,7 +1,7 @@
 //! Deployment-scoped catalog configuration, loaded once at boot from a committed
 //! YAML file (`CATALOG_CONFIG_PATH`, default `catalog-config.yaml`). Declares the
-//! region, the target buckets with their registered namespace prefixes, and the
-//! admin email list. The service is regional: it runs colocated with these buckets.
+//! region and the target buckets with their registered namespace prefixes.
+//! The service is regional: it runs colocated with these buckets.
 
 use anyhow::{bail, Context, Result};
 use catalog_core::valid_id_segment;
@@ -11,8 +11,6 @@ use serde::Deserialize;
 pub struct CatalogConfig {
     pub region: String,
     pub buckets: Vec<BucketConfig>,
-    #[serde(default)]
-    pub admins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,10 +68,6 @@ impl CatalogConfig {
             .iter()
             .any(|b| b.name == bucket && b.namespaces.contains(&joined))
     }
-
-    pub fn is_admin(&self, email: &str) -> bool {
-        self.admins.iter().any(|a| a.eq_ignore_ascii_case(email))
-    }
 }
 
 #[cfg(test)]
@@ -88,16 +82,13 @@ mod tests {
 
     #[test]
     fn valid_config_parses_and_answers_lookups() {
-        let cfg = parse(
-            "region: us-phoenix-1\nbuckets:\n  - name: b1\n    namespaces: [ns1, a/b]\nadmins: [Admin@X.co]\n",
-        )
-        .unwrap();
+        let cfg =
+            parse("region: us-phoenix-1\nbuckets:\n  - name: b1\n    namespaces: [ns1, a/b]\n")
+                .unwrap();
         assert!(cfg.namespace_registered("b1", &["ns1".into()]));
         assert!(cfg.namespace_registered("b1", &["a".into(), "b".into()]));
         assert!(!cfg.namespace_registered("b1", &["a".into()])); // ancestor ≠ namespace
         assert!(!cfg.namespace_registered("b2", &["ns1".into()]));
-        assert!(cfg.is_admin("admin@x.co")); // case-insensitive
-        assert!(!cfg.is_admin("other@x.co"));
     }
 
     #[test]

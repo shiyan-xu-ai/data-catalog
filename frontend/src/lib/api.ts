@@ -3,25 +3,13 @@ import {
   describeNamespaceResponseSchema,
   errorResponseSchema,
   listNamespacesResponseSchema,
-  meResponseSchema,
-  storagePrefixStatSchema,
   tableEntrySchema,
   tableVersionSchema,
-  ttlApplyResponseSchema,
-  ttlAuditRecordSchema,
-  ttlDryRunResponseSchema,
-  userSchema,
   type AuxSampleResponse,
-  type CatalogUser,
   type DescribeNamespaceResponse,
   type ListNamespacesResponse,
-  type MeResponse,
-  type StoragePrefixStat,
   type TableEntry,
   type TableVersion,
-  type TtlApplyResponse,
-  type TtlAuditRecord,
-  type TtlDryRunResponse,
 } from "./schemas";
 
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
@@ -102,17 +90,8 @@ export function describeTable(id: string): Promise<TableEntry> {
   return getJson(`/v1/table/${encodeURIComponent(id)}`, tableEntrySchema);
 }
 
-// PUT /v1/table/:id  -- register/update owner+ttl_policy
-export function declareTable(
-  id: string,
-  body: { owner?: string; ttl_policy?: { keep_last_n: number | null; max_age_days: number | null } },
-): Promise<TableEntry> {
+export function declareTable(id: string, body: { owner?: string }): Promise<TableEntry> {
   return sendJson("PUT", `/v1/table/${encodeURIComponent(id)}`, tableEntrySchema, body);
-}
-
-// DELETE /v1/table/:id  -- deregister
-export async function deregisterTable(id: string): Promise<void> {
-  await sendJson("DELETE", `/v1/table/${encodeURIComponent(id)}`, zVoid);
 }
 
 // GET /ext/v1/tables/:id/versions/:vid
@@ -138,56 +117,6 @@ export function sampleAux(
   );
 }
 
-// PUT /ext/v1/tables/:id/versions/:vid/protect
-export function protectVersion(id: string, vid: string, protected_: boolean): Promise<TableVersion> {
-  return sendJson(
-    "PUT",
-    `/ext/v1/tables/${encodeURIComponent(id)}/versions/${encodeURIComponent(vid)}/protect`,
-    tableVersionSchema,
-    { protected: protected_ },
-  );
-}
-
-// GET /ext/v1/tables/:id/ttl/dryrun
-export function ttlDryRun(id: string): Promise<TtlDryRunResponse> {
-  return getJson(
-    `/ext/v1/tables/${encodeURIComponent(id)}/ttl/dryrun`,
-    ttlDryRunResponseSchema,
-  );
-}
-
-// POST /ext/v1/tables/:id/ttl/apply
-export function ttlApply(id: string): Promise<TtlApplyResponse> {
-  return sendJson(
-    "POST",
-    `/ext/v1/tables/${encodeURIComponent(id)}/ttl/apply`,
-    ttlApplyResponseSchema,
-  );
-}
-
-// GET /ext/v1/tables/:id/ttl/audit
-export function ttlAudit(id: string): Promise<TtlAuditRecord[]> {
-  return getJson(
-    `/ext/v1/tables/${encodeURIComponent(id)}/ttl/audit`,
-    zArray(ttlAuditRecordSchema),
-  );
-}
-
-// GET /ext/v1/storage  -- bucket-storage breakdown from the sync's storage-analysis tail.
-export function getStorage(): Promise<StoragePrefixStat[]> {
-  return getJson("/ext/v1/storage", zArray(storagePrefixStatSchema));
-}
-
-// GET /ext/v1/users
-export function getUsers(): Promise<CatalogUser[]> {
-  return getJson("/ext/v1/users", zArray(userSchema));
-}
-
-// GET /ext/v1/me  -- the caller's own identity as seen by IAP.
-export function getMe(): Promise<MeResponse> {
-  return getJson("/ext/v1/me", meResponseSchema);
-}
-
 // --- helpers ---
 
 function zArray<T>(el: { parse: (x: unknown) => T }): { parse: (x: unknown) => T[] } {
@@ -198,7 +127,3 @@ function zArray<T>(el: { parse: (x: unknown) => T }): { parse: (x: unknown) => T
     },
   };
 }
-
-const zVoid = {
-  parse: (_x: unknown) => undefined,
-};

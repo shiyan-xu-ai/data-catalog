@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, formatTime, nsToString, shapeLabel, ttlPolicyString } from "./format";
-import { ttlPolicySchema } from "./schemas";
+import { formatBytes, formatTime, nsToString, shapeLabel } from "./format";
 
 describe("formatTime", () => {
   it("renders the instant in UTC when mode is utc", () => {
@@ -25,8 +24,9 @@ describe("formatBytes", () => {
     expect(formatBytes(1536)).toBe("1.5 KiB");
     expect(formatBytes(1048576)).toBe("1 MiB");
   });
-  it("rounds GiB and above", () => {
+  it("rounds GiB and above, retaining one decimal for fractional values", () => {
     expect(formatBytes(1073741824 * 5)).toBe("5 GiB");
+    expect(formatBytes(1073741824 * 2.56)).toBe("2.6 GiB");
   });
 });
 
@@ -34,24 +34,6 @@ describe("nsToString", () => {
   it("joins segments with dots", () => {
     expect(nsToString(["a", "b", "c"])).toBe("a.b.c");
     expect(nsToString([])).toBe("");
-  });
-});
-
-describe("ttlPolicyString", () => {
-  it("returns none for null", () => {
-    expect(ttlPolicyString(null)).toBe("none");
-  });
-  it("returns none for empty policy", () => {
-    const p = ttlPolicySchema.parse({ keep_last_n: null, max_age_days: null });
-    expect(ttlPolicyString(p)).toBe("none");
-  });
-  it("combines both fields", () => {
-    const p = ttlPolicySchema.parse({ keep_last_n: 5, max_age_days: 30 });
-    expect(ttlPolicyString(p)).toBe("keep last 5, max age 30d");
-  });
-  it("shows only set field", () => {
-    const p = ttlPolicySchema.parse({ keep_last_n: 10, max_age_days: null });
-    expect(ttlPolicyString(p)).toBe("keep last 10");
   });
 });
 

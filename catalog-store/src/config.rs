@@ -33,7 +33,7 @@ pub const DEFAULT_SYNC_CONCURRENCY: usize = 16;
 
 /// Which versions get the expensive Lance stats (`load_indices`, and the `count_rows` fallback
 /// when the manifest doesn't fully carry row counts). The dataset OPEN itself always runs —
-/// shape/`partial` classification (and therefore TTL safety semantics) are identical in every
+/// shape/`partial` classification is identical in every
 /// mode; skipping deep stats only leaves `num_indices` (and rarely `row_count`) as `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeepStats {
@@ -104,30 +104,6 @@ impl SyncConfig {
             format!("{root_uri}/{rel}")
         }
     }
-
-    /// Inverse of `uri_for`: recover the `ObjectStore`-relative path from a URI previously
-    /// produced by `uri_for` (e.g. a `TableVersion::snapshot_path`), so it can be used for
-    /// LIST/DELETE against `store` (TTL hard-delete).
-    ///
-    /// Errors if `uri` is not under `root_uri`. This is a hard error rather than a silent
-    /// fallback: `path_for` feeds the irreversible TTL delete, and a fallback path that doesn't
-    /// resolve to real objects would turn a failed delete into a fake success (the version
-    /// dropped from the registry while its bytes remain on S3).
-    pub fn path_for(&self, uri: &str) -> Result<ObjPath> {
-        let root_uri = self.root_uri.trim_end_matches('/');
-        let rel = uri
-            .strip_prefix(root_uri)
-            .ok_or_else(|| anyhow!("uri {uri} is not under sync root {root_uri}"))?
-            .trim_start_matches('/');
-        let root_str = self.root_path.as_ref().trim_end_matches('/');
-        if rel.is_empty() {
-            Ok(self.root_path.clone())
-        } else if root_str.is_empty() {
-            Ok(ObjPath::from(rel))
-        } else {
-            Ok(ObjPath::from(format!("{root_str}/{rel}")))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -137,7 +113,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn path_for_is_the_inverse_of_uri_for() {
+    fn uri_for_resolves_the_store_relative_path() {
         let cfg = SyncConfig::new(
             Arc::new(LocalFileSystem::new()),
             ObjPath::from("scenario_dataset_export"),
@@ -149,19 +125,5 @@ mod tests {
             uri,
             "s3://bucket/scenario_dataset_export/smoke_test/2026-06-26_12-00-00"
         );
-        assert_eq!(cfg.path_for(&uri).unwrap(), original);
-    }
-
-    #[test]
-    fn path_for_errors_when_uri_is_not_under_the_sync_root() {
-        let cfg = SyncConfig::new(
-            Arc::new(LocalFileSystem::new()),
-            ObjPath::from("scenario_dataset_export"),
-            "s3://bucket/scenario_dataset_export".to_string(),
-        );
-        // A snapshot_path pointing at a different bucket/root must NOT silently fall back to a
-        // path under this store -- it must error, so a TTL delete refuses rather than pretending
-        // to have deleted something it never located.
-        assert!(cfg.path_for("s3://other-bucket/elsewhere/v1").is_err());
     }
 }

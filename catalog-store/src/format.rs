@@ -1,19 +1,11 @@
 //! Format detection and byte-accounting helpers shared by the sync.
-//!
-//! The classification helpers here are pure functions over a pre-fetched object list: the sync
-//! fetches every object under a version directory with ONE recursive LIST, then derives listings,
-//! byte totals, formats, and fingerprints in memory instead of issuing per-directory S3 requests
-//! (the old shape of this module). `recursive_bytes` remains as the one direct-IO helper for
-//! callers that only need a size (e.g. TTL tests).
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 
-use anyhow::Result;
-use futures::TryStreamExt;
 use object_store::path::Path as ObjPath;
-use object_store::{ObjectMeta, ObjectStore};
+use object_store::ObjectMeta;
 
 use catalog_core::AuxFormat;
 
@@ -67,16 +59,6 @@ pub fn bytes_under(objects: &[ObjectMeta], dir: &ObjPath) -> u64 {
         .filter(|m| rel_under(m, dir).is_some())
         .map(|m| m.size)
         .sum()
-}
-
-/// Sum the sizes of all objects recursively under `prefix`. No GETs — LIST metadata only.
-pub async fn recursive_bytes(store: &dyn ObjectStore, prefix: &ObjPath) -> Result<u64> {
-    let mut stream = store.list(Some(prefix));
-    let mut total = 0u64;
-    while let Some(meta) = stream.try_next().await? {
-        total += meta.size;
-    }
-    Ok(total)
 }
 
 /// Cheap, non-cryptographic fingerprint over the sorted (key, etag, size) tuples of every
