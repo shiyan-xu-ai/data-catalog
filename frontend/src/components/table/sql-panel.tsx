@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, PanelRightClose, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
+import { CircleHelp, Loader2, PanelRightClose, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
 import { ApiError, runSql } from "@/lib/api";
-import { formatCount } from "@/lib/format";
-import { ErrorCode, type SqlResponse } from "@/lib/schemas";
-import { defaultQuery, formatCell, shortTypeName, type CellKind } from "@/lib/sql";
+import { formatCount, parseTime } from "@/lib/format";
+import { useDateTimeFormatter } from "@/lib/preferences";
+import { ErrorCode, type SqlResponse, type TableVersion } from "@/lib/schemas";
+import { defaultQuery, formatCell, quoteIdent, shortTypeName, versionRef, type CellKind } from "@/lib/sql";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SqlEditor } from "@/components/sql-editor";
 
@@ -21,6 +23,7 @@ function errorTitle(e: Error): string {
   if (!(e instanceof ApiError)) return "Request failed";
   if (e.code === ErrorCode.Throttling) return "The server is busy running other queries; try again shortly";
   if (e.code === ErrorCode.TableNotFound) return "Table not found";
+  if (e.code === ErrorCode.TableVersionNotFound) return "Version not found";
   if (e.code === ErrorCode.InvalidInput) return "Query rejected";
   return "Query failed";
 }
@@ -69,21 +72,30 @@ function ResultGrid({ result }: { result: SqlResponse }) {
   );
 }
 
-/** Read-only DataFusion SQL against the table's current version. The query runs on the server;
- *  Cancel stops waiting for it (the server's own time limit ends it). */
+/** Read-only SQL against one table. A version picker sets which version the plain table name
+ *  reads (latest by default); other versions are addressable as `"<name>@v<N>"`. The query
+ *  runs on the server; Cancel stops waiting for it (the server's own time limit ends it). */
 export function SqlPanel({
   segments,
   columns,
+  versions,
+  latestVersion,
   onCollapse,
 }: {
   segments: readonly string[];
   /** Top-level column names, for editor completion. */
   columns: readonly string[];
+  /** All versions, newest first (the page's versions query); undefined while loading. */
+  versions: readonly TableVersion[] | undefined;
+  latestVersion: number | null | undefined;
   onCollapse: () => void;
 }) {
   const tableName = segments[segments.length - 1];
   const initial = defaultQuery(tableName);
+  const formatDateTime = useDateTimeFormatter();
   const [query, setQuery] = useState(initial);
+  // null reads the latest version (the request omits `version`).
+  const [version, setVersion] = useState<number | null>(null);
   const [result, setResult] = useState<SqlResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
@@ -91,6 +103,9 @@ export function SqlPanel({
   const controller = useRef<AbortController | null>(null);
   const running = startedAt != null;
   const schema = useMemo(() => ({ [tableName]: columns }), [tableName, columns]);
+  const latest = latestVersion ?? versions?.[0]?.version;
+  const exampleRef = versionRef(tableName, Math.max(1, (latest ?? 2) - 1));
+  const versionHint = `The version picker sets which version ${quoteIdent(tableName)} reads. Reference any other version in SQL as ${exampleRef}, e.g. to compare versions.`;
 
   // Tick a live elapsed counter while a query is in flight.
   useEffect(() => {
@@ -110,7 +125,7 @@ export function SqlPanel({
     setStartedAt(performance.now());
     setError(null);
     try {
-      const r = await runSql(segments, query, c.signal);
+      const r = await runSql(segments, query, version, c.signal);
       if (controller.current === c) setResult(r);
     } catch (e) {
       if (controller.current === c && !c.signal.aborted) {
@@ -134,14 +149,31 @@ export function SqlPanel({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-xs">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-        <TerminalSquare className="h-4 w-4 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold tracking-tight">SQL</h2>
-          <p className="truncate text-[11px] text-muted-foreground">Read-only DataFusion · current version</p>
+        <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <h2 className="text-sm font-semibold tracking-tight">SQL</h2>
+        <Badge variant="outline">Read-only</Badge>
+        <div className="ml-auto flex min-w-0 items-center gap-1">
+          <select
+            aria-label="Table version to query"
+            value={version ?? ""}
+            onChange={(e) => setVersion(e.target.value === "" ? null : Number(e.target.value))}
+            className="h-7 min-w-0 max-w-56 truncate rounded-md border border-input bg-background px-2 text-xs shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="">{latest != null ? `Latest (v${latest})` : "Latest"}</option>
+            {versions?.map((v) => (
+              <option key={v.version} value={v.version}>
+                v{v.version}
+                {v.timestamp_millis != null ? ` · ${formatDateTime(parseTime(v.timestamp_millis))}` : ""}
+              </option>
+            ))}
+          </select>
+          <span className="shrink-0 text-muted-foreground" title={versionHint} aria-label={versionHint}>
+            <CircleHelp className="h-3.5 w-3.5" />
+          </span>
+          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onCollapse} aria-label="Collapse SQL panel" title="Collapse">
+            <PanelRightClose />
+          </Button>
         </div>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onCollapse} aria-label="Collapse SQL panel" title="Collapse">
-          <PanelRightClose />
-        </Button>
       </div>
 
       <SqlEditor value={query} onChange={setQuery} onRun={run} schema={schema} className="h-40 shrink-0 border-b" />
@@ -181,10 +213,17 @@ export function SqlPanel({
         ) : result ? (
           <ResultGrid result={result} />
         ) : (
-          <p className="p-4 text-xs text-muted-foreground">
-            Run a query to see results. Only <span className="font-mono">SELECT</span> queries against this table run;
-            results are capped at 1,000 rows.
-          </p>
+          <div className="space-y-2 p-4 text-xs text-muted-foreground">
+            <p>
+              Run a query to see results. Only <span className="font-mono">SELECT</span> queries against this table run;
+              results are capped at 1,000 rows.
+            </p>
+            <p>
+              The picker above sets the version the table name reads. Reference another version as{" "}
+              <code className="rounded bg-muted px-1 font-mono text-foreground">{exampleRef}</code>, e.g. to compare
+              versions.
+            </p>
+          </div>
         )}
       </div>
 
@@ -193,6 +232,7 @@ export function SqlPanel({
           <span>
             {formatCount(result.row_count)} row{result.row_count === 1 ? "" : "s"}
           </span>
+          {result.version != null && <span>v{result.version}</span>}
           <span>{formatElapsed(result.elapsed_ms)}</span>
           {result.truncated && (
             <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">

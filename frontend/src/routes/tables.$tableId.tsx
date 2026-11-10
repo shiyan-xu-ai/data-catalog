@@ -13,7 +13,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { displayName, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
-import { ErrorCode } from "@/lib/schemas";
+import { ErrorCode, type TableVersion } from "@/lib/schemas";
 import { storageFormatVersion } from "@/lib/table-metadata";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -51,7 +51,17 @@ function RouteComponent() {
 
 /** Right-hand SQL panel: collapsible to a narrow tab and widened by dragging its left edge.
  *  Both choices persist. Below `lg` it stacks under the tabs at full width. */
-function SqlDock({ segments, columns }: { segments: readonly string[]; columns: readonly string[] }) {
+function SqlDock({
+  segments,
+  columns,
+  versions,
+  latestVersion,
+}: {
+  segments: readonly string[];
+  columns: readonly string[];
+  versions: readonly TableVersion[] | undefined;
+  latestVersion: number | null | undefined;
+}) {
   const [collapsed, setCollapsed] = useStoredState("sql-panel-collapsed", false);
   const [width, setWidth] = useStoredState("sql-panel-width", PANEL_DEFAULT_WIDTH);
 
@@ -102,7 +112,13 @@ function SqlDock({ segments, columns }: { segments: readonly string[]; columns: 
         className="absolute inset-y-0 -left-3 z-10 hidden w-3 cursor-col-resize lg:block after:absolute after:inset-y-4 after:left-1 after:w-0.5 after:rounded-full after:bg-transparent hover:after:bg-border"
       />
       <Suspense fallback={<Skeleton className="h-full w-full" />}>
-        <SqlPanel segments={segments} columns={columns} onCollapse={() => setCollapsed(true)} />
+        <SqlPanel
+          segments={segments}
+          columns={columns}
+          versions={versions}
+          latestVersion={latestVersion}
+          onCollapse={() => setCollapsed(true)}
+        />
       </Suspense>
     </div>
   );
@@ -180,7 +196,7 @@ function TablePage({ tableId }: { tableId: string }) {
           }
           className="min-w-0"
         >
-          <TabsList className="overflow-x-auto">
+          <TabsList>
             {TABS.map((t) => {
               const Icon = tabIcon[t];
               return (
@@ -213,7 +229,12 @@ function TablePage({ tableId }: { tableId: string }) {
         </Tabs>
       </div>
 
-      <SqlDock segments={segments} columns={columnNames} />
+      <SqlDock
+        segments={segments}
+        columns={columnNames}
+        versions={versions.data}
+        latestVersion={detail.data?.version}
+      />
     </div>
   );
 }

@@ -55,3 +55,8 @@ export function shortTypeName(type: string): string {
   const paren = type.search(/[(<]/);
   return paren > 0 ? `${type.slice(0, paren)}(…)` : clip(type, 24);
 }
+
+/** How SQL names a specific version of the table, e.g. `"events@v12"`. */
+export function versionRef(tableName: string, version: number): string {
+  return quoteIdent(`${tableName}@v${version}`);
+}

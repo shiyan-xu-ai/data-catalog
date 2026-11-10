@@ -246,8 +246,20 @@ export function registerTable(
   });
 }
 
-/** Catalog route: run one read-only DataFusion query against the table's current version.
- *  Aborting `signal` only stops waiting; the server finishes or times out on its own. */
-export function runSql(table: readonly string[], sql: string, signal?: AbortSignal): Promise<SqlResponse> {
-  return request("POST", `/catalog/v1/table/${idPathSegment(table)}/sql`, sqlResponseSchema, { sql }, signal);
+/** Catalog route: run one read-only SQL query. The plain table name reads `version` (the latest
+ *  when omitted). Aborting `signal` only stops waiting; the server finishes or times out on its
+ *  own. */
+export function runSql(
+  table: readonly string[],
+  sql: string,
+  version: number | null,
+  signal?: AbortSignal,
+): Promise<SqlResponse> {
+  return request(
+    "POST",
+    `/catalog/v1/table/${idPathSegment(table)}/sql`,
+    sqlResponseSchema,
+    version == null ? { sql } : { sql, version },
+    signal,
+  );
 }

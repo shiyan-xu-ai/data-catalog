@@ -52,14 +52,17 @@ the chosen timezone. The top bar shows a breadcrumb.
     timestamp, rows and row change, data size, data files, and deletions.
   - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
 
-  The **SQL panel** runs one read-only DataFusion query at a time against the
-  table's current version (`POST /catalog/v1/table/{id}/sql`). It opens with
+  The **SQL panel** (labeled read-only) runs one query at a time against this
+  table (`POST /catalog/v1/table/{id}/sql`). A version picker, listing every
+  version newest first, sets which version the table name reads (latest by
+  default); any other version is addressable in SQL as `"<table>@v<N>"`, for
+  example to compare versions. The panel opens with
   `SELECT * FROM "<table>" LIMIT 20`, runs on the Run button or Ctrl/Cmd+Enter,
   and shows column names and types, compact nested and binary values, row
-  count, elapsed time, a truncation notice past the server's row cap, and the
-  DataFusion error message. Cancel stops waiting; the server's time limit ends
-  the query. The panel collapses and widens by dragging its left edge; both
-  persist. The tabs stay usable while a query runs.
+  count, the queried version, elapsed time, a truncation notice past the
+  server's row cap, and the server's error message. Cancel stops waiting; the
+  server's time limit ends the query. The panel collapses and widens by
+  dragging its left edge; both persist. The tabs stay usable while a query runs.
 
 Catalog-recorded facts come from the cheap describe, and Lance-derived sections
 from the detailed describe and the version, index, tag, and branch routes. Each

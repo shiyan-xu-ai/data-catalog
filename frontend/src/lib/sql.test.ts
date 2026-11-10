@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultQuery, formatCell, quoteIdent, shortTypeName } from "./sql";
+import { defaultQuery, formatCell, quoteIdent, shortTypeName, versionRef } from "./sql";
 
 describe("SQL pre-fill", () => {
   it("always double-quotes the table name and escapes embedded quotes", () => {
@@ -8,6 +8,10 @@ describe("SQL pre-fill", () => {
     expect(quoteIdent('we"ird')).toBe('"we""ird"');
     expect(defaultQuery("2026-11-07_06-46-14")).toBe('SELECT * FROM "2026-11-07_06-46-14" LIMIT 20');
     expect(defaultQuery("MixedCase")).toBe('SELECT * FROM "MixedCase" LIMIT 20');
+  });
+  it("names a specific version as one quoted identifier", () => {
+    expect(versionRef("2026-11-07_06-46-14", 12)).toBe('"2026-11-07_06-46-14@v12"');
+    expect(versionRef('we"ird', 3)).toBe('"we""ird@v3"');
   });
 });
 

@@ -20,6 +20,7 @@ export const ErrorCode = {
   NamespaceNotEmpty: 3,
   TableNotFound: 4,
   TableAlreadyExists: 5,
+  TableVersionNotFound: 11,
   InvalidInput: 13,
   Internal: 18,
   Throttling: 21,
@@ -59,13 +60,15 @@ export const registerTableResponseSchema = z.object({
 export type RegisterTableResponse = z.infer<typeof registerTableResponseSchema>;
 
 /** Catalog route `POST /catalog/v1/table/{id}/sql` (not a spec model). Row values follow
- *  Arrow's JSON writer, so they stay `unknown` until formatted per column type. */
+ *  Arrow's JSON writer, so they stay `unknown` until formatted per column type. `version` is
+ *  the table version the plain table name read. */
 export const sqlResponseSchema = z.object({
   columns: z.array(z.object({ name: z.string(), type: z.string() })),
   rows: z.array(z.array(z.unknown())),
   row_count: z.number(),
   truncated: z.boolean(),
   elapsed_ms: z.number(),
+  version: z.number().nullish(),
 });
 export type SqlResponse = z.infer<typeof sqlResponseSchema>;
 
