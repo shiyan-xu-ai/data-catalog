@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { NamespaceBrowser } from "@/components/namespace-browser";
+import { NamespacePage } from "@/components/namespace-page";
 
 export const Route = createFileRoute("/namespaces/")({
-  component: () => <NamespaceBrowser segments={[]} />,
+  component: () => <NamespacePage segments={[]} />,
 });

@@ -33,6 +33,15 @@
     --ring: 222.2 84% 4.9%;
 
     --radius: 0.5rem;
+
+    --sidebar: 210 40% 98%;
+
+    --chart-1: 221 83% 53%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 32 95% 50%;
+    --chart-4: 262 52% 55%;
+    --chart-5: 340 75% 55%;
+    --chart-6: 215 16% 60%;
   }
 
   .dark {
@@ -63,6 +72,15 @@
     --border: 217.2 20% 26%;
     --input: 217.2 20% 26%;
     --ring: 212.7 26.8% 83.9%;
+
+    --sidebar: 222.2 16% 10%;
+
+    --chart-1: 217 91% 64%;
+    --chart-2: 170 60% 48%;
+    --chart-3: 36 95% 58%;
+    --chart-4: 262 70% 70%;
+    --chart-5: 340 80% 65%;
+    --chart-6: 215 16% 50%;
   }
 }
 
@@ -71,7 +89,8 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatArrowType } from "./arrow";
+import { formatArrowType, formatArrowTypeShort } from "./arrow";
 
 describe("formatArrowType", () => {
   it("formats primitives and sized types", () => {
@@ -20,5 +20,24 @@ describe("formatArrowType", () => {
         ],
       }),
     ).toBe("struct<a: utf8, b: list<float32>>");
+  });
+});
+
+describe("formatArrowTypeShort", () => {
+  it("collapses structs to a field count but keeps list element types", () => {
+    const item = { name: "item", type: { type: "utf8" }, nullable: true };
+    const struct = {
+      type: "struct",
+      fields: [
+        { name: "a", type: { type: "utf8" }, nullable: true },
+        { name: "b", type: { type: "int32" }, nullable: true },
+      ],
+    };
+    expect(formatArrowTypeShort(struct)).toBe("struct<2 fields>");
+    expect(formatArrowTypeShort({ type: "list", fields: [item] })).toBe("list<utf8>");
+    expect(formatArrowTypeShort({ type: "list", fields: [{ name: "item", type: struct, nullable: true }] })).toBe(
+      "list<struct<2 fields>>",
+    );
+    expect(formatArrowTypeShort({ type: "int64" })).toBe("int64");
   });
 });

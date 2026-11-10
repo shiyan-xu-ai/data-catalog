@@ -115,5 +115,79 @@ export const describeTableResponseSchema = z.object({
   version: z.number().nullish(),
   schema: jsonArrowSchemaSchema.nullish(),
   stats: tableStatsSchema.nullish(),
+  /** Detailed describe only: Lance version summary, `config.*`, `lance.data_storage_version`. */
+  metadata: propertiesSchema.nullish(),
 });
 export type DescribeTableResponse = z.infer<typeof describeTableResponseSchema>;
+
+export const tableVersionSchema = z.object({
+  version: z.number(),
+  manifest_path: z.string().nullish(),
+  manifest_size: z.number().nullish(),
+  e_tag: z.string().nullish(),
+  timestamp_millis: z.number().nullish(),
+  metadata: propertiesSchema.nullish(),
+});
+export type TableVersion = z.infer<typeof tableVersionSchema>;
+
+export const listTableVersionsResponseSchema = z.object({
+  versions: z.array(tableVersionSchema),
+  page_token: z.string().nullish(),
+});
+export type ListTableVersionsResponse = z.infer<typeof listTableVersionsResponseSchema>;
+
+export const indexContentSchema = z.object({
+  index_name: z.string(),
+  index_uuid: z.string().nullish(),
+  columns: z.array(z.string()),
+  status: z.string().nullish(),
+  index_type: z.string().nullish(),
+  num_indexed_rows: z.number().nullish(),
+  num_unindexed_rows: z.number().nullish(),
+  size_bytes: z.number().nullish(),
+  created_at: z.string().nullish(),
+  index_version: z.number().nullish(),
+});
+export type IndexContent = z.infer<typeof indexContentSchema>;
+
+export const listTableIndicesResponseSchema = z.object({
+  indexes: z.array(indexContentSchema),
+  page_token: z.string().nullish(),
+});
+export type ListTableIndicesResponse = z.infer<typeof listTableIndicesResponseSchema>;
+
+// Tag and branch contents use camelCase keys in the spec (`manifestSize`, `parentVersion`).
+export const tagContentsSchema = z.object({
+  version: z.number(),
+  branch: z.string().nullish(),
+  manifestSize: z.number().nullish(),
+});
+export type TagContents = z.infer<typeof tagContentsSchema>;
+
+export const listTableTagsResponseSchema = z.object({
+  tags: z.record(z.string(), tagContentsSchema),
+  page_token: z.string().nullish(),
+});
+export type ListTableTagsResponse = z.infer<typeof listTableTagsResponseSchema>;
+
+export const branchContentsSchema = z.object({
+  parentBranch: z.string().nullish(),
+  parentVersion: z.number().nullish(),
+  createAt: z.number().nullish(),
+  manifestSize: z.number().nullish(),
+  metadata: propertiesSchema.nullish(),
+});
+export type BranchContents = z.infer<typeof branchContentsSchema>;
+
+export const listTableBranchesResponseSchema = z.object({
+  branches: z.record(z.string(), branchContentsSchema),
+  page_token: z.string().nullish(),
+});
+export type ListTableBranchesResponse = z.infer<typeof listTableBranchesResponseSchema>;
+
+/** Catalog route `GET /catalog/v1/table/{id}/column-storage` (not a spec model). */
+export const columnStorageResponseSchema = z.object({
+  version: z.number(),
+  columns: z.array(z.object({ name: z.string(), bytes_on_disk: z.number() })),
+});
+export type ColumnStorageResponse = z.infer<typeof columnStorageResponseSchema>;

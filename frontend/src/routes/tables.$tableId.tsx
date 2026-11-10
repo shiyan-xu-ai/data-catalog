@@ -1,43 +1,61 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { BarChart3, Layers, ListTree, Table2, TableProperties, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { deregisterTable, describeTable } from "@/lib/api";
+import { ApiError, deregisterTable } from "@/lib/api";
+import {
+  keys,
+  useColumnStorage,
+  useTableCheap,
+  useTableDetail,
+  useTableIndices,
+  useTableVersions,
+} from "@/lib/catalog-queries";
 import { formatCount } from "@/lib/format";
 import { displayName, joinId, splitId } from "@/lib/ids";
+import { ErrorCode } from "@/lib/schemas";
+import { storageFormatVersion } from "@/lib/table-metadata";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
-import { NamespaceBreadcrumb } from "@/components/namespace-breadcrumb";
-import { PropertiesList } from "@/components/properties-list";
-import { SchemaView } from "@/components/schema-view";
+import { DetailsSidebar } from "@/components/table/details-sidebar";
+import { IndicesTab } from "@/components/table/indices-tab";
+import { OverviewTab } from "@/components/table/overview-tab";
+import { SchemaTab } from "@/components/table/schema-tab";
+import { VersionsTab } from "@/components/table/versions-tab";
+
+const TABS = ["overview", "schema", "versions", "indices"] as const;
+type Tab = (typeof TABS)[number];
 
 export const Route = createFileRoute("/tables/$tableId")({
-  component: TableDetailPage,
+  validateSearch: (search: Record<string, unknown>): { tab?: Tab } =>
+    TABS.includes(search.tab as Tab) && search.tab !== "overview" ? { tab: search.tab as Tab } : {},
+  component: RouteComponent,
 });
 
-function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid grid-cols-[8rem_1fr] gap-x-4 py-1">
-      <dt className="text-xs uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="text-sm wrap-break-word">{children}</dd>
-    </div>
-  );
+function RouteComponent() {
+  const { tableId } = Route.useParams();
+  // Keyed so tab-local state (paging, expansion) resets between tables.
+  return <TablePage key={tableId} tableId={tableId} />;
 }
 
-function TableDetailPage() {
-  const { tableId } = Route.useParams();
+function TablePage({ tableId }: { tableId: string }) {
   const segments = splitId(tableId);
   const namespace = segments.slice(0, -1);
+  const { tab = "overview" } = Route.useSearch();
   const qc = useQueryClient();
   const navigate = useNavigate();
 
-  const { data: table, isLoading, error } = useQuery({
-    queryKey: ["table", tableId],
-    queryFn: () => describeTable(segments),
-  });
+  const cheap = useTableCheap(segments);
+  const detail = useTableDetail(segments);
+  const versions = useTableVersions(segments);
+  const indices = useTableIndices(segments);
+  // Per-column storage reads every fragment; start it only once the rest of the page settled.
+  const columns = useColumnStorage(segments, !detail.isPending && !versions.isPending && !indices.isPending);
 
   async function deregister() {
     try {
@@ -47,34 +65,63 @@ function TableDetailPage() {
       throw e;
     }
     toast.success(`Deregistered "${displayName(segments)}"`);
-    qc.removeQueries({ queryKey: ["table", tableId] });
-    qc.invalidateQueries({ queryKey: ["tables", joinId(namespace)] });
-    navigate(
-      namespace.length
-        ? { to: "/namespaces/$nsId", params: { nsId: joinId(namespace) } }
-        : { to: "/namespaces" },
+    qc.removeQueries({ queryKey: keys.table(tableId) });
+    qc.invalidateQueries({ queryKey: keys.tables(joinId(namespace)) });
+    qc.invalidateQueries({ queryKey: keys.allTables });
+    navigate(namespace.length ? { to: "/namespaces/$nsId", params: { nsId: joinId(namespace) } } : { to: "/namespaces" });
+  }
+
+  if (cheap.error instanceof ApiError && cheap.error.code === ErrorCode.TableNotFound) {
+    return (
+      <EmptyState icon={Table2} title="Table not found" className="py-16">
+        <span className="font-mono">{displayName(segments)}</span> is not registered in the catalog.
+      </EmptyState>
     );
   }
 
+  const name = segments[segments.length - 1];
+  const format = storageFormatVersion(detail.data?.metadata);
+  const tabIcon = { overview: BarChart3, schema: TableProperties, versions: Layers, indices: ListTree };
+  const counts: Partial<Record<Tab, number | undefined>> = {
+    schema: detail.data?.schema?.fields.length,
+    versions: versions.data?.length,
+    indices: indices.data?.length,
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="space-y-1">
-          <NamespaceBreadcrumb segments={namespace} />
-          <h1 className="font-mono text-2xl">{displayName(segments)}</h1>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
+            <Table2 className="h-5 w-5 text-muted-foreground" />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <h1 className="truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span className="font-mono">{displayName(namespace)}</span>
+              {detail.isPending ? (
+                <Skeleton className="h-5 w-24" />
+              ) : (
+                <>
+                  {format && <Badge variant="outline">Lance {format}</Badge>}
+                  {detail.data?.version != null && <Badge variant="outline">v{detail.data.version}</Badge>}
+                </>
+              )}
+            </div>
+          </div>
         </div>
-        {table && (
+        {cheap.data && (
           <ConfirmDialog
             trigger={
-              <Button variant="destructive">
+              <Button variant="outline" className="text-destructive hover:text-destructive">
                 <Trash2 /> Deregister
               </Button>
             }
             title="Deregister table"
             description={
               <>
-                Remove <span className="font-mono">{displayName(segments)}</span> from the catalog?
-                The data at its location is not deleted.
+                Remove <span className="font-mono text-foreground">{displayName(segments)}</span> from the
+                catalog? The dataset at its location is not modified or deleted.
               </>
             }
             confirmLabel="Deregister"
@@ -84,50 +131,52 @@ function TableDetailPage() {
         )}
       </div>
 
-      {error ? (
-        <ErrorState message={(error as Error).message} />
-      ) : isLoading ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
-      ) : !table ? (
-        <EmptyState>Table not found.</EmptyState>
-      ) : (
-        <>
-          <Card>
-            <CardHeader><CardTitle>Overview</CardTitle></CardHeader>
-            <CardContent>
-              <dl>
-                <MetaRow label="Location">
-                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs break-all">
-                    {table.location ?? table.table_uri ?? "—"}
-                  </code>
-                </MetaRow>
-                <MetaRow label="Owner">{table.properties?.owner ?? "—"}</MetaRow>
-                <MetaRow label="Version">{table.version ?? "—"}</MetaRow>
-                <MetaRow label="Fragments">{formatCount(table.stats?.num_fragments)}</MetaRow>
-                <MetaRow label="Deleted rows">{formatCount(table.stats?.num_deleted_rows)}</MetaRow>
-              </dl>
-            </CardContent>
-          </Card>
+      {cheap.error && <ErrorState message={cheap.error.message} />}
 
-          <Card>
-            <CardHeader><CardTitle>Properties</CardTitle></CardHeader>
-            <CardContent>
-              <PropertiesList properties={table.properties} />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle>Schema</CardTitle></CardHeader>
-            <CardContent>
-              {table.schema ? (
-                <SchemaView schema={table.schema} />
-              ) : (
-                <EmptyState>Schema unavailable.</EmptyState>
-              )}
-            </CardContent>
-          </Card>
-        </>
-      )}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <Tabs
+          value={tab}
+          onValueChange={(v) =>
+            navigate({ to: ".", search: v === "overview" ? {} : { tab: v as Tab }, replace: true })
+          }
+          className="min-w-0"
+        >
+          <TabsList>
+            {TABS.map((t) => {
+              const Icon = tabIcon[t];
+              return (
+                <TabsTrigger key={t} value={t} className="capitalize">
+                  <Icon /> {t}
+                  {counts[t] != null && (
+                    <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground tabular-nums">
+                      {formatCount(counts[t])}
+                    </span>
+                  )}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+          <TabsContent value="overview">
+            <OverviewTab detail={detail} versions={versions} indices={indices} columns={columns} />
+          </TabsContent>
+          <TabsContent value="schema">
+            <SchemaTab detail={detail} />
+          </TabsContent>
+          <TabsContent value="versions">
+            <VersionsTab versions={versions} currentVersion={detail.data?.version} />
+          </TabsContent>
+          <TabsContent value="indices">
+            <IndicesTab indices={indices} />
+          </TabsContent>
+        </Tabs>
+        <div className="lg:sticky lg:top-0">
+          {cheap.isPending ? (
+            <Skeleton className="h-96 w-full" />
+          ) : (
+            <DetailsSidebar segments={segments} cheap={cheap.data} detail={detail} />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,13 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { NamespaceBrowser } from "@/components/namespace-browser";
+import { NamespacePage } from "@/components/namespace-page";
 import { splitId } from "@/lib/ids";
 
 export const Route = createFileRoute("/namespaces/$nsId")({
-  component: NamespacePage,
+  component: RouteComponent,
 });
 
-function NamespacePage() {
+function RouteComponent() {
   const { nsId } = Route.useParams();
   // Keyed so dialog/query state resets when navigating between namespaces.
-  return <NamespaceBrowser key={nsId} segments={splitId(nsId)} />;
+  return <NamespacePage key={nsId} segments={splitId(nsId)} />;
 }

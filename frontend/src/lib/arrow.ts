@@ -18,3 +18,13 @@ export function formatArrowType(t: JsonArrowDataType): string {
   const lengthSuffix = t.length != null ? `, ${t.length}` : "";
   return `${t.type}<${children.map((f) => formatArrowType(f.type)).join(", ")}${lengthSuffix}>`;
 }
+
+/** Like `formatArrowType`, but structs collapse to their field count (`struct<12 fields>`),
+ *  for schema-tree rows whose children are shown by expanding the row. */
+export function formatArrowTypeShort(t: JsonArrowDataType): string {
+  const children = t.fields ?? [];
+  if (children.length === 0) return formatArrowType(t);
+  if (t.type === "struct") return `struct<${children.length} field${children.length === 1 ? "" : "s"}>`;
+  const lengthSuffix = t.length != null ? `, ${t.length}` : "";
+  return `${t.type}<${children.map((f) => formatArrowTypeShort(f.type)).join(", ")}${lengthSuffix}>`;
+}

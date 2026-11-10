@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { createNamespace } from "@/lib/api";
+import { keys } from "@/lib/catalog-queries";
 import { displayName, joinId, segmentError } from "@/lib/ids";
 import { buildProperties, type PropertyRow } from "@/lib/properties";
 import {
@@ -30,7 +31,7 @@ export function CreateNamespaceDialog({ parent, open, onOpenChange }: CreateName
   const [rows, setRows] = useState<PropertyRow[]>([]);
 
   const nameError = name ? segmentError(name) : null;
-  const props = buildProperties("", rows);
+  const props = buildProperties({}, rows);
   const canSubmit = name.length > 0 && !nameError && props.ok;
 
   const mutation = useMutation({
@@ -40,7 +41,8 @@ export function CreateNamespaceDialog({ parent, open, onOpenChange }: CreateName
     },
     onSuccess: () => {
       toast.success(`Created namespace "${displayName([...parent, name])}"`);
-      qc.invalidateQueries({ queryKey: ["namespaces", joinId(parent)] });
+      qc.invalidateQueries({ queryKey: keys.namespaces(joinId(parent)) });
+      qc.invalidateQueries({ queryKey: keys.allNamespaces });
       close();
     },
     onError: (e: unknown) => toast.error((e as Error).message),
