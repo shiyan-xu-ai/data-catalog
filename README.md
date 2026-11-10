@@ -4,14 +4,24 @@ A regional metadata catalog for Lance tables in S3-compatible object storage. Op
 
 ## Architecture
 
-The Rust API and static UI run together in a Cloud Run container. Catalog state lives in object storage:
+```text
+Cloud Scheduler / operator                     Browser / API client
+           |                                           |
+           v                                           v
+      +----------------------------------------------------+
+      |            Catalog API + React UI                  |
+      |                 (Cloud Run)                        |
+      +----------------------------------------------------+
+           |                   |                    |
+           | pull              | read / write       | read / write
+           v                   v                    v
+   Registered Lance      Lance registry       Registration JSON
+   tables on S3          (derived stats)      (table + owner)
+```
 
-- **Registry:** a Lance dataset containing derived table and version metadata.
-- **Registration metadata:** one JSON object per table containing its optional owner. Conditional writes protect concurrent updates.
+Sync pulls stats; writers do not push them. Clean versions are assumed immutable and reused, so in-place changes can leave stats stale. The API merges registry and registration metadata into a read view cached for five seconds by default.
 
-Cloud Scheduler or an operator calls the sync endpoint. The catalog **pulls** metadata from registered tables and writes the registry snapshot; writers do not push stats. New versions appear after a successful sync. Clean versions are carried forward assuming timestamp directories are immutable, so modifying one in place can leave its stats stale. The API merges registry and registration metadata into a read view, cached for five seconds by default.
-
-The workspace contains `catalog-core` (types and registry), `catalog-store` (object-store access and sync), `catalog-api` (HTTP server and sync orchestration), and `frontend` (React UI). See [architecture](ARCHITECTURE.md) for details and the [deployment runbook](docs/RUNBOOK-DEPLOY.md) for setup.
+See [architecture](ARCHITECTURE.md) for details and the [deployment runbook](docs/RUNBOOK-DEPLOY.md) for setup.
 
 ## API
 
