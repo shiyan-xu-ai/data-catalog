@@ -49,11 +49,16 @@ so `catalog-api` owns an axum router that follows the adapter's conventions:
 
 Supported operations: namespace list / describe / create / drop / exists; table
 list / list-all / register / describe / exists / deregister; read-only table
-stats, version list / describe, index list / stats, tag list, branch list. Two
+stats, version list / describe, index list / stats, tag list, branch list. Three
 catalog routes sit outside `/v1` because no spec model carries their data:
 `GET /catalog/v1/table/:id/column-storage` (bytes per top-level column of the
-current version) and `GET /catalog/v1/table/:id/storage` (storage footprint and
-cost estimate).
+current version), `GET /catalog/v1/table/:id/storage` (storage footprint and
+cost estimate), and `POST /catalog/v1/table/:id/sql` (read-only SQL).
+
+The SQL route builds a fresh DataFusion session per query, registers only the
+table's current version under its table name, and plans with DDL, DML, and
+statements disabled, so a query cannot write anywhere. Each query is bounded by
+row, time, and memory limits, and a per-instance semaphore caps concurrency.
 
 Lance has no API for total storage size: the manifest summary and field
 statistics cover only the current version's data files, not blob v2 payload

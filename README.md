@@ -27,6 +27,7 @@ Identifiers in paths are segments joined by `$`; the root namespace is `$`. For 
 | POST | `/v1/table/:id/tags/list`, `/branches/list` | Tags and branches. |
 | GET | `/catalog/v1/table/:id/column-storage` | Bytes on disk per top-level column of the current version (catalog route; no spec model carries it). Excludes blob payload files. Slow on large tables. |
 | GET | `/catalog/v1/table/:id/storage` | Current-version data and index bytes, total bytes on object storage under the table location by category (data, blob, index, deletion, manifest, transaction, other), and an estimated monthly storage cost. Lists the dataset prefix, so it is slow on large tables. |
+| POST | `/catalog/v1/table/:id/sql` | Run a read-only DataFusion SQL query (`{"sql": "..."}`) against the table's current version, addressed by its table name. DDL, DML, and `COPY` are rejected; results are capped at `CATALOG_SQL_MAX_ROWS` rows and flagged `truncated`. |
 | GET | `/healthz`, `/readyz` | Liveness, and readiness (requires Postgres). |
 
 The catalog never writes to registered datasets. Other spec operations, including data operations, version/tag/branch/index writes, and transactions, return `Unsupported` (code 0, HTTP 406). Platform IAP protects deployed access, and the application performs no authentication itself.
@@ -43,6 +44,10 @@ The catalog never writes to registered datasets. Other spec operations, includin
 | `CATALOG_SECRET_PREFIX` | `K_SERVICE` | Secret Manager prefix for AWS credentials on Cloud Run. |
 | `CATALOG_STORAGE_PRICE_PER_GB_MONTH` | `0.0133875` | Storage price per decimal GB-month used for cost estimates (OCI Active tier, contracted rate). |
 | `CATALOG_STORAGE_PRICE_TIER` | `OCI Object Storage Active (contracted)` | Label shown next to the cost estimate. |
+| `CATALOG_SQL_MAX_ROWS` | `1000` | Maximum rows a SQL query returns; larger results are truncated and flagged. |
+| `CATALOG_SQL_TIMEOUT_SECS` | `60` | Per-query time limit. |
+| `CATALOG_SQL_MEMORY_LIMIT_MB` | `512` | Per-query DataFusion memory pool. |
+| `CATALOG_SQL_MAX_CONCURRENT` | `2` | Concurrent SQL queries per instance; extra requests get 429 (Throttling). |
 
 Datasets on S3 or S3-compatible stores are opened with the standard `AWS_*` variables, including `AWS_ENDPOINT_URL`. On Cloud Run, credentials come from Secret Manager unless they are already in the environment.
 
