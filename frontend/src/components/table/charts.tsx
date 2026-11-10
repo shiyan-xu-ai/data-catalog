@@ -61,13 +61,21 @@ export interface StorageSlice {
 }
 
 /** Donut of byte slices with the total in the center; callers pass only non-zero slices. */
-export function StorageSplitChart({ slices, caption }: { slices: StorageSlice[]; caption: string }) {
+export function StorageSplitChart({
+  slices,
+  caption,
+  className = "h-52",
+}: {
+  slices: StorageSlice[];
+  caption: string;
+  className?: string;
+}) {
   const total = slices.reduce((s, x) => s + x.bytes, 0);
   const config = Object.fromEntries(slices.map((s) => [s.key, { label: s.label, color: s.color }])) satisfies ChartConfig;
   const data = slices.map((s) => ({ key: s.key, bytes: s.bytes, fill: `var(--color-${s.key})` }));
   return (
     <div className="relative">
-      <ChartContainer config={config} className="mx-auto aspect-square h-52">
+      <ChartContainer config={config} className={`mx-auto aspect-square ${className}`}>
         <PieChart>
           <ChartTooltip
             content={

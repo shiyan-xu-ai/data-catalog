@@ -203,7 +203,10 @@ export function OverviewTab({
           )}
         </Section>
 
-        <Section title="Storage composition" description="Every object under the table location, by file category">
+        <Section
+          title="Storage composition"
+          description="Every object under the table location: blob payloads vs everything else, then the non-blob files by category"
+        >
           {storage.error ? (
             <ErrorState message={storage.error.message} />
           ) : !storage.data ? (
@@ -282,31 +285,71 @@ const CATEGORIES: Record<string, { label: string; color: string }> = {
 };
 const ORDER = Object.keys(CATEGORIES);
 
+// Neutral so "everything else" is not mistaken for any one category in the second donut.
+const OTHERS_COLOR = "hsl(var(--foreground) / 0.35)";
+
+/** Two donuts: blob payload files against everything else, then the non-blob remainder by
+ *  category, since blob files usually dwarf every other category in the first. */
 function StorageComposition({ onStorage }: { onStorage: TableStorageResponse["on_storage"] }) {
   const rank = (name: string) => (ORDER.includes(name) ? ORDER.indexOf(name) : ORDER.length);
-  const categories = [...onStorage.categories].sort((a, b) => rank(a.name) - rank(b.name));
   const style = (name: string) => CATEGORIES[name] ?? { label: name, color: "hsl(var(--muted-foreground) / 0.5)" };
-  const slices: StorageSlice[] = categories
+  const categories = [...onStorage.categories].sort((a, b) => rank(a.name) - rank(b.name));
+  const blob = categories.find((c) => c.name === "blob") ?? { name: "blob", bytes: 0, objects: 0 };
+  const rest = categories.filter((c) => c.name !== "blob");
+  const restBytes = rest.reduce((s, c) => s + c.bytes, 0);
+  const restObjects = rest.reduce((s, c) => s + c.objects, 0);
+  const share = (bytes: number, total: number) => formatPercent(total ? bytes / total : null);
+
+  if (onStorage.total_bytes === 0) {
+    return <EmptyState icon={HardDrive} title="Nothing on storage">No objects were found under the table location.</EmptyState>;
+  }
+
+  const totalSlices: StorageSlice[] = [
+    { key: "blob", label: style("blob").label, bytes: blob.bytes, color: style("blob").color },
+    { key: "others", label: "Everything else", bytes: restBytes, color: OTHERS_COLOR },
+  ].filter((s) => s.bytes > 0);
+  const restSlices: StorageSlice[] = rest
     .filter((c) => c.bytes > 0)
     .map((c) => ({ key: c.name, label: style(c.name).label, bytes: c.bytes, color: style(c.name).color }));
 
   return (
-    <div className="space-y-4">
-      {slices.length === 0 ? (
-        <EmptyState icon={HardDrive} title="Nothing on storage">No objects were found under the table location.</EmptyState>
-      ) : (
-        <StorageSplitChart slices={slices} caption="on storage" />
-      )}
-      <div className="space-y-2">
-        {categories.map((c) => (
+    <div className="grid gap-6 @lg:grid-cols-2">
+      <div className="space-y-4">
+        <p className="text-xs font-medium text-muted-foreground">All objects</p>
+        <StorageSplitChart slices={totalSlices} caption="on storage" className="h-44" />
+        <div className="space-y-2">
           <LegendItem
-            key={c.name}
-            color={style(c.name).color}
-            label={style(c.name).label}
-            value={formatBytes(c.bytes)}
-            note={`${formatCount(c.objects)} objects · ${formatPercent(onStorage.total_bytes ? c.bytes / onStorage.total_bytes : null)}`}
+            color={style("blob").color}
+            label={style("blob").label}
+            value={formatBytes(blob.bytes)}
+            note={`${formatCount(blob.objects)} objects · ${share(blob.bytes, onStorage.total_bytes)}`}
           />
-        ))}
+          <LegendItem
+            color={OTHERS_COLOR}
+            label="Everything else"
+            value={formatBytes(restBytes)}
+            note={`${formatCount(restObjects)} objects · ${share(restBytes, onStorage.total_bytes)}`}
+          />
+        </div>
+      </div>
+      <div className="space-y-4">
+        <p className="text-xs font-medium text-muted-foreground">Excluding blob files</p>
+        {restSlices.length === 0 ? (
+          <EmptyState icon={HardDrive} title="Only blob files">Every object under the location is a blob file.</EmptyState>
+        ) : (
+          <StorageSplitChart slices={restSlices} caption="non-blob" className="h-44" />
+        )}
+        <div className="space-y-2">
+          {rest.map((c) => (
+            <LegendItem
+              key={c.name}
+              color={style(c.name).color}
+              label={style(c.name).label}
+              value={formatBytes(c.bytes)}
+              note={`${formatCount(c.objects)} objects · ${share(c.bytes, restBytes)} of non-blob`}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
