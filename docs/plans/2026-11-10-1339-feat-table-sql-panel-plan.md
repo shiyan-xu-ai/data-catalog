@@ -36,7 +36,7 @@ The right column of the table page becomes a SQL panel. It has an editor pre-fil
 - R35. Blob columns never return payload bytes in query results.
 - R36. The SQL panel docks at the bottom of the table page, spanning the full width to the right of the left navigation. It can be collapsed and resized vertically, and the main tabs keep working while a query runs.
 - R43. Each Overview tile with qualifying detail carries a help (?) icon whose tooltip explains what the figure covers and excludes. Every help icon in the UI opens on hover and keyboard focus.
-- R37. The Properties tab starts with the former About facts (description, owner, copyable location, storage format, current version, registered and updated times, tags, branches), followed by catalog properties, Lance table configuration, and schema metadata.
+- R37. The Properties tab starts with the former About facts (description, owner, copyable location, registered and updated times, tags, branches), followed by catalog properties and Lance table configuration. Each fact appears once in the table view: storage format and current version live in the page header, schema metadata lives in the Schema tab, and object counts live in tab badges. Overview tiles do not repeat them.
 - R38. The left navigation collapses to an icon rail and expands again, remembering the choice across reloads.
 - R39. The UI shows no Deregister action. The deregister API remains.
 - R40. The SQL route never writes to the dataset, the catalog database, or the local filesystem.
