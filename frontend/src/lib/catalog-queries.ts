@@ -4,6 +4,7 @@ import {
   describeTableCheap,
   followPages,
   getColumnStorage,
+  getTableStats,
   getTableStorage,
   listAllTableIndices,
   listAllTables,
@@ -33,6 +34,7 @@ export const keys = {
   tableBranches: (id: string) => ["table", id, "branches"] as const,
   tableColumns: (id: string) => ["table", id, "columns"] as const,
   tableStorage: (id: string) => ["table", id, "storage"] as const,
+  tableStats: (id: string) => ["table", id, "stats"] as const,
 };
 
 const PAGE_SIZE = 100;
@@ -178,6 +180,15 @@ export function useTableStorage(segments: readonly string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.tableStorage(joinId(segments)),
     queryFn: () => getTableStorage(segments),
+    enabled,
+  });
+}
+
+/** Spec table stats (fragment distribution, field-level bytes); slow, enabled like the above. */
+export function useTableStats(segments: readonly string[], enabled: boolean) {
+  return useQuery({
+    queryKey: keys.tableStats(joinId(segments)),
+    queryFn: () => getTableStats(segments),
     enabled,
   });
 }

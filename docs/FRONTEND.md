@@ -43,12 +43,21 @@ page can fill; the table page puts its SQL panel there.
     (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption; a
     (?) tooltip explains what the figure measures and excludes (for example
     blob payloads, index files kept by older versions, the rate and tier, and
-    that the cost is an upper bound excluding requests and egress). Charts:
-    current-version bytes
-    per column (`GET /catalog/v1/table/{id}/column-storage`), the on-storage
-    composition by file category, and rows and data size over every version.
-    Both catalog routes are slow, so they are requested only after the rest of
-    the page loaded and show skeletons until then.
+    that the cost is an upper bound excluding requests and egress). Sections:
+    - *Storage by column:* current-version inline column bytes per top-level
+      column (`GET /catalog/v1/table/{id}/column-storage`); blob payload files
+      and index files are excluded, as its (?) help explains.
+    - *Storage composition:* every object under the location by file category.
+    - *Fragments:* from the spec table stats (`POST /v1/table/{id}/stats`), a
+      box plot of physical rows per fragment (min, p25, median, p75, p99, max,
+      and mean) and the share of small fragments (fewer than 1,048,576 rows,
+      Lance's default compaction target), with a note when every fragment is
+      small.
+    - *Trends:* rows and current-version data size over every version.
+
+    Column storage, the storage listing, and table stats are slow, so they are
+    requested only after the rest of the page loaded; each shows its own
+    skeleton and error.
   - **Properties:** the About facts first (description, owner, copyable
     location, registered and updated times, tags, branches), then client
     properties and Lance table configuration.

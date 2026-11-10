@@ -7,6 +7,7 @@ import {
   useTableCheap,
   useTableDetail,
   useTableIndices,
+  useTableStats,
   useTableStorage,
   useTableVersions,
 } from "@/lib/catalog-queries";
@@ -136,11 +137,12 @@ function TablePage({ tableId }: { tableId: string }) {
   const detail = useTableDetail(segments);
   const versions = useTableVersions(segments);
   const indices = useTableIndices(segments);
-  // Per-column storage and the storage listing read every fragment or object; start them only
-  // once the rest of the page settled.
+  // Per-column storage, the storage listing, and table stats read every fragment or object;
+  // start them only once the rest of the page settled.
   const settled = !detail.isPending && !versions.isPending && !indices.isPending;
   const columns = useColumnStorage(segments, settled);
   const storage = useTableStorage(segments, settled);
+  const stats = useTableStats(segments, settled);
   const columnNames = useMemo(() => detail.data?.schema?.fields.map((f) => f.name) ?? [], [detail.data]);
 
   if (cheap.error instanceof ApiError && cheap.error.code === ErrorCode.TableNotFound) {
@@ -209,7 +211,14 @@ function TablePage({ tableId }: { tableId: string }) {
             })}
           </TabsList>
           <TabsContent value="overview">
-            <OverviewTab detail={detail} versions={versions} indices={indices} columns={columns} storage={storage} />
+            <OverviewTab
+              detail={detail}
+              versions={versions}
+              indices={indices}
+              columns={columns}
+              storage={storage}
+              stats={stats}
+            />
           </TabsContent>
           <TabsContent value="properties">
             <PropertiesTab segments={segments} cheap={cheap} detail={detail} />

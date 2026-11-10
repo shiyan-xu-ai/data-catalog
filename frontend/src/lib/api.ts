@@ -15,6 +15,7 @@ import {
   listTablesResponseSchema,
   registerTableResponseSchema,
   sqlResponseSchema,
+  tableStatsResponseSchema,
   tableStorageResponseSchema,
   type ColumnStorageResponse,
   type CreateNamespaceResponse,
@@ -29,6 +30,7 @@ import {
   type ListTablesResponse,
   type RegisterTableResponse,
   type SqlResponse,
+  type TableStatsResponse,
   type TableStorageResponse,
 } from "./schemas";
 
@@ -233,6 +235,12 @@ export function getColumnStorage(table: readonly string[]): Promise<ColumnStorag
  *  the configured storage price. Lists the whole dataset prefix, so it is slow. */
 export function getTableStorage(table: readonly string[]): Promise<TableStorageResponse> {
   return request("GET", `/catalog/v1/table/${idPathSegment(table)}/storage`, tableStorageResponseSchema);
+}
+
+/** Spec table stats (Lance `GetTableStats`): fragment row-count distribution and field-level
+ *  data bytes. Reads every fragment's metadata, so it is slow on large tables. */
+export function getTableStats(table: readonly string[]): Promise<TableStatsResponse> {
+  return request("POST", `/v1/table/${idPathSegment(table)}/stats`, tableStatsResponseSchema, {});
 }
 
 export function registerTable(

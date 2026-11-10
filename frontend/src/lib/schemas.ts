@@ -217,3 +217,25 @@ export const tableStorageResponseSchema = z.object({
   }),
 });
 export type TableStorageResponse = z.infer<typeof tableStorageResponseSchema>;
+
+/** Spec `GetTableStatsResponse` (`POST /v1/table/{id}/stats`). Fragment lengths are physical
+ *  rows per fragment. */
+export const tableStatsResponseSchema = z.object({
+  total_bytes: z.number(),
+  num_rows: z.number(),
+  num_indices: z.number(),
+  fragment_stats: z.object({
+    num_fragments: z.number(),
+    num_small_fragments: z.number(),
+    lengths: z.object({
+      min: z.number(),
+      max: z.number(),
+      mean: z.number(),
+      p25: z.number(),
+      p50: z.number(),
+      p75: z.number(),
+      p99: z.number(),
+    }),
+  }),
+});
+export type TableStatsResponse = z.infer<typeof tableStatsResponseSchema>;

@@ -1,11 +1,12 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
 import { formatBytes, formatCost, formatCount, formatGigabytes, formatPercent, formatRate } from "@/lib/format";
-import { parseManifestSummary, topColumns, totalIndexBytes, versionSeries } from "@/lib/table-metadata";
+import { COMPACTION_TARGET_ROWS, parseManifestSummary, topColumns, totalIndexBytes, versionSeries } from "@/lib/table-metadata";
 import type {
   ColumnStorageResponse,
   DescribeTableResponse,
   IndexContent,
+  TableStatsResponse,
   TableStorageResponse,
   TableVersion,
 } from "@/lib/schemas";
@@ -15,6 +16,7 @@ import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
 import { ColumnStorageChart, GrowthChart, LegendItem, StorageSplitChart, type StorageSlice } from "./charts";
+import { FragmentBoxPlot, SmallFragmentShare } from "./fragment-charts";
 
 const TOP_COLUMNS = 12;
 
@@ -76,12 +78,14 @@ export function OverviewTab({
   indices,
   columns,
   storage,
+  stats,
 }: {
   detail: UseQueryResult<DescribeTableResponse>;
   versions: UseQueryResult<TableVersion[]>;
   indices: UseQueryResult<IndexContent[]>;
   columns: UseQueryResult<ColumnStorageResponse>;
   storage: UseQueryResult<TableStorageResponse>;
+  stats: UseQueryResult<TableStatsResponse>;
 }) {
   const s = parseManifestSummary(detail.data?.metadata);
   const indexBytes = indices.data ? totalIndexBytes(indices.data) : null;
@@ -167,7 +171,19 @@ export function OverviewTab({
       <div className="grid gap-6 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section
           title="Storage by column"
-          description="Current version data per top-level column; excludes blob payloads"
+          description="Current version, inline column data; excludes blob payloads"
+          help={
+            <>
+              Bytes on disk per top-level column in the current version&apos;s data files (Lance field-level data
+              statistics
+              {stats.data
+                ? `, total ${formatBytes(stats.data.total_bytes)} vs ${formatBytes(s.dataBytes)} manifest data size including file metadata`
+                : ""}
+              ). Scalar/inline column data only: excludes blob payload files (data/*.blob), which hold most storage, and
+              index files. Blob columns such as log_scenario count only their per-row descriptors (pointers into .blob
+              files).
+            </>
+          }
         >
           {columns.error ? (
             <ErrorState message={columns.error.message} />
@@ -191,7 +207,35 @@ export function OverviewTab({
         </Section>
       </div>
 
-      <Section title="Growth" description="Rows and current-version data size at every version">
+      <Section
+        title="Fragments"
+        description="Physical rows per fragment in the current version"
+        help={
+          <>
+            From Lance GetTableStats (POST /v1/table/&#123;id&#125;/stats). Fragment row counts are physical rows,
+            including rows later marked deleted. A fragment is small when it has fewer than{" "}
+            {formatCount(COMPACTION_TARGET_ROWS)} rows, Lance&apos;s default compaction target.
+          </>
+        }
+      >
+        {stats.error ? (
+          <ErrorState message={stats.error.message} />
+        ) : !stats.data ? (
+          <ChartSkeleton height="h-28" caption="Reading fragment statistics; large tables take several seconds." />
+        ) : stats.data.fragment_stats.num_fragments === 0 ? (
+          <EmptyState icon={BarChart3} title="No fragments">The current version has no data fragments.</EmptyState>
+        ) : (
+          <div className="grid items-center gap-6 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            <FragmentBoxPlot lengths={stats.data.fragment_stats.lengths} />
+            <SmallFragmentShare
+              small={stats.data.fragment_stats.num_small_fragments}
+              total={stats.data.fragment_stats.num_fragments}
+            />
+          </div>
+        )}
+      </Section>
+
+      <Section title="Trends" description="Rows and current-version data size at every version">
         {versions.error ? (
           <ErrorState message={versions.error.message} />
         ) : versions.isPending ? (

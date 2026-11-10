@@ -1,4 +1,4 @@
-import type { IndexContent, TableVersion } from "./schemas";
+import type { IndexContent, TableStatsResponse, TableVersion } from "./schemas";
 
 type Metadata = Record<string, string> | null | undefined;
 
@@ -117,4 +117,44 @@ export function topColumns(
     });
   }
   return top;
+}
+
+/** Lance's default compaction target (`CompactionOptions::target_rows_per_fragment`); the
+ *  stats route counts fragments with fewer physical rows than this as small. */
+export const COMPACTION_TARGET_ROWS = 1_048_576;
+
+export type FragmentLengths = TableStatsResponse["fragment_stats"]["lengths"];
+
+/** Smallest "nice" axis bound (1, 2, 2.5, or 5 × 10^k) at or above `value`. */
+export function niceCeil(value: number): number {
+  if (value <= 0) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  for (const step of [1, 2, 2.5, 5, 10]) {
+    if (step * magnitude >= value) return step * magnitude;
+  }
+  return 10 * magnitude;
+}
+
+/** Positions (percent of an axis from 0 to a nice bound above `max`) for a rows-per-fragment
+ *  box plot, plus the axis ticks. */
+export function fragmentBoxPlot(lengths: FragmentLengths): {
+  axisMax: number;
+  ticks: number[];
+  pct: Record<keyof FragmentLengths, number>;
+} {
+  const axisMax = niceCeil(lengths.max);
+  const at = (v: number) => (v / axisMax) * 100;
+  return {
+    axisMax,
+    ticks: [0, 0.25, 0.5, 0.75, 1].map((f) => f * axisMax),
+    pct: {
+      min: at(lengths.min),
+      p25: at(lengths.p25),
+      p50: at(lengths.p50),
+      p75: at(lengths.p75),
+      p99: at(lengths.p99),
+      max: at(lengths.max),
+      mean: at(lengths.mean),
+    },
+  };
 }

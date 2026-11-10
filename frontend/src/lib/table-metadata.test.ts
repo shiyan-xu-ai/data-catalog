@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   configEntries,
   extraProperties,
+  fragmentBoxPlot,
   indexCoverage,
+  niceCeil,
   parseManifestSummary,
   storageFormatVersion,
   topColumns,
@@ -10,6 +12,24 @@ import {
   versionSeries,
 } from "./table-metadata";
 import type { IndexContent } from "./schemas";
+
+describe("fragment box plot", () => {
+  it("rounds the axis up to a nice bound", () => {
+    expect(niceCeil(2038)).toBe(2500);
+    expect(niceCeil(2000)).toBe(2000);
+    expect(niceCeil(1_048_576)).toBe(2_000_000);
+    expect(niceCeil(7)).toBe(10);
+    expect(niceCeil(0)).toBe(1);
+  });
+  it("places each statistic as a percent of the axis", () => {
+    const plot = fragmentBoxPlot({ min: 5, p25: 1771, p50: 1831, p75: 1879, p99: 1966, max: 2038, mean: 1791 });
+    expect(plot.axisMax).toBe(2500);
+    expect(plot.ticks).toEqual([0, 625, 1250, 1875, 2500]);
+    expect(plot.pct.min).toBeCloseTo(0.2);
+    expect(plot.pct.p50).toBeCloseTo(73.24);
+    expect(plot.pct.max).toBeCloseTo(81.52);
+  });
+});
 
 const META = {
   total_rows: "8047929",
