@@ -1,64 +1,50 @@
 # Data Catalog
 
-A regional metadata catalog for Lance tables in S3-compatible object storage. Operators register the tables to track, then browse their versions, schemas, storage sizes, row counts, and auxiliary datasets through a REST API and React UI. Unregistered tables are ignored.
+A [Lance REST catalog](https://lance.org/format/catalog/rest/) backed by Postgres. Operators create nested namespaces and register existing Lance datasets by URI. The catalog stores each table's name, location, and properties, while the dataset's Lance manifest remains authoritative for version, schema, and stats. A React UI and standard Lance namespace clients use the same spec routes.
 
-## Architecture
-
-```text
-Cloud Scheduler / operator                     Browser / API client
-           |                                           |
-           v                                           v
-      +----------------------------------------------------+
-      |            Catalog API + React UI                  |
-      |                 (Cloud Run)                        |
-      +----------------------------------------------------+
-           |                   |                    |
-           | pull              | read / write       | read / write
-           v                   v                    v
-   Registered Lance      Lance registry       Registration JSON
-   tables on S3          (derived stats)      (table + owner)
-```
-
-Sync pulls stats; writers do not push them. Clean versions are assumed immutable and reused, so in-place changes can leave stats stale. The API merges registry and registration metadata into a read view cached for five seconds by default.
-
-See [architecture](ARCHITECTURE.md) for details and the [deployment runbook](docs/RUNBOOK-DEPLOY.md) for setup.
+See [architecture](ARCHITECTURE.md) and the [deployment runbook](docs/RUNBOOK-DEPLOY.md).
 
 ## API
 
-Table IDs use `<region>:<bucket>:<namespace>:<name>`; nested namespaces use additional colon-separated segments. Registration requires a region, bucket, and namespace declared in `catalog-config.yaml`. An optional registration body sets the owner, for example `{"owner":"team@example.com"}`.
+Identifiers in paths are segments joined by `$`; the root namespace is `$`. For example, table `prod.analytics.users` is `prod$analytics$users`. Request and response bodies use the spec's models, and errors are returned as `{"error": "...", "code": N}`.
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/healthz` | Liveness. |
-| GET | `/readyz` | Readiness; returns 503 until the first successful view load. |
-| GET | `/v1/namespaces` | List namespaces represented by cataloged tables. |
-| GET | `/v1/namespaces/:id` | Describe a `bucket:namespace` ID. |
-| GET | `/v1/tables` | List registered table IDs. |
-| GET | `/v1/table/:id` | Describe a table. |
-| PUT | `/v1/table/:id` | Register a table or set its owner. Versions appear on the next sync. |
-| DELETE | `/v1/table/:id` | Deregister a table without deleting source data. |
-| GET | `/ext/v1/tables` | List full table entries; no server-side pagination. |
-| GET | `/ext/v1/tables/:id/versions/:vid` | Describe a version. |
-| GET | `/ext/v1/tables/:id/versions/:vid/aux/sample?name=&limit=` | Sample Lance or Parquet auxiliary rows; default 20, maximum 100. |
-| POST | `/internal/jobs/sync` | Run a sync pass. |
+| GET | `/v1/namespace/:id/list` | List child namespaces (`page_token`, `limit`). |
+| POST | `/v1/namespace/:id/create` | Create a namespace; its parent must exist. |
+| POST | `/v1/namespace/:id/describe` | Return namespace properties. |
+| POST | `/v1/namespace/:id/exists` | Return 200 if the namespace exists, or 404. |
+| POST | `/v1/namespace/:id/drop` | Drop an empty namespace; returns 409 if not empty. |
+| GET | `/v1/namespace/:id/table/list` | List tables in a namespace. |
+| GET | `/v1/table` | List all tables. |
+| POST | `/v1/table/:id/register` | Register an existing Lance dataset at `location`. The URI must open as Lance. |
+| POST | `/v1/table/:id/describe` | Return location and properties. With `?load_detailed_metadata=true`, also return version, schema, and stats. |
+| POST | `/v1/table/:id/exists` | Return 200 if the table exists, or 404. |
+| POST | `/v1/table/:id/deregister` | Remove the registration. Source data is not deleted. |
+| GET | `/healthz`, `/readyz` | Liveness, and readiness (requires Postgres). |
 
-The API router is defined in [`catalog-api/src/api.rs`](catalog-api/src/api.rs). Platform IAP protects deployed access; the application does not enforce authentication itself.
+Other spec operations, including data operations, versions, tags, indexes, and transactions, return `Unsupported` (code 0, HTTP 406). Platform IAP protects deployed access, and the application performs no authentication itself.
 
 ## Configuration
 
-[`catalog-config.yaml`](catalog-config.yaml) declares the deployment's region, buckets, and namespaces. Scope changes require a config change and redeploy. The committed config targets `scenario_dataset_export` in the `onroad-perception-datasets` bucket, region `us-phoenix-1`.
-
 | Environment variable | Default | Purpose |
 |---|---|---|
+| `DATABASE_URL` | required | Postgres connection string. On Cloud Run, `docker-entrypoint.sh` derives it. |
+| `CATALOG_DB_SCHEMA` | unset | Schema for catalog tables and migrations, created if missing. |
 | `PORT` | unset | Cloud Run port; overrides `CATALOG_BIND_ADDR`. |
-| `CATALOG_BIND_ADDR` | `0.0.0.0:8080` | Server bind address when `PORT` is unset. |
-| `CATALOG_CONFIG_PATH` | `catalog-config.yaml` | Region, buckets, and namespace configuration. |
-| `CATALOG_REGISTRY_PATH` | `_catalog/registry` | Lance registry path or URI. |
-| `CATALOG_META_BASE_URI` | `memory` | Registration metadata store: `memory` or an S3 URI. Memory is non-persistent; a filesystem path is not supported. |
-| `CATALOG_CACHE_TTL_SECS` | `5` | Merged read-view cache lifetime in seconds. |
-| `CATALOG_SYNC_CONCURRENCY` | `16` | Maximum concurrent version syncs. |
-| `CATALOG_SYNC_DEEP_STATS` | `all` | Extra Lance stats for `all`, `latest`, or `none` of newly processed versions. Skipped index counts and fallback row counts may be null. |
-| `CATALOG_WEBUI_DIR` | `frontend/dist` | Built UI directory; absent means API-only. |
+| `CATALOG_BIND_ADDR` | `0.0.0.0:8080` | Bind address when `PORT` is unset. |
+| `CATALOG_WEBUI_DIR` | `frontend/dist` | Built UI directory; if absent, only the API is served. |
 | `CATALOG_SECRET_PREFIX` | `K_SERVICE` | Secret Manager prefix for AWS credentials on Cloud Run. |
 
-Local S3-compatible access uses standard `AWS_*` environment variables, including `AWS_ENDPOINT_URL` and credentials. On Cloud Run, credentials are read from Secret Manager unless already present in the environment. See [deployment](docs/RUNBOOK-DEPLOY.md) and [frontend development](docs/FRONTEND.md).
+Datasets on S3 or S3-compatible stores are opened with the standard `AWS_*` variables, including `AWS_ENDPOINT_URL`. On Cloud Run, credentials come from Secret Manager unless they are already in the environment.
+
+## Development
+
+```sh
+docker run -d --name catalog-pg -e POSTGRES_PASSWORD=pg -p 55432:5432 postgres:17
+export DATABASE_URL=postgres://postgres:pg@127.0.0.1:55432/postgres
+cargo run --bin catalog-api
+CATALOG_TEST_DATABASE_URL=$DATABASE_URL cargo test --workspace
+```
+
+See [frontend development](docs/FRONTEND.md) for the UI dev server.

@@ -40,13 +40,11 @@ WORKDIR /build
 # Workspace manifests first (layer-cache friendly). rust-toolchain.toml pins the
 # channel, so rustup provisions the matching toolchain in-image.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY catalog-core/Cargo.toml ./catalog-core/
 COPY catalog-store/Cargo.toml ./catalog-store/
 COPY catalog-api/Cargo.toml ./catalog-api/
 
 # Stub sources so cargo can resolve + fetch + build deps without the real code.
-RUN mkdir -p catalog-core/src catalog-store/src catalog-api/src && \
-    echo "pub fn _stub() {}" > catalog-core/src/lib.rs && \
+RUN mkdir -p catalog-store/src catalog-api/src && \
     echo "pub fn _stub() {}" > catalog-store/src/lib.rs && \
     echo "pub fn _stub() {}" > catalog-api/src/lib.rs && \
     echo "fn main() {}" > catalog-api/src/main.rs
@@ -58,24 +56,28 @@ RUN cargo fetch
 RUN cargo build --release --bin catalog-api || true
 
 # Real source, then the final build.
-COPY catalog-core/src ./catalog-core/src
 COPY catalog-store/src ./catalog-store/src
+COPY catalog-store/migrations ./catalog-store/migrations
 COPY catalog-api/src  ./catalog-api/src
-RUN find catalog-core/src catalog-store/src catalog-api/src -name "*.rs" -exec touch {} +
+RUN find catalog-store/src catalog-api/src -name "*.rs" -exec touch {} +
 RUN cargo build --release --bin catalog-api
 
 # ── Stage 3: runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
-# CA certs for TLS to S3, Secret Manager, and the metadata server.
+# CA certs for TLS to S3, Secret Manager, and the metadata server; curl fetches the proxy.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
+    ca-certificates curl \
+    && curl -fsSL -o /usr/local/bin/cloud-sql-proxy \
+       https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64 \
+    && chmod 0755 /usr/local/bin/cloud-sql-proxy \
+    && apt-get purge -y curl && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --system --uid 1000 --no-create-home catalog
 
 COPY --from=builder /build/target/release/catalog-api /usr/local/bin/catalog-api
-COPY catalog-config.yaml ./catalog-config.yaml
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY --from=frontend /web/dist /app/webui
 
 # Point the server at the bundled SPA; Cloud Run overrides PORT at runtime.
@@ -85,4 +87,4 @@ USER catalog
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/catalog-api"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

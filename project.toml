@@ -6,9 +6,10 @@ name = "lance-catalog"
 #   apps-platform app secret set AWS_SECRET_ACCESS_KEY <key>
 enable_secrets = true
 
-# S3 is the sole store; no managed database or bucket mount is used.
+# Postgres is the catalog metastore. The platform sets INSTANCE_CONNECTION_NAME, DB_USER, and
+# DB_NAME; docker-entrypoint.sh runs the Cloud SQL Auth Proxy and derives DATABASE_URL.
 enable_mysql = false
-enable_postgres = false
+enable_postgres = true
 enable_gcs_fuse = false
 
 [cloudrun]
@@ -20,12 +21,10 @@ memory = "1Gi"
 use_static_egress_ip = false
 
 [cloudrun.env_vars]
-# Non-secret runtime config. Adjust bucket names / region per environment.
+# Non-secret runtime config. Region applies to S3 URIs the catalog opens.
 AWS_DEFAULT_REGION = "us-east-1"
-CATALOG_REGISTRY_PATH = "s3://catalog-staging-data/_catalog/registry"
-CATALOG_META_BASE_URI = "s3://catalog-staging-data/_catalog/meta"
 RUST_LOG = "info"
 
 [metadata]
 owner = "shiyan.xu@applied.co"
-description = "S3-native metadata catalog for Lance tables"
+description = "Postgres-backed Lance REST catalog"

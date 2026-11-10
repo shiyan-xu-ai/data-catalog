@@ -1,33 +1,28 @@
 # AGENTS.md
 
-This repo is a Lance data catalog service: an S3-native metadata catalog for
-Lance tables, written in Rust (axum, the `lance` crate, `object_store`), deployed
-as a single stateless container on Apps Platform (Cloud Run).
+This repo is a Lance REST catalog service: Postgres stores namespaces and table
+registrations, and Lance manifests stay authoritative for table state. Written in
+Rust (axum, sqlx, the `lance` and `lance-namespace` crates), deployed as a single
+container on Apps Platform (Cloud Run).
 
-- Full long-term design: `docs/design.md`.
-- Current implementation plan (v1.0.0 scope): `.planning/data-catalog-v1/`
-  (`task_plan.md` for phases, `findings.md` for locked scope decisions).
+- Architecture: `ARCHITECTURE.md`. `docs/design.md` is a superseded historical design.
+- Current plan: `docs/plans/2026-11-10-0007-feat-postgres-lance-rest-catalog-plan.md`.
 
 ## Workspace layout
 
-Cargo workspace with three crates:
-
-- `catalog-core` — shared types and the registry model.
-- `catalog-store` — object-store IO and S3 sync/TTL logic.
-- `catalog-api` — the `catalog-api` binary: axum HTTP server, request-triggered
-  sync, TTL engine.
+- `catalog-store` — `PostgresNamespace` (`LanceNamespace` impl) and sqlx
+  migrations in `catalog-store/migrations/`.
+- `catalog-api` — the `catalog-api` binary: config, spec router, UI serving.
 
 ## Conventions
 
 - Rust edition 2021, toolchain pinned in `rust-toolchain.toml`.
 - `cargo build --workspace` and `cargo test --workspace` must pass before
-  committing.
+  committing. Postgres-backed tests need `CATALOG_TEST_DATABASE_URL`; without it
+  they skip, and CI sets `CATALOG_REQUIRE_DB_TESTS=1` to forbid skipping.
 - 4-space indentation, LF line endings, UTF-8 (see `.editorconfig`).
-- Persisted types in `catalog-core/src/types.rs` are stored as JSON (registry
-  and TTL-audit columns) and read across binary versions during rolling
-  upgrades. Every new persisted field MUST be added with `#[serde(default)]`
-  (and a `Default`-able type) so an older row that omits it still deserializes;
-  identity/structural fields (ids, timestamps, enums) stay required.
+- Schema changes are new files in `catalog-store/migrations/`; never edit an
+  applied migration.
 
 ## Commit messages
 

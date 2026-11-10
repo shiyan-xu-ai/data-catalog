@@ -1,9 +1,9 @@
 # Lance Data Catalog Service — Design Document (v3, consolidated)
 
-> Long-term design and historical implementation notes, not the current feature
-> contract. See [README.md](../README.md) and
-> [ARCHITECTURE.md](../ARCHITECTURE.md) for supported behavior. TTL, bucket
-> overview, and application identity features are not part of the current catalog.
+> Historical design, superseded. The catalog is now a Postgres-backed Lance REST
+> catalog (see [README.md](../README.md) and [ARCHITECTURE.md](../ARCHITECTURE.md)).
+> The "S3 is the sole source of truth" principle, scheduled sync, timestamp-folder
+> versions, auxiliary datasets, and TTL below no longer describe the service.
 
 A custom data catalog service, implemented in Rust, that reports on and manages Lance tables — and their auxiliary sidecar tables — stored on S3. It provides table discovery, data inspection, manifest inspection, data profiling, lineage tracking, version management, retention/TTL control, cost analysis, self-monitoring, and an MCP interface for agents. It conforms to the Lance Namespace REST spec at the basic-operations tier and extends it with governance/reporting capabilities. It runs on Kubernetes, targets 10k QPS, and manages 10k+ tables.
 
