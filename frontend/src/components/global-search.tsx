@@ -10,7 +10,16 @@ const MAX_RESULTS = 20;
 
 /** Name search over every table (from the list-all route) and every namespace (enumerated
  *  from the root on first focus). ⌘K / Ctrl+K or `/` focuses it. */
-export function GlobalSearch({ onNavigate }: { onNavigate?: () => void }) {
+export function GlobalSearch({
+  onNavigate,
+  autoFocus = false,
+  onFocusHandled,
+}: {
+  onNavigate?: () => void;
+  /** Focus the box once (e.g. after the collapsed rail's search button expanded the nav). */
+  autoFocus?: boolean;
+  onFocusHandled?: () => void;
+}) {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -34,6 +43,12 @@ export function GlobalSearch({ onNavigate }: { onNavigate?: () => void }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    inputRef.current?.focus();
+    onFocusHandled?.();
+  }, [autoFocus, onFocusHandled]);
 
   const index = useMemo(
     () => buildSearchIndex(tables.data ?? [], namespaces.data ?? []),

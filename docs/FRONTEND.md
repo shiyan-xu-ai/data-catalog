@@ -7,9 +7,10 @@ platform access boundary; no separate frontend host or application login is used
 ## Layout
 
 A left sidebar holds global search, the namespace tree, and, at the bottom, the
-theme (light, dark, system) and timezone (UTC, local) controls. Both choices
-persist in `localStorage`, and every absolute timestamp renders in the chosen
-timezone. The top bar shows a breadcrumb.
+theme (light, dark, system) and timezone (UTC, local) controls. It collapses to
+an icon rail (search, namespaces, theme, timezone). The collapsed state, theme,
+and timezone persist in `localStorage`, and every absolute timestamp renders in
+the chosen timezone. The top bar shows a breadcrumb.
 
 - **Namespace tree.** Expands lazily, one list request per opened namespace,
   with tables as leaves. The current namespace or table is highlighted and its
@@ -28,11 +29,9 @@ timezone. The top bar shows a breadcrumb.
   listing never opens a dataset. Actions: create a namespace with optional
   properties, drop an empty namespace, and register an existing Lance dataset by
   URI with an optional owner, description, and extra properties.
-- **Table page.** A header with the table name, format and version badges, and
-  Deregister. A details sidebar always renders description, owner, location
-  (copyable), storage format, current version, registered and updated times,
-  tags, and branches. The main area has five tabs, with the active tab in the
-  `?tab=` query:
+- **Table page.** A header with the table name and format and version badges,
+  five tabs on the left (the active tab is in the `?tab=` query), and a SQL
+  panel on the right. The UI offers no deregistration; the API still does.
   - **Overview:** rows; current-version data (the manifest's data-file size,
     which excludes blob payloads, index files, and files kept only by older
     versions); total bytes on storage and the estimated monthly storage cost
@@ -42,8 +41,10 @@ timezone. The top bar shows a breadcrumb.
     composition by file category, and rows and data size over every version.
     Both catalog routes are slow, so they are requested only after the rest of
     the page loaded and show skeletons until then.
-  - **Properties:** catalog properties (owner, description, client
-    properties), Lance table configuration, and schema-level metadata.
+  - **Properties:** the About facts first (description, owner, copyable
+    location, storage format, current version, registered and updated times,
+    tags, branches), then client properties, Lance table configuration, and
+    schema-level metadata.
   - **Schema:** an expandable field tree with compact types (full type on
     hover), nullability, and field metadata, a raw JSON view, and schema-level
     metadata.
@@ -51,10 +52,19 @@ timezone. The top bar shows a breadcrumb.
     timestamp, rows and row change, data size, data files, and deletions.
   - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
 
+  The **SQL panel** runs one read-only DataFusion query at a time against the
+  table's current version (`POST /catalog/v1/table/{id}/sql`). It opens with
+  `SELECT * FROM "<table>" LIMIT 20`, runs on the Run button or Ctrl/Cmd+Enter,
+  and shows column names and types, compact nested and binary values, row
+  count, elapsed time, a truncation notice past the server's row cap, and the
+  DataFusion error message. Cancel stops waiting; the server's time limit ends
+  the query. The panel collapses and widens by dragging its left edge; both
+  persist. The tabs stay usable while a query runs.
+
 Catalog-recorded facts come from the cheap describe, and Lance-derived sections
 from the detailed describe and the version, index, tag, and branch routes. Each
 Lance-derived section loads and fails on its own, so a table whose dataset is
-missing still shows its sidebar facts. Empty sections render an explicit empty
+missing still shows its About facts. Empty sections render an explicit empty
 state.
 
 Ids travel as `$`-joined path segments (root namespace `$`) in routes and API

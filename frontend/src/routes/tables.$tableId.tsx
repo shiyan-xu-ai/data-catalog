@@ -1,10 +1,8 @@
+import { Suspense, lazy, useMemo } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
-import { BarChart3, Layers, ListTree, SlidersHorizontal, Table2, TableProperties, Trash2 } from "lucide-react";
-import { toast } from "sonner";
-import { ApiError, deregisterTable } from "@/lib/api";
+import { BarChart3, Layers, ListTree, PanelRightOpen, SlidersHorizontal, Table2, TableProperties } from "lucide-react";
+import { ApiError } from "@/lib/api";
 import {
-  keys,
   useColumnStorage,
   useTableCheap,
   useTableDetail,
@@ -13,25 +11,31 @@ import {
   useTableVersions,
 } from "@/lib/catalog-queries";
 import { formatCount } from "@/lib/format";
-import { displayName, joinId, splitId } from "@/lib/ids";
+import { displayName, splitId } from "@/lib/ids";
+import { useStoredState } from "@/lib/preferences";
 import { ErrorCode } from "@/lib/schemas";
 import { storageFormatVersion } from "@/lib/table-metadata";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
-import { DetailsSidebar } from "@/components/table/details-sidebar";
 import { IndicesTab } from "@/components/table/indices-tab";
 import { OverviewTab } from "@/components/table/overview-tab";
 import { PropertiesTab } from "@/components/table/properties-tab";
 import { SchemaTab } from "@/components/table/schema-tab";
 import { VersionsTab } from "@/components/table/versions-tab";
 
+// The editor (CodeMirror) is the heaviest part of the page; load it after the tabs.
+const SqlPanel = lazy(() => import("@/components/table/sql-panel").then((m) => ({ default: m.SqlPanel })));
+
 const TABS = ["overview", "properties", "schema", "versions", "indices"] as const;
 type Tab = (typeof TABS)[number];
+
+const PANEL_MIN_WIDTH = 320;
+const PANEL_DEFAULT_WIDTH = 480;
+// Leave the tabs at least this much room when widening the SQL panel.
+const MAIN_MIN_WIDTH = 420;
 
 export const Route = createFileRoute("/tables/$tableId")({
   validateSearch: (search: Record<string, unknown>): { tab?: Tab } =>
@@ -41,15 +45,73 @@ export const Route = createFileRoute("/tables/$tableId")({
 
 function RouteComponent() {
   const { tableId } = Route.useParams();
-  // Keyed so tab-local state (paging, expansion) resets between tables.
+  // Keyed so tab-local state (paging, expansion, the SQL editor) resets between tables.
   return <TablePage key={tableId} tableId={tableId} />;
 }
 
+/** Right-hand SQL panel: collapsible to a narrow tab and widened by dragging its left edge.
+ *  Both choices persist. Below `lg` it stacks under the tabs at full width. */
+function SqlDock({ segments, columns }: { segments: readonly string[]; columns: readonly string[] }) {
+  const [collapsed, setCollapsed] = useStoredState("sql-panel-collapsed", false);
+  const [width, setWidth] = useStoredState("sql-panel-width", PANEL_DEFAULT_WIDTH);
+
+  function startResize(e: React.PointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    // The page row (tabs + gap + panel) bounds how wide the panel may grow.
+    const row = handle.parentElement?.parentElement;
+    const max = Math.max(PANEL_MIN_WIDTH, (row?.clientWidth ?? window.innerWidth) - MAIN_MIN_WIDTH - 24);
+    const startWidth = width;
+    const onMove = (ev: PointerEvent) =>
+      setWidth(Math.round(Math.min(max, Math.max(PANEL_MIN_WIDTH, startWidth + startX - ev.clientX))));
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  }
+
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsed(false)}
+        aria-label="Open SQL panel"
+        className="flex shrink-0 items-center gap-2 self-start rounded-lg border bg-card px-3 py-2 text-xs font-medium text-muted-foreground shadow-xs hover:text-foreground lg:sticky lg:top-6 lg:flex-col lg:px-1.5 lg:py-3"
+      >
+        <PanelRightOpen className="h-4 w-4" />
+        <span className="lg:[writing-mode:vertical-rl]">SQL</span>
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="relative h-[36rem] w-full shrink-0 lg:sticky lg:top-6 lg:h-[calc(100vh-3.5rem-3rem)] lg:w-[var(--sql-panel-width)]"
+      style={{ "--sql-panel-width": `${width}px` } as React.CSSProperties}
+    >
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize SQL panel"
+        title="Drag to resize"
+        onPointerDown={startResize}
+        className="absolute inset-y-0 -left-3 z-10 hidden w-3 cursor-col-resize lg:block after:absolute after:inset-y-4 after:left-1 after:w-0.5 after:rounded-full after:bg-transparent hover:after:bg-border"
+      />
+      <Suspense fallback={<Skeleton className="h-full w-full" />}>
+        <SqlPanel segments={segments} columns={columns} onCollapse={() => setCollapsed(true)} />
+      </Suspense>
+    </div>
+  );
+}
+
 function TablePage({ tableId }: { tableId: string }) {
-  const segments = splitId(tableId);
+  const segments = useMemo(() => splitId(tableId), [tableId]);
   const namespace = segments.slice(0, -1);
   const { tab = "overview" } = Route.useSearch();
-  const qc = useQueryClient();
   const navigate = useNavigate();
 
   const cheap = useTableCheap(segments);
@@ -61,20 +123,7 @@ function TablePage({ tableId }: { tableId: string }) {
   const settled = !detail.isPending && !versions.isPending && !indices.isPending;
   const columns = useColumnStorage(segments, settled);
   const storage = useTableStorage(segments, settled);
-
-  async function deregister() {
-    try {
-      await deregisterTable(segments);
-    } catch (e) {
-      toast.error((e as Error).message);
-      throw e;
-    }
-    toast.success(`Deregistered "${displayName(segments)}"`);
-    qc.removeQueries({ queryKey: keys.table(tableId) });
-    qc.invalidateQueries({ queryKey: keys.tables(joinId(namespace)) });
-    qc.invalidateQueries({ queryKey: keys.allTables });
-    navigate(namespace.length ? { to: "/namespaces/$nsId", params: { nsId: joinId(namespace) } } : { to: "/namespaces" });
-  }
+  const columnNames = useMemo(() => detail.data?.schema?.fields.map((f) => f.name) ?? [], [detail.data]);
 
   if (cheap.error instanceof ApiError && cheap.error.code === ErrorCode.TableNotFound) {
     return (
@@ -100,8 +149,8 @@ function TablePage({ tableId }: { tableId: string }) {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+      <div className="min-w-0 flex-1 space-y-6">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
             <Table2 className="h-5 w-5 text-muted-foreground" />
@@ -121,30 +170,9 @@ function TablePage({ tableId }: { tableId: string }) {
             </div>
           </div>
         </div>
-        {cheap.data && (
-          <ConfirmDialog
-            trigger={
-              <Button variant="outline" className="text-destructive hover:text-destructive">
-                <Trash2 /> Deregister
-              </Button>
-            }
-            title="Deregister table"
-            description={
-              <>
-                Remove <span className="font-mono text-foreground">{displayName(segments)}</span> from the
-                catalog? The dataset at its location is not modified or deleted.
-              </>
-            }
-            confirmLabel="Deregister"
-            destructive
-            onConfirm={deregister}
-          />
-        )}
-      </div>
 
-      {cheap.error && <ErrorState message={cheap.error.message} />}
+        {cheap.error && <ErrorState message={cheap.error.message} />}
 
-      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <Tabs
           value={tab}
           onValueChange={(v) =>
@@ -152,7 +180,7 @@ function TablePage({ tableId }: { tableId: string }) {
           }
           className="min-w-0"
         >
-          <TabsList>
+          <TabsList className="overflow-x-auto">
             {TABS.map((t) => {
               const Icon = tabIcon[t];
               return (
@@ -171,7 +199,7 @@ function TablePage({ tableId }: { tableId: string }) {
             <OverviewTab detail={detail} versions={versions} indices={indices} columns={columns} storage={storage} />
           </TabsContent>
           <TabsContent value="properties">
-            <PropertiesTab cheap={cheap} detail={detail} />
+            <PropertiesTab segments={segments} cheap={cheap} detail={detail} />
           </TabsContent>
           <TabsContent value="schema">
             <SchemaTab detail={detail} />
@@ -183,14 +211,9 @@ function TablePage({ tableId }: { tableId: string }) {
             <IndicesTab indices={indices} />
           </TabsContent>
         </Tabs>
-        <div className="lg:sticky lg:top-0">
-          {cheap.isPending ? (
-            <Skeleton className="h-96 w-full" />
-          ) : (
-            <DetailsSidebar segments={segments} cheap={cheap.data} detail={detail} />
-          )}
-        </div>
       </div>
+
+      <SqlDock segments={segments} columns={columnNames} />
     </div>
   );
 }

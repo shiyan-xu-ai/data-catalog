@@ -3,7 +3,6 @@ import { z } from "zod";
 import {
   columnStorageResponseSchema,
   createNamespaceResponseSchema,
-  deregisterTableResponseSchema,
   describeNamespaceResponseSchema,
   dropNamespaceResponseSchema,
   describeTableResponseSchema,
@@ -15,10 +14,10 @@ import {
   listTableVersionsResponseSchema,
   listTablesResponseSchema,
   registerTableResponseSchema,
+  sqlResponseSchema,
   tableStorageResponseSchema,
   type ColumnStorageResponse,
   type CreateNamespaceResponse,
-  type DeregisterTableResponse,
   type DescribeNamespaceResponse,
   type DropNamespaceResponse,
   type DescribeTableResponse,
@@ -29,6 +28,7 @@ import {
   type ListTableVersionsResponse,
   type ListTablesResponse,
   type RegisterTableResponse,
+  type SqlResponse,
   type TableStorageResponse,
 } from "./schemas";
 
@@ -90,8 +90,9 @@ async function request<T>(
   path: string,
   schema: Parser<T>,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const init: RequestInit = { method, headers: { Accept: "application/json" } };
+  const init: RequestInit = { method, headers: { Accept: "application/json" }, signal };
   if (body !== undefined) {
     init.headers = { ...init.headers, "Content-Type": "application/json" };
     init.body = JSON.stringify(body);
@@ -245,6 +246,8 @@ export function registerTable(
   });
 }
 
-export function deregisterTable(table: readonly string[]): Promise<DeregisterTableResponse> {
-  return request("POST", `/v1/table/${idPathSegment(table)}/deregister`, deregisterTableResponseSchema, {});
+/** Catalog route: run one read-only DataFusion query against the table's current version.
+ *  Aborting `signal` only stops waiting; the server finishes or times out on its own. */
+export function runSql(table: readonly string[], sql: string, signal?: AbortSignal): Promise<SqlResponse> {
+  return request("POST", `/catalog/v1/table/${idPathSegment(table)}/sql`, sqlResponseSchema, { sql }, signal);
 }

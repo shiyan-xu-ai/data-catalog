@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore, type Dispatch, type SetStateAction } from "react";
 import { formatDateTime, type TimeZonePref } from "./format";
 
 // Display preferences persisted in localStorage (KTD11). Theme lives in `theme.ts`, which the
@@ -45,4 +45,32 @@ export function useTimeZonePref(): TimeZonePref {
 export function useDateTimeFormatter(): (date: Date | null) => string {
   const pref = useTimeZonePref();
   return (date) => formatDateTime(date, pref);
+}
+
+type Stored = boolean | number;
+type StoredState<T> = readonly [T, Dispatch<SetStateAction<T>>];
+
+/** Component state persisted in localStorage under `key` (layout choices such as collapsed
+ *  panels or widths). A stored value of another type falls back to `initial`. */
+export function useStoredState(key: string, initial: boolean): StoredState<boolean>;
+export function useStoredState(key: string, initial: number): StoredState<number>;
+export function useStoredState<T extends Stored>(key: string, initial: T): StoredState<T> {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      const parsed: unknown = raw == null ? null : JSON.parse(raw);
+      // Same primitive type as `initial`, which is all T can be.
+      return typeof parsed === typeof initial ? (parsed as T) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Storage unavailable; the choice still applies for this session.
+    }
+  }, [key, value]);
+  return [value, setValue] as const;
 }

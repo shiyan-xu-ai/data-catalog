@@ -22,6 +22,7 @@ export const ErrorCode = {
   TableAlreadyExists: 5,
   InvalidInput: 13,
   Internal: 18,
+  Throttling: 21,
 } as const;
 
 export const listNamespacesResponseSchema = z.object({
@@ -57,12 +58,16 @@ export const registerTableResponseSchema = z.object({
 });
 export type RegisterTableResponse = z.infer<typeof registerTableResponseSchema>;
 
-export const deregisterTableResponseSchema = z.object({
-  id: z.array(z.string()).nullish(),
-  location: z.string().nullish(),
-  properties: propertiesSchema.nullish(),
+/** Catalog route `POST /catalog/v1/table/{id}/sql` (not a spec model). Row values follow
+ *  Arrow's JSON writer, so they stay `unknown` until formatted per column type. */
+export const sqlResponseSchema = z.object({
+  columns: z.array(z.object({ name: z.string(), type: z.string() })),
+  rows: z.array(z.array(z.unknown())),
+  row_count: z.number(),
+  truncated: z.boolean(),
+  elapsed_ms: z.number(),
 });
-export type DeregisterTableResponse = z.infer<typeof deregisterTableResponseSchema>;
+export type SqlResponse = z.infer<typeof sqlResponseSchema>;
 
 export interface JsonArrowDataType {
   type: string;

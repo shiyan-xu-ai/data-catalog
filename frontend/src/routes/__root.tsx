@@ -58,7 +58,7 @@ function RootComponent() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-screen overflow-hidden bg-background">
-        <AppSidebar className="hidden md:flex" />
+        <AppSidebar className="hidden md:flex" collapsible />
         {mobileNav && (
           <div className="fixed inset-0 z-50 flex md:hidden">
             <AppSidebar className="shadow-xl" onNavigate={() => setMobileNav(false)} />

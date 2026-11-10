@@ -56,8 +56,9 @@ const ZONES: { value: TimeZonePref; label: string }[] = [
   { value: "local", label: "Local" },
 ];
 
-/** Theme and timezone controls, both persisted in localStorage. */
-export function PreferenceControls() {
+/** Theme and timezone controls, both persisted in localStorage. `compact` renders them as two
+ *  icon buttons that cycle the choice, for the collapsed navigation rail. */
+export function PreferenceControls({ compact = false }: { compact?: boolean }) {
   // The pre-paint script in index.html already applied the stored theme; sync state to it.
   const [theme, setThemeState] = useState<Theme>(getTheme);
   const timeZone = useTimeZonePref();
@@ -71,17 +72,44 @@ export function PreferenceControls() {
     return () => mq.removeEventListener("change", onChange);
   }, [theme]);
 
+  function chooseTheme(t: Theme) {
+    setTheme(t);
+    setThemeState(t);
+  }
+
+  if (compact) {
+    const current = THEMES.find((o) => o.value === theme) ?? THEMES[2];
+    const nextTheme = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
+    const nextZone: TimeZonePref = timeZone === "utc" ? "local" : "utc";
+    const railButton =
+      "flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground";
+    return (
+      <div className="flex flex-col items-center gap-1">
+        <button
+          type="button"
+          className={railButton}
+          onClick={() => chooseTheme(nextTheme.value)}
+          aria-label={`Theme: ${current.label}. Switch to ${nextTheme.label}`}
+          title={`Theme: ${current.label} (click for ${nextTheme.label})`}
+        >
+          <current.icon className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          className={cn(railButton, "text-[10px] font-semibold")}
+          onClick={() => setTimeZonePref(nextZone)}
+          aria-label={`Timezone: ${timeZone === "utc" ? "UTC" : "local"}. Switch to ${nextZone === "utc" ? "UTC" : "local"}`}
+          title={`Timezone: ${timeZone === "utc" ? "UTC" : "Local"} (click to switch)`}
+        >
+          {timeZone === "utc" ? "UTC" : "LOC"}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2">
-      <Segmented
-        label="Theme"
-        value={theme}
-        options={THEMES}
-        onChange={(t) => {
-          setTheme(t);
-          setThemeState(t);
-        }}
-      />
+      <Segmented label="Theme" value={theme} options={THEMES} onChange={chooseTheme} />
       <Segmented label="Timezone" value={timeZone} options={ZONES} onChange={setTimeZonePref} />
     </div>
   );

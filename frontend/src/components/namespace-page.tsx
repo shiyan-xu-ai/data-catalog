@@ -127,7 +127,9 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
       await dropNamespace(segments);
     } catch (e) {
       if (e instanceof ApiError && e.code === ErrorCode.NamespaceNotEmpty) {
-        toast.error(`"${displayName(segments)}" is not empty. Drop its child namespaces and deregister its tables first.`);
+        toast.error(
+          `"${displayName(segments)}" is not empty. Drop its child namespaces and deregister its tables (through the API) first.`,
+        );
       } else {
         toast.error((e as Error).message);
       }
