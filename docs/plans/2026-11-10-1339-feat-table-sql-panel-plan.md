@@ -40,6 +40,9 @@ The right column of the table page becomes a SQL panel. It has an editor pre-fil
 - R38. The left navigation collapses to an icon rail and expands again, remembering the choice across reloads.
 - R39. The UI shows no Deregister action. The deregister API remains.
 - R40. The SQL route never writes to the dataset, the catalog database, or the local filesystem.
+- R44. Overview shows the Lance-native table stats (`GetTableStats`) that no other tile already shows, charted. That means fragment statistics: the rows-per-fragment distribution (min, p25, p50, p75, p99, max, mean) and the share of small fragments below Lance's 1,048,576-row compaction target. A help icon explains where the figures come from. The field-statistics `total_bytes` appears in the Storage by column tooltip next to the manifest data size, not as a new tile.
+- R45. Storage by column carries a help icon. The tooltip says it shows bytes on disk per top-level column in the current version's data files (field-level data statistics). It excludes blob payload files, which hold most of the storage cost, and index files. Blob columns count only their per-row descriptors (pointers into `.blob` files).
+- R46. The growth chart section is titled "Trends".
 
 ### Key Decisions
 
