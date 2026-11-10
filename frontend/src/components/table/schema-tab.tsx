@@ -49,7 +49,6 @@ function SchemaView({ schema }: { schema: JsonArrowSchema }) {
     <div className="space-y-6">
       <Section
         title="Fields"
-        description={`${schema.fields.length} top-level column${schema.fields.length === 1 ? "" : "s"}`}
         contentClassName={mode === "tree" ? "px-0 pb-0" : undefined}
         actions={
           <>

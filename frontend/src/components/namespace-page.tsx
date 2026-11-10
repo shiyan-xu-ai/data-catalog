@@ -148,16 +148,11 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
             <Folder className="h-5 w-5 text-muted-foreground" />
           </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-xl font-semibold tracking-tight">{name}</h1>
-            <p className="truncate text-sm text-muted-foreground">
-              {isRoot ? "Top-level namespaces" : <span className="font-mono">{displayName(segments)}</span>}
-            </p>
-          </div>
+          <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">{name}</h1>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setCreateOpen(true)}>

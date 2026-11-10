@@ -1,7 +1,7 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { ListTree } from "lucide-react";
 import { formatBytes, formatCompact, formatCount, formatPercent } from "@/lib/format";
-import { indexCoverage, totalIndexBytes } from "@/lib/table-metadata";
+import { indexCoverage } from "@/lib/table-metadata";
 import type { IndexContent } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -59,11 +59,10 @@ export function IndicesTab({ indices }: { indices: UseQueryResult<IndexContent[]
       </EmptyState>
     );
   }
-  const total = totalIndexBytes(list);
   return (
     <Section
       title="Indices"
-      description={`${formatCount(list.length)} on the current version${total != null ? ` · ${formatBytes(total)} on disk` : ""}`}
+      description="Coverage is indexed vs unindexed rows"
       contentClassName="px-0 pb-0"
     >
       <Table>

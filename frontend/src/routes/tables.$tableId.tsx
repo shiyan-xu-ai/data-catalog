@@ -125,7 +125,6 @@ function SqlDock({
 
 function TablePage({ tableId }: { tableId: string }) {
   const segments = useMemo(() => splitId(tableId), [tableId]);
-  const namespace = segments.slice(0, -1);
   const { tab = "overview" } = Route.useSearch();
   const navigate = useNavigate();
 
@@ -166,24 +165,19 @@ function TablePage({ tableId }: { tableId: string }) {
   return (
     <>
       <div className="space-y-6">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
             <Table2 className="h-5 w-5 text-muted-foreground" />
           </div>
-          <div className="min-w-0 space-y-1">
-            <h1 className="truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span className="font-mono">{displayName(namespace)}</span>
-              {detail.isPending ? (
-                <Skeleton className="h-5 w-24" />
-              ) : (
-                <>
-                  {format && <Badge variant="outline">Lance {format}</Badge>}
-                  {detail.data?.version != null && <Badge variant="outline">v{detail.data.version}</Badge>}
-                </>
-              )}
-            </div>
-          </div>
+          <h1 className="min-w-0 truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
+          {detail.isPending ? (
+            <Skeleton className="h-5 w-24" />
+          ) : (
+            <>
+              {format && <Badge variant="outline">Lance {format}</Badge>}
+              {detail.data?.version != null && <Badge variant="outline">v{detail.data.version}</Badge>}
+            </>
+          )}
         </div>
 
         {cheap.error && <ErrorState message={cheap.error.message} />}

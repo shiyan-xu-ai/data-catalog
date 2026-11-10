@@ -25,30 +25,33 @@ page can fill; the table page puts its SQL panel there.
 
 ## Pages
 
-- **Namespace page.** Child namespaces and a table list with name, description,
+- **Namespace page.** A header with the namespace name (its path is in the
+  breadcrumb), child namespaces, and a table list with name, description,
   owner, location, and registered and updated times. Each row fills from a cheap
   describe (Postgres only) once it scrolls into view, at most six at a time, so
   listing never opens a dataset. Actions: create a namespace with optional
   properties, drop an empty namespace, and register an existing Lance dataset by
   URI with an optional owner, description, and extra properties.
-- **Table page.** A header with the table name and format and version badges,
-  five tabs (the active tab is in the `?tab=` query), and a SQL panel docked at
-  the bottom. The UI offers no deregistration; the API still does.
-  - **Overview:** tiles for rows, current-version data (the manifest's
-    data-file size), total bytes on storage, the estimated monthly storage cost
-    (`GET /catalog/v1/table/{id}/storage`), data files, deleted rows, version
-    count, and index count. Each tile keeps a short caption; a (?) tooltip
-    explains what the figure measures and excludes (for example blob payloads,
-    the rate and tier, and that the cost is an upper bound excluding requests
-    and egress). Charts: current-version bytes
+- **Table page.** A header with the table name and the storage format and
+  current version badges (the namespace path is in the breadcrumb), five tabs
+  (the active tab is in the `?tab=` query; Schema, Versions, and Indices show
+  their counts), and a SQL panel docked at the bottom. The UI offers no
+  deregistration; the API still does.
+  - **Overview:** six tiles: rows (with fragment count), current-version data
+    (the manifest's data-file size and count), deleted rows, current index size,
+    total bytes on storage, and the estimated monthly storage cost
+    (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption; a
+    (?) tooltip explains what the figure measures and excludes (for example
+    blob payloads, index files kept by older versions, the rate and tier, and
+    that the cost is an upper bound excluding requests and egress). Charts:
+    current-version bytes
     per column (`GET /catalog/v1/table/{id}/column-storage`), the on-storage
     composition by file category, and rows and data size over every version.
     Both catalog routes are slow, so they are requested only after the rest of
     the page loaded and show skeletons until then.
   - **Properties:** the About facts first (description, owner, copyable
-    location, storage format, current version, registered and updated times,
-    tags, branches), then client properties, Lance table configuration, and
-    schema-level metadata.
+    location, registered and updated times, tags, branches), then client
+    properties and Lance table configuration.
   - **Schema:** an expandable field tree with compact types (full type on
     hover), nullability, and field metadata, a raw JSON view, and schema-level
     metadata.

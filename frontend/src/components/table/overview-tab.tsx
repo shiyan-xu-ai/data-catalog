@@ -1,5 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import { BarChart3, CircleDollarSign, Database, FileStack, HardDrive, Layers, ListTree, Rows3, Trash2 } from "lucide-react";
+import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
 import { formatBytes, formatCost, formatCount, formatGigabytes, formatPercent, formatRate } from "@/lib/format";
 import { parseManifestSummary, topColumns, totalIndexBytes, versionSeries } from "@/lib/table-metadata";
 import type {
@@ -94,7 +94,7 @@ export function OverviewTab({
   return (
     <div className="@container space-y-6">
       {detail.error && <ErrorState message={`Lance metadata unavailable: ${detail.error.message}`} />}
-      <div className="grid grid-cols-2 gap-3 @3xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 @3xl:grid-cols-3">
         <Kpi
           icon={Rows3}
           label="Rows"
@@ -109,9 +109,28 @@ export function OverviewTab({
           label="Current version data"
           value={formatBytes(s.dataBytes)}
           sub={s.dataFiles != null ? `${formatCount(s.dataFiles)} data files` : undefined}
-          help="Size of the data files the current version references, from the manifest summary. Excludes blob payloads, index files, and files kept only by older versions."
+          help="Size and count of the data files the current version's fragments reference, from the manifest summary. Excludes blob payload files, index files, and files kept only by older versions."
           loading={detail.isPending}
           failed={detail.error?.message}
+        />
+        <Kpi
+          icon={Trash2}
+          label="Deleted rows"
+          value={formatCount(s.deletedRows)}
+          sub={s.deletionFiles != null ? `${formatCount(s.deletionFiles)} deletion files` : undefined}
+          help="Rows marked deleted by deletion files in the current version. They still occupy data files until compaction."
+          loading={detail.isPending}
+          failed={detail.error?.message}
+        />
+        <Kpi
+          icon={ListTree}
+          label="Index size"
+          // No indices is a measured zero; indices without reported sizes stay unknown.
+          value={formatBytes(indices.data?.length === 0 ? 0 : indexBytes)}
+          sub="current version"
+          help="Size of the current version's index files. Index files kept only by older versions are counted in Storage composition's Index files."
+          loading={indices.isPending}
+          failed={indices.error?.message}
         />
         <Kpi
           icon={HardDrive}
@@ -143,48 +162,12 @@ export function OverviewTab({
           loading={storageLoading}
           failed={storage.error?.message}
         />
-        <Kpi
-          icon={FileStack}
-          label="Data files"
-          value={formatCount(s.dataFiles)}
-          sub="current version"
-          help="Data files referenced by the current version's fragments. Blob payload files are not counted."
-          loading={detail.isPending}
-          failed={detail.error?.message}
-        />
-        <Kpi
-          icon={Trash2}
-          label="Deleted rows"
-          value={formatCount(s.deletedRows)}
-          sub={s.deletionFiles != null ? `${formatCount(s.deletionFiles)} deletion files` : undefined}
-          help="Rows marked deleted by deletion files in the current version. They still occupy data files until compaction."
-          loading={detail.isPending}
-          failed={detail.error?.message}
-        />
-        <Kpi
-          icon={Layers}
-          label="Versions"
-          value={formatCount(versions.data?.length)}
-          sub={detail.data?.version != null ? `current v${detail.data.version}` : undefined}
-          help="Table versions still listed in the dataset; versions removed by cleanup are not counted."
-          loading={versions.isPending}
-          failed={versions.error?.message}
-        />
-        <Kpi
-          icon={ListTree}
-          label="Indices"
-          value={formatCount(indices.data?.length)}
-          sub={indexBytes != null ? `${formatBytes(indexBytes)} on disk` : undefined}
-          help="Indices on the current version. The size counts only the current index files, not files kept by older versions."
-          loading={indices.isPending}
-          failed={indices.error?.message}
-        />
       </div>
 
       <div className="grid gap-6 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section
           title="Storage by column"
-          description={`Current version data${columns.data ? ` (v${columns.data.version})` : ""} per top-level column; excludes blob payloads`}
+          description="Current version data per top-level column; excludes blob payloads"
         >
           {columns.error ? (
             <ErrorState message={columns.error.message} />
@@ -225,7 +208,6 @@ export function OverviewTab({
               <span className="flex items-center gap-1.5">
                 <span className="h-0 w-4 border-t-2 border-dashed border-[hsl(var(--chart-2))]" /> Data size (right axis)
               </span>
-              <span>{formatCount(series.length)} versions</span>
             </div>
           </>
         )}

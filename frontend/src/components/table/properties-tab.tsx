@@ -9,7 +9,6 @@ import {
   UPDATED_AT,
   configEntries,
   extraProperties,
-  storageFormatVersion,
 } from "@/lib/table-metadata";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
@@ -54,11 +53,9 @@ function LanceBody({
 function About({
   segments,
   cheap,
-  detail,
 }: {
   segments: readonly string[];
   cheap: UseQueryResult<DescribeTableResponse>;
-  detail: UseQueryResult<DescribeTableResponse>;
 }) {
   const tags = useTableTags(segments);
   const branches = useTableBranches(segments);
@@ -90,20 +87,6 @@ function About({
         )}
       </Field>
       <Field label="Owner">{props[OWNER] ?? <Unset />}</Field>
-      <Field label="Storage format">
-        <Lance query={detail}>
-          {(d) => {
-            const v = storageFormatVersion(d.metadata);
-            return v ? <span className="font-mono">Lance {v}</span> : <Unset>Unknown</Unset>;
-          }}
-        </Lance>
-      </Field>
-      <Field label="Current version">
-        <Lance query={detail}>
-          {(d) => (d.version != null ? <span className="font-mono tabular-nums">v{d.version}</span> : <Unset>Unknown</Unset>)}
-        </Lance>
-      </Field>
-      <div className="hidden @3xl:block" />
       <Field label="Registered">
         <Timestamp value={props[REGISTERED_AT]} stacked />
       </Field>
@@ -156,9 +139,10 @@ function About({
   );
 }
 
-/** About facts first (catalog-recorded from the cheap describe, Lance facts from the detailed
- *  describe and the tag and branch routes), then client properties, Lance table configuration,
- *  and schema-level metadata. Each Lance-derived part loads and fails on its own. */
+/** About facts first (catalog-recorded from the cheap describe, tags and branches from their
+ *  routes), then client properties and Lance table configuration. Storage format and current
+ *  version live in the page header; schema metadata lives on the Schema tab. Each
+ *  Lance-derived part loads and fails on its own. */
 export function PropertiesTab({
   segments,
   cheap,
@@ -171,7 +155,7 @@ export function PropertiesTab({
   return (
     <div className="@container space-y-6">
       <Section title="About">
-        <About segments={segments} cheap={cheap} detail={detail} />
+        <About segments={segments} cheap={cheap} />
       </Section>
 
       <Section title="Catalog properties" description="Client properties recorded at registration">
@@ -187,17 +171,6 @@ export function PropertiesTab({
       <Section title="Lance table configuration" description="Manifest config entries of the current version">
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={configEntries(d.metadata)} empty="No Lance table configuration." />}
-        </LanceBody>
-      </Section>
-
-      <Section title="Schema metadata" description="Key/value metadata on the Arrow schema">
-        <LanceBody detail={detail}>
-          {(d) => (
-            <PropertiesList
-              entries={Object.entries(d.schema?.metadata ?? {}).sort(([a], [b]) => a.localeCompare(b))}
-              empty="No schema-level metadata."
-            />
-          )}
         </LanceBody>
       </Section>
     </div>
