@@ -617,6 +617,33 @@ async fn table_details() {
         .unwrap_err();
     assert_eq!(code(err), UNSUPPORTED);
 
+    // Detailed describe surfaces both manifest maps: `config` and `table_metadata`.
+    let tagged = support::write_dataset(dir.path(), "tagged.lance").await;
+    let mut dataset = lance::Dataset::open(&tagged).await.unwrap();
+    dataset
+        .update_config([("lance.auto_cleanup.interval", "20")])
+        .await
+        .unwrap();
+    dataset
+        .update_metadata([("producer", "export")])
+        .await
+        .unwrap();
+    ns.register_table(register(&["prod", "tagged"], &tagged))
+        .await
+        .unwrap();
+    let tagged_meta = ns
+        .describe_table(DescribeTableRequest {
+            id: id(&["prod", "tagged"]),
+            load_detailed_metadata: Some(true),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .metadata
+        .unwrap();
+    assert_eq!(tagged_meta["config.lance.auto_cleanup.interval"], "20");
+    assert_eq!(tagged_meta["table_metadata.producer"], "export");
+
     // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found.
     std::fs::remove_dir_all(&metrics).unwrap();
     let cheap = ns.describe_table(describe(false)).await.unwrap();

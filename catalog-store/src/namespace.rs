@@ -589,6 +589,12 @@ impl LanceNamespace for PostgresNamespace {
                 .iter()
                 .map(|(key, value)| (format!("config.{key}"), value.clone())),
         );
+        metadata.extend(
+            dataset
+                .metadata()
+                .iter()
+                .map(|(key, value)| (format!("table_metadata.{key}"), value.clone())),
+        );
         metadata.insert(
             "lance.data_storage_version".into(),
             dataset.manifest().data_storage_format.version.to_string(),
