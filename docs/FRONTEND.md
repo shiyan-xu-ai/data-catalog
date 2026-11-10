@@ -70,9 +70,11 @@ page can fill; the table page puts its SQL panel there.
   server's row cap, and the server's error message. Cancel stops waiting; the
   server's time limit ends the query. The dock spans the content width with
   the editor on the left (about 40%) and scrollable results on the right
-  (stacked on narrow screens). Dragging its top edge resizes it, and it
-  collapses to a slim bar; height and collapsed state persist. The tabs stay
-  usable while a query runs.
+  (stacked on narrow screens). Dragging its top edge resizes it. Clicking any
+  empty part of its header bar, or the toggle button pinned at the bar's right
+  end, collapses it to that bar or expands it again; controls in the bar (Run,
+  Reset, the version picker, help) keep their own behavior. Height and
+  collapsed state persist. The tabs stay usable while a query runs.
 
 Catalog-recorded facts come from the cheap describe, and Lance-derived sections
 from the detailed describe and the version, index, tag, and branch routes. Each

@@ -1,6 +1,6 @@
 import { Suspense, lazy, useMemo } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { BarChart3, Layers, ListTree, PanelBottomOpen, SlidersHorizontal, Table2, TableProperties } from "lucide-react";
+import { BarChart3, Layers, ListTree, SlidersHorizontal, Table2, TableProperties, TerminalSquare } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import {
   useColumnStorage,
@@ -25,6 +25,7 @@ import { IndicesTab } from "@/components/table/indices-tab";
 import { OverviewTab } from "@/components/table/overview-tab";
 import { PropertiesTab } from "@/components/table/properties-tab";
 import { SchemaTab } from "@/components/table/schema-tab";
+import { SqlDockBar } from "@/components/table/sql-dock-bar";
 import { VersionsTab } from "@/components/table/versions-tab";
 
 // The editor (CodeMirror) is the heaviest part of the page; load it after the tabs.
@@ -87,16 +88,19 @@ function SqlDock({
 
   if (collapsed) {
     return (
-      <button
-        type="button"
-        onClick={() => setCollapsed(false)}
-        aria-label="Open SQL panel"
-        className="flex h-9 w-full items-center gap-2 border-t bg-card px-4 text-xs font-medium text-muted-foreground hover:text-foreground md:px-6"
-      >
-        <PanelBottomOpen className="h-4 w-4" />
-        SQL
-        <span className="font-normal text-muted-foreground/70">Read-only queries against this table</span>
-      </button>
+      <SqlDockBar
+        expanded={false}
+        onToggle={() => setCollapsed(false)}
+        className="border-t bg-card"
+        left={
+          <>
+            <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="text-sm font-semibold tracking-tight">SQL</span>
+            <Badge variant="outline">Read-only</Badge>
+            <span className="text-xs text-muted-foreground">Queries against this table</span>
+          </>
+        }
+      />
     );
   }
 

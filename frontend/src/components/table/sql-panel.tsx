@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, PanelBottomClose, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
+import { Loader2, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
 import { ApiError, runSql } from "@/lib/api";
 import { formatCount, parseTime } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { SqlEditor } from "@/components/sql-editor";
+import { SqlDockBar } from "./sql-dock-bar";
 
 const cellClass: Record<CellKind, string> = {
   null: "italic text-muted-foreground/60",
@@ -149,56 +150,62 @@ export function SqlPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col text-card-foreground">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5 md:px-6">
-        <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <h2 className="text-sm font-semibold tracking-tight">SQL</h2>
-        <Badge variant="outline">Read-only</Badge>
-        <div className="ml-2 flex items-center gap-2">
-          {running ? (
-            <Button size="sm" variant="outline" className="h-7" onClick={cancel}>
-              <Square /> Cancel
-            </Button>
-          ) : (
-            <Button size="sm" className="h-7" onClick={run} disabled={!query.trim()}>
-              <Play /> Run
-            </Button>
-          )}
-          {query !== initial && !running && (
-            <Button size="sm" variant="ghost" className="h-7" onClick={() => setQuery(initial)} title="Reset to the sample query">
-              <RotateCcw /> Reset
-            </Button>
-          )}
-          <span className="text-[11px] text-muted-foreground">
-            {running ? (
-              <span className="flex items-center gap-1.5 tabular-nums">
-                <Loader2 className="h-3 w-3 animate-spin" /> Running… {formatElapsed(now - (startedAt ?? now))}
+      <SqlDockBar
+        expanded
+        onToggle={onCollapse}
+        className="border-b"
+        left={
+          <>
+            <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <h2 className="text-sm font-semibold tracking-tight">SQL</h2>
+            <Badge variant="outline">Read-only</Badge>
+            <div className="ml-2 flex items-center gap-2">
+              {running ? (
+                <Button size="sm" variant="outline" className="h-7" onClick={cancel}>
+                  <Square /> Cancel
+                </Button>
+              ) : (
+                <Button size="sm" className="h-7" onClick={run} disabled={!query.trim()}>
+                  <Play /> Run
+                </Button>
+              )}
+              {query !== initial && !running && (
+                <Button size="sm" variant="ghost" className="h-7" onClick={() => setQuery(initial)} title="Reset to the sample query">
+                  <RotateCcw /> Reset
+                </Button>
+              )}
+              <span className="text-[11px] text-muted-foreground">
+                {running ? (
+                  <span className="flex items-center gap-1.5 tabular-nums">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Running… {formatElapsed(now - (startedAt ?? now))}
+                  </span>
+                ) : (
+                  <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">⌘/Ctrl ↵</kbd>
+                )}
               </span>
-            ) : (
-              <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">⌘/Ctrl ↵</kbd>
-            )}
-          </span>
-        </div>
-        <div className="ml-auto flex min-w-0 items-center gap-1.5">
-          <select
-            aria-label="Table version to query"
-            value={version ?? ""}
-            onChange={(e) => setVersion(e.target.value === "" ? null : Number(e.target.value))}
-            className="h-7 min-w-0 max-w-64 truncate rounded-md border border-input bg-background px-2 text-xs shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <option value="">{latest != null ? `Latest (v${latest})` : "Latest"}</option>
-            {versions?.map((v) => (
-              <option key={v.version} value={v.version}>
-                v{v.version}
-                {v.timestamp_millis != null ? ` · ${formatDateTime(parseTime(v.timestamp_millis))}` : ""}
-              </option>
-            ))}
-          </select>
-          <HelpTooltip label="About table versions in SQL">{versionHint}</HelpTooltip>
-          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onCollapse} aria-label="Collapse SQL panel" title="Collapse">
-            <PanelBottomClose />
-          </Button>
-        </div>
-      </div>
+            </div>
+          </>
+        }
+        right={
+          <>
+            <select
+              aria-label="Table version to query"
+              value={version ?? ""}
+              onChange={(e) => setVersion(e.target.value === "" ? null : Number(e.target.value))}
+              className="h-7 min-w-0 max-w-64 truncate rounded-md border border-input bg-background px-2 text-xs shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <option value="">{latest != null ? `Latest (v${latest})` : "Latest"}</option>
+              {versions?.map((v) => (
+                <option key={v.version} value={v.version}>
+                  v{v.version}
+                  {v.timestamp_millis != null ? ` · ${formatDateTime(parseTime(v.timestamp_millis))}` : ""}
+                </option>
+              ))}
+            </select>
+            <HelpTooltip label="About table versions in SQL">{versionHint}</HelpTooltip>
+          </>
+        }
+      />
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <SqlEditor
