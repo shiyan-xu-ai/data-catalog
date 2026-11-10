@@ -13,25 +13,15 @@ const STATS = [
   ["P75", "p75"],
   ["P99", "p99"],
   ["Max", "max"],
+  ["Mean", "mean"],
 ] as const;
 
-/** Rows-per-fragment distribution: median headline (mean in the caption, since it is not a
- *  percentile) over horizontal percentile bars. */
-export function FragmentBoxPlot({ lengths }: { lengths: FragmentLengths }) {
+/** Rows-per-fragment distribution: one horizontal bar per percentile, then the mean. */
+export function FragmentDistributionChart({ lengths }: { lengths: FragmentLengths }) {
   const { axisMax, ticks } = niceAxis(lengths.max);
   const data = STATS.map(([name, key]) => ({ name, rows: lengths[key] }));
   return (
-    <figure className="min-w-0 space-y-4" aria-label="Rows per fragment">
-      <div>
-        <p className="flex flex-wrap items-baseline gap-x-1.5">
-          <span className="text-sm text-muted-foreground">Median</span>
-          <span className="text-2xl font-semibold tracking-tight tabular-nums">{formatCount(lengths.p50)}</span>
-          <span className="text-sm text-muted-foreground">rows per fragment</span>
-        </p>
-        <p className="text-xs text-muted-foreground">
-          mean <span className="tabular-nums">{formatCount(lengths.mean)}</span> · physical rows, current version
-        </p>
-      </div>
+    <figure className="min-w-0" aria-label="Rows per fragment">
       <ChartContainer config={rowsConfig} className="aspect-auto w-full" style={{ height: data.length * 30 + 24 }}>
         <BarChart data={data} layout="vertical" margin={{ left: 4, right: 56, top: 0, bottom: 0 }}>
           <CartesianGrid horizontal={false} />

@@ -23,7 +23,7 @@ import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
 import { ColumnStorageChart, GrowthChart, LegendItem, StorageSplitChart, type StorageSlice } from "./charts";
-import { FragmentBoxPlot, SmallFragmentShare } from "./fragment-charts";
+import { FragmentDistributionChart, SmallFragmentShare } from "./fragment-charts";
 
 const TOP_COLUMNS = 12;
 
@@ -215,7 +215,8 @@ export function OverviewTab({
       </div>
 
       <Section
-        title="Fragments"
+        title="Fragment distribution"
+        description="Rows per fragment in the current version (physical rows)"
         help={
           <>
             From Lance GetTableStats. Rows per fragment are physical rows, including deleted rows. &apos;Small&apos;
@@ -232,7 +233,7 @@ export function OverviewTab({
           <EmptyState icon={BarChart3} title="No fragments">The current version has no data fragments.</EmptyState>
         ) : (
           <div className="grid gap-6 @3xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-            <FragmentBoxPlot lengths={stats.data.fragment_stats.lengths} />
+            <FragmentDistributionChart lengths={stats.data.fragment_stats.lengths} />
             <div className="border-t pt-5 @3xl:border-t-0 @3xl:border-l @3xl:pt-0 @3xl:pl-6">
               <SmallFragmentShare
                 small={stats.data.fragment_stats.num_small_fragments}
