@@ -49,9 +49,18 @@ so `catalog-api` owns an axum router that follows the adapter's conventions:
 
 Supported operations: namespace list / describe / create / drop / exists; table
 list / list-all / register / describe / exists / deregister; read-only table
-stats, version list / describe, index list / stats, tag list, branch list. One
-catalog route outside `/v1`, `GET /catalog/v1/table/:id/column-storage`, returns
-bytes on disk per top-level column, which no spec model carries.
+stats, version list / describe, index list / stats, tag list, branch list. Two
+catalog routes sit outside `/v1` because no spec model carries their data:
+`GET /catalog/v1/table/:id/column-storage` (bytes per top-level column of the
+current version) and `GET /catalog/v1/table/:id/storage` (storage footprint and
+cost estimate).
+
+Lance has no API for total storage size: the manifest summary and field
+statistics cover only the current version's data files, not blob v2 payload
+files (`data/*.blob`), index files, or files retained for older versions. The
+storage route therefore lists object metadata under the registered location,
+groups it by category, and prices the total at
+`CATALOG_STORAGE_PRICE_PER_GB_MONTH`.
 
 - **Register** opens the location as a Lance dataset before inserting, so an
   unreadable URI never becomes a table.
