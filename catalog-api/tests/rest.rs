@@ -341,6 +341,7 @@ async fn rest_catalog_routes() {
             "row_count": 1,
             "truncated": false,
             "elapsed_ms": null,
+            "version": 2,
         })
     );
     let (status, all) = post(
@@ -369,6 +370,46 @@ async fn rest_catalog_routes() {
         );
     }
     assert!(!copied.exists());
+
+    // Time travel: version 3 appends a row; the plain name follows `version`, and
+    // `"<leaf>@v<N>"` pins a version inside any query.
+    support::append_row(&users).await;
+    let count = |body: Value| async {
+        let (status, body) = post(&app, "/catalog/v1/table/prod%24users/sql", body).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        (body["version"].clone(), body["rows"].clone())
+    };
+    assert_eq!(
+        count(json!({"sql": "SELECT count(*) FROM users", "version": 1})).await,
+        (json!(1), json!([[3]]))
+    );
+    assert_eq!(
+        count(json!({"sql": "SELECT count(*) FROM users"})).await,
+        (json!(3), json!([[4]]))
+    );
+    assert_eq!(
+        count(sql(
+            r#"SELECT (SELECT count(*) FROM "users@v1") AS old, count(*) AS new FROM users"#
+        ))
+        .await,
+        (json!(3), json!([[3, 4]]))
+    );
+    for body in [
+        json!({"sql": "SELECT 1", "version": 9}),
+        sql(r#"SELECT count(*) FROM "users@v9""#),
+    ] {
+        error(StatusCode::NOT_FOUND, 11)(
+            post(&app, "/catalog/v1/table/prod%24users/sql", body).await,
+        );
+    }
+    error(StatusCode::BAD_REQUEST, 13)(
+        post(
+            &app,
+            "/catalog/v1/table/prod%24users/sql",
+            json!({"sql": "SELECT 1", "version": 0}),
+        )
+        .await,
+    );
     assert_eq!(
         post(&app, "/v1/table/prod%24users/exists", json!({})).await,
         (StatusCode::OK, Value::Null)

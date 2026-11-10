@@ -57,6 +57,33 @@ pub async fn write_dataset(dir: &std::path::Path, name: &str) -> String {
     uri
 }
 
+/// Appends one row (`4`, `"d"`) to a dataset written by [`write_dataset`].
+pub async fn append_row(uri: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![4])),
+            Arc::new(StringArray::from(vec!["d"])),
+        ],
+    )
+    .unwrap();
+    let params = lance::dataset::WriteParams {
+        mode: lance::dataset::WriteMode::Append,
+        ..Default::default()
+    };
+    Dataset::write(
+        RecordBatchIterator::new([Ok(batch)], schema),
+        uri,
+        Some(params),
+    )
+    .await
+    .expect("append row");
+}
+
 /// Adds a BTree index named `id_idx` on `id`, committing the dataset's next version.
 pub async fn add_scalar_index(uri: &str) {
     use lance::index::DatasetIndexExt;

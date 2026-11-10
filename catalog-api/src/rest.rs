@@ -451,10 +451,13 @@ async fn table_storage(
 struct SqlRequest {
     #[serde(default)]
     sql: String,
+    /// Version the plain table name resolves to; latest when unset.
+    version: Option<u64>,
 }
 
 #[derive(Serialize)]
 struct SqlResponse {
+    version: u64,
     columns: Vec<SqlColumnResponse>,
     rows: Vec<Vec<Value>>,
     row_count: usize,
@@ -489,9 +492,15 @@ async fn run_sql(
     let started = Instant::now();
     let result = catalog
         .namespace
-        .query_sql(&parse_id(&id), &request.sql, &catalog.sql.limits)
+        .query_sql(
+            &parse_id(&id),
+            &request.sql,
+            request.version,
+            &catalog.sql.limits,
+        )
         .await?;
     Ok(Json(SqlResponse {
+        version: result.version,
         columns: result
             .columns
             .into_iter()
