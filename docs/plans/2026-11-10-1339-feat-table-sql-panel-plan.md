@@ -27,7 +27,9 @@ The right column of the table page becomes a SQL panel. It has an editor pre-fil
 
 ### Requirements
 
-- R31. The SQL panel queries only the table being viewed, at its current version. The table is addressable by its table name (quoted as needed), and the editor opens pre-filled with a valid query that selects a small sample.
+- R31. The SQL panel queries only the table being viewed. The table is addressable by its table name (quoted as needed), and the editor opens pre-filled with a valid query that selects a small sample.
+- R41. Queries can time-travel. A version picker in the panel (default: latest) sets which version the plain table name reads. Any version of the same table is also addressable in SQL as `"<name>@v<N>"`, so one query can compare versions. An unknown version returns a version-not-found error.
+- R42. The panel is labeled read-only and does not name the engine.
 - R32. Only read-only queries run. DDL, DML, `COPY`, and other statements are rejected with an invalid-input error before execution.
 - R33. Every query has limits: at most 1,000 result rows (larger results are truncated and flagged), a server-side time limit, a memory limit, and a cap on concurrent queries per instance. A query over any limit returns a clear error, never a partial silent result.
 - R34. Results show column names and types, rows (nested values rendered compactly), row count, elapsed time, and whether results were truncated. Errors show the DataFusion message.
@@ -40,7 +42,8 @@ The right column of the table page becomes a SQL panel. It has an editor pre-fil
 
 ### Key Decisions
 
-- **SQL engine: DataFusion over Lance's table provider, current version only.** This is what the user asked for. Other engines and version time travel are deferred.
+- **SQL engine: DataFusion over Lance's table provider.** This is what the user asked for; other engines are deferred. The UI does not name the engine.
+- **Time travel by version number.** Lance checks out any retained version by number, tag, or branch (`DatasetBuilder::with_version` / `with_tag` / `with_branch`, `Dataset::checkout_version`). It has no as-of-timestamp API in Rust; pylance resolves `asof` by scanning version timestamps. The panel's picker shows each version's timestamp, so picking by time is a UI concern. Versioned names resolve lazily, so only the versions a query references are opened. (user-directed: chosen over current-version-only)
 - **Catalog route outside the spec.** The spec's query operation is a vector/filter request, not SQL, so the SQL route sits with the other catalog routes.
 - **Read-only by construction.** Use DataFusion's SQL options with DDL, DML, and statements disabled, plus no registered object stores for writing.
 - **Bounded by default.** Prod tables hold millions of rows and terabytes of blob payloads, and the service runs on 1 GiB of memory.

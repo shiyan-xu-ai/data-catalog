@@ -27,7 +27,7 @@ Identifiers in paths are segments joined by `$`; the root namespace is `$`. For 
 | POST | `/v1/table/:id/tags/list`, `/branches/list` | Tags and branches. |
 | GET | `/catalog/v1/table/:id/column-storage` | Bytes on disk per top-level column of the current version (catalog route; no spec model carries it). Excludes blob payload files. Slow on large tables. |
 | GET | `/catalog/v1/table/:id/storage` | Current-version data and index bytes, total bytes on object storage under the table location by category (data, blob, index, deletion, manifest, transaction, other), and an estimated monthly storage cost. Lists the dataset prefix, so it is slow on large tables. |
-| POST | `/catalog/v1/table/:id/sql` | Run a read-only DataFusion SQL query (`{"sql": "..."}`) against the table's current version, addressed by its table name. DDL, DML, and `COPY` are rejected; results are capped at `CATALOG_SQL_MAX_ROWS` rows and flagged `truncated`. |
+| POST | `/catalog/v1/table/:id/sql` | Run a read-only SQL query (`{"sql": "...", "version": N}`) against the table, addressed by its table name. `version` (default latest) picks which version the plain name reads; `"<name>@v<N>"` reads version N inside the same query, for comparisons. DDL, DML, and `COPY` are rejected; results are capped at `CATALOG_SQL_MAX_ROWS` rows and flagged `truncated`. |
 | GET | `/healthz`, `/readyz` | Liveness, and readiness (requires Postgres). |
 
 The catalog never writes to registered datasets. Other spec operations, including data operations, version/tag/branch/index writes, and transactions, return `Unsupported` (code 0, HTTP 406). Platform IAP protects deployed access, and the application performs no authentication itself.

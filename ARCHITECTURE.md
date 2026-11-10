@@ -55,10 +55,12 @@ catalog routes sit outside `/v1` because no spec model carries their data:
 current version), `GET /catalog/v1/table/:id/storage` (storage footprint and
 cost estimate), and `POST /catalog/v1/table/:id/sql` (read-only SQL).
 
-The SQL route builds a fresh DataFusion session per query, registers only the
-table's current version under its table name, and plans with DDL, DML, and
-statements disabled, so a query cannot write anywhere. Each query is bounded by
-row, time, and memory limits, and a per-instance semaphore caps concurrency.
+The SQL route builds a fresh DataFusion session per query and exposes only this
+table: the plain table name reads the requested version (default latest), and
+`"<name>@v<N>"` opens version N on demand, so one query can compare versions.
+Planning runs with DDL, DML, and statements disabled and spilling off, so a
+query cannot write anywhere. Each query is bounded by row, time, and memory
+limits, and a per-instance semaphore caps concurrency.
 
 Lance has no API for total storage size: the manifest summary and field
 statistics cover only the current version's data files, not blob v2 payload
