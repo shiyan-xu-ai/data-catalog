@@ -13,32 +13,24 @@ name = "catalog-api"
 path = "src/main.rs"
 
 [dependencies]
-catalog-core = { path = "../catalog-core" }
 catalog-store = { path = "../catalog-store" }
 tokio.workspace = true
 axum.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-chrono.workspace = true
-futures.workspace = true
-object_store.workspace = true
+lance-namespace.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["json", "env-filter", "fmt"] }
-url.workspace = true
 tower-http = { version = "0.6", features = ["fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 base64 = "0.22"
-arrow-array.workspace = true
-arrow-json = "58"
-datafusion = "53"
-lance.workspace = true
-serde_yaml = "0.9"
 
 [dev-dependencies]
-tempfile.workspace = true
+arrow-array.workspace = true
 arrow-schema.workspace = true
-http = "1"
+lance.workspace = true
+tempfile.workspace = true
 tower = "0.5"
+sqlx.workspace = true
 http-body-util = "0.1"
-serde_json.workspace = true

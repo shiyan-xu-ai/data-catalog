@@ -5,7 +5,7 @@
 //! AWS keys as app secrets (`apps-platform app secret set AWS_ACCESS_KEY_ID ...`), which land in
 //! Secret Manager as `<service>-aws-access-key-id` etc. The platform does NOT inject them as env
 //! vars — the app reads them at runtime. This module performs that read and returns them as
-//! `object_store` S3 options, merged into the store builders.
+//! AWS options that the catalog passes as Lance `storage_options` when it opens datasets.
 //!
 //! Locally (and in CI/tests) there is no metadata server: if `AWS_ACCESS_KEY_ID` is already in
 //! the environment (real S3, MinIO, or a dev keypair), or the service-name prefix can't be
@@ -25,7 +25,7 @@ const REQUIRED_KEYS: &[&str] = &["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
 /// usually plain (non-secret) `[cloudrun].env_vars` instead, and are picked up from the env.
 const OPTIONAL_KEYS: &[&str] = &["AWS_SESSION_TOKEN", "AWS_DEFAULT_REGION"];
 
-/// Fetch AWS credentials from Secret Manager and return them as `object_store` S3 options.
+/// Fetch AWS credentials from Secret Manager as `(AWS_*, value)` option pairs.
 ///
 /// Returns an empty vec (no-op) when credentials are already in the environment, or when not
 /// running on Cloud Run (no `K_SERVICE`/`CATALOG_SECRET_PREFIX`) — the env-based path then

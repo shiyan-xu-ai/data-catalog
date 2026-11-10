@@ -5,18 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-catalog-core = { path = "../catalog-core" }
-anyhow.workspace = true
-arrow-array.workspace = true
+async-trait.workspace = true
 arrow-schema.workspace = true
-chrono.workspace = true
-futures.workspace = true
 lance.workspace = true
-object_store.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tracing.workspace = true
+lance-namespace.workspace = true
+sqlx.workspace = true
 
 [dev-dependencies]
+arrow-array.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

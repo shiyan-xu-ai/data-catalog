@@ -1,94 +1,21 @@
 //! `catalog-api` binary for Apps Platform (Cloud Run).
 //!
-//! One stateless HTTP service on a single port: serves the REST API from the merged read model
-//! (derived snapshot + authored overlay), and runs the sync on demand via
-//! `POST /internal/jobs/sync` (triggered by Cloud Scheduler — there is no background loop
-//! because Cloud Run throttles CPU between requests). All catalog state lives on S3.
+//! One HTTP service on a single port: the Lance REST Catalog routes backed by Postgres, health
+//! probes, and the operator UI.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use tokio::sync::Mutex;
 
-use catalog_api_lib::api::{api_router, ApiState};
-use catalog_api_lib::catalog::Catalog;
-use catalog_api_lib::catalog_config::CatalogConfig;
 use catalog_api_lib::config::AppConfig;
 use catalog_api_lib::secrets::fetch_aws_secret_opts;
 use catalog_api_lib::shutdown::shutdown_signal;
-use catalog_api_lib::sync::{run_sync, SyncTarget};
-use catalog_api_lib::sync_config::{build_meta_store, build_sync_config, build_sync_targets};
-use catalog_api_lib::webui;
+use catalog_store::PostgresNamespace;
 
-async fn healthz() -> &'static str {
-    "ok"
-}
-
-/// Readiness: 200 once the catalog view has loaded at least once, 503 before. Liveness
-/// (`/healthz`) is `ok` from boot.
-async fn readyz(State(catalog): State<Arc<Catalog>>) -> StatusCode {
-    if catalog.is_ready().await {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    }
-}
-
-#[derive(Clone)]
-struct SyncState {
-    /// One target per registered namespace across all configured buckets. A sync pass runs over
-    /// the whole set, writing all namespaces into the one registry snapshot.
-    targets: Arc<Vec<SyncTarget>>,
-    registry_path: String,
-    meta: catalog_store::MetaStore,
-    catalog: Arc<Catalog>,
-    /// Serializes syncs on this instance so a Cloud Scheduler double-fire doesn't run two at
-    /// once (cross-instance concurrency is safe anyway: the snapshot is last-wins).
-    lock: Arc<Mutex<()>>,
-}
-
-/// `POST /internal/jobs/sync` — run one sync. Idempotent; returns 2xx on success (Cloud
-/// Scheduler retries non-2xx). Auth is enforced by the platform (Scheduler uses the app's OIDC
-/// identity); this endpoint does no app-level auth.
-async fn run_sync_endpoint(State(s): State<SyncState>) -> axum::response::Response {
-    let _guard = s.lock.lock().await;
-    match run_sync(&s.targets, &s.registry_path, &s.meta).await {
-        Ok(report) => {
-            s.catalog.invalidate().await;
-            (StatusCode::OK, Json(report)).into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "sync failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "sync failed").into_response()
-        }
-    }
-}
-
-fn app(
-    api_state: ApiState,
-    catalog: Arc<Catalog>,
-    sync_state: SyncState,
-    webui_dir: &str,
-) -> Router {
-    let mut router = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz).with_state(catalog))
-        .route(
-            "/internal/jobs/sync",
-            post(run_sync_endpoint).with_state(sync_state),
-        )
-        .merge(api_router(api_state));
-    // Serve the SPA from the same origin (no CORS) when its build output is present.
-    if let Some(ui) = webui::router(webui_dir) {
-        router = router.merge(ui);
-    }
-    router
-}
+/// How long boot keeps retrying the database; a Cloud SQL Auth Proxy sidecar may still be
+/// starting when the app does.
+const DB_CONNECT_DEADLINE: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -103,44 +30,26 @@ async fn main() -> anyhow::Result<()> {
 
     let cfg = AppConfig::from_env()?;
 
-    // Fail fast on a missing/invalid deployment config before anything else stands up.
-    let catalog_cfg = Arc::new(CatalogConfig::load(&cfg.catalog_config_path)?);
-
     // On Cloud Run the AWS keys come from Secret Manager (no ambient AWS credential); locally
-    // this is a no-op and env/MinIO credentials are used. Fetched once, shared by every store.
-    let aws_opts = fetch_aws_secret_opts().await?;
-
-    // One sync target per registered namespace across all configured buckets (one object store
-    // per bucket, shared across its namespaces). A single sync pass covers the whole set.
-    let targets: Vec<SyncTarget> = build_sync_targets(&catalog_cfg, &aws_opts)?
+    // this is a no-op and the AWS_* env is used. They only open datasets server-side.
+    let storage_options = fetch_aws_secret_opts()
+        .await?
         .into_iter()
-        .map(|mut t| {
-            t.cfg = t
-                .cfg
-                .with_concurrency(cfg.sync_concurrency)
-                .with_deep_stats(cfg.sync_deep_stats);
-            t
-        })
+        .map(|(k, v)| (k.to_ascii_lowercase(), v))
         .collect();
 
-    let first_bucket = &catalog_cfg.buckets[0];
-    let sync_cfg = build_sync_config(&format!("s3://{}", first_bucket.name), &aws_opts)?;
-    let meta = build_meta_store(&cfg.meta_base_uri, &aws_opts)?;
-    let catalog = Catalog::new(cfg.registry_path.clone(), meta.clone(), cfg.cache_ttl);
-
-    let api_state = ApiState {
-        catalog: catalog.clone(),
-        meta: meta.clone(),
-        sync_cfg,
-        catalog_cfg,
+    let started = Instant::now();
+    let pool = loop {
+        match catalog_store::connect(&cfg.database_url, cfg.db_schema.as_deref()).await {
+            Ok(pool) => break pool,
+            Err(e) if started.elapsed() < DB_CONNECT_DEADLINE => {
+                tracing::warn!(error = %e, "database not ready; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(e) => return Err(e).context("connect to database and run migrations"),
+        }
     };
-    let sync_state = SyncState {
-        targets: Arc::new(targets),
-        registry_path: cfg.registry_path.clone(),
-        meta,
-        catalog: catalog.clone(),
-        lock: Arc::new(Mutex::new(())),
-    };
+    let namespace = Arc::new(PostgresNamespace::new(pool, storage_options));
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
@@ -149,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(
         listener,
-        app(api_state, catalog, sync_state, &cfg.webui_dir),
+        catalog_api_lib::app(namespace, Some(&cfg.webui_dir)),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await

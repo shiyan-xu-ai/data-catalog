@@ -2,7 +2,7 @@
 //!
 //! Serving the SPA and the REST API from one Cloud Run service means the browser talks to a
 //! single origin, so there is no CORS to configure and the frontend's default same-origin `/v1`
-//! and `/ext` calls just work. The assets are the Vite `dist/` output; the container copies them
+//! calls just work. The assets are the Vite `dist/` output; the container copies them
 //! in and points `CATALOG_WEBUI_DIR` at them. When the directory is absent (API-only deployments,
 //! tests), no static routes are mounted.
 
