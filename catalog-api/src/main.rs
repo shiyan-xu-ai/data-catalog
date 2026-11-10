@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(
         listener,
-        catalog_api_lib::app(namespace, Some(&cfg.webui_dir)),
+        catalog_api_lib::app(namespace, cfg.storage_pricing, Some(&cfg.webui_dir)),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await

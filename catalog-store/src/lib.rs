@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
-pub use namespace::{ColumnBytes, ColumnStorage, PostgresNamespace};
+pub use namespace::{
+    ColumnBytes, ColumnStorage, PostgresNamespace, StorageCategory, StorageFootprint,
+    STORAGE_CATEGORIES,
+};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 

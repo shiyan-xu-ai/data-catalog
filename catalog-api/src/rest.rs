@@ -16,7 +16,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use catalog_store::PostgresNamespace;
+use catalog_store::{PostgresNamespace, StorageFootprint};
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
     DeregisterTableResponse, DescribeNamespaceRequest, DescribeNamespaceResponse,
@@ -32,6 +32,8 @@ use lance_namespace::models::{
 use lance_namespace::{Error, ErrorCode, LanceNamespace, NamespaceError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+use crate::config::StoragePricing;
 
 type Backend = Arc<dyn LanceNamespace>;
 type ApiResult<T> = Result<T, ApiError>;
@@ -67,13 +69,27 @@ pub fn router(backend: Backend) -> Router {
         .with_state(backend)
 }
 
+/// State of the catalog routes.
+#[derive(Clone)]
+struct Catalog {
+    namespace: Arc<PostgresNamespace>,
+    storage_pricing: Arc<StoragePricing>,
+}
+
 /// Router for the catalog's own read-only routes; nest it at `/catalog/v1`.
-pub fn catalog_router(namespace: Arc<PostgresNamespace>) -> Router {
+pub fn catalog_router(
+    namespace: Arc<PostgresNamespace>,
+    storage_pricing: StoragePricing,
+) -> Router {
     Router::new()
         .route("/table/:id/column-storage", get(column_storage))
+        .route("/table/:id/storage", get(table_storage))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
-        .with_state(namespace)
+        .with_state(Catalog {
+            namespace,
+            storage_pricing: Arc::new(storage_pricing),
+        })
 }
 
 #[derive(Deserialize)]
@@ -331,10 +347,10 @@ struct ColumnBytesResponse {
 }
 
 async fn column_storage(
-    State(ns): State<Arc<PostgresNamespace>>,
+    State(catalog): State<Catalog>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<ColumnStorageResponse>> {
-    let storage = ns.column_storage(&parse_id(&id)).await?;
+    let storage = catalog.namespace.column_storage(&parse_id(&id)).await?;
     Ok(Json(ColumnStorageResponse {
         version: storage.version,
         columns: storage
@@ -345,6 +361,83 @@ async fn column_storage(
                 bytes_on_disk: c.bytes_on_disk,
             })
             .collect(),
+    }))
+}
+
+#[derive(Serialize)]
+struct StorageResponse {
+    version: u64,
+    current: CurrentStorage,
+    on_storage: OnStorage,
+    pricing: Pricing,
+}
+
+#[derive(Serialize)]
+struct CurrentStorage {
+    data_bytes: u64,
+    index_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct OnStorage {
+    total_bytes: u64,
+    total_objects: u64,
+    categories: Vec<StorageCategoryResponse>,
+}
+
+#[derive(Serialize)]
+struct StorageCategoryResponse {
+    name: &'static str,
+    bytes: u64,
+    objects: u64,
+}
+
+#[derive(Serialize)]
+struct Pricing {
+    price_per_gb_month: f64,
+    currency: &'static str,
+    tier: String,
+    estimated_monthly_cost: f64,
+}
+
+async fn table_storage(
+    State(catalog): State<Catalog>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<StorageResponse>> {
+    let StorageFootprint {
+        version,
+        data_bytes,
+        index_bytes,
+        total_bytes,
+        total_objects,
+        categories,
+    } = catalog.namespace.storage_footprint(&parse_id(&id)).await?;
+    let pricing = &catalog.storage_pricing;
+    Ok(Json(StorageResponse {
+        version,
+        current: CurrentStorage {
+            data_bytes,
+            index_bytes,
+        },
+        on_storage: OnStorage {
+            total_bytes,
+            total_objects,
+            categories: categories
+                .into_iter()
+                .map(|c| StorageCategoryResponse {
+                    name: c.name,
+                    bytes: c.bytes,
+                    objects: c.objects,
+                })
+                .collect(),
+        },
+        pricing: Pricing {
+            price_per_gb_month: pricing.price_per_gb_month,
+            currency: "USD",
+            tier: pricing.tier.clone(),
+            // Decimal GB, matching the rate card.
+            estimated_monthly_cost: total_bytes as f64 / 1e9 * pricing.price_per_gb_month,
+        },
     }))
 }
 

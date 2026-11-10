@@ -64,6 +64,39 @@ pub struct ColumnStorage {
     pub columns: Vec<ColumnBytes>,
 }
 
+/// Object-storage categories of a dataset prefix, in response order.
+pub const STORAGE_CATEGORIES: [&str; 7] = [
+    "data",
+    "blob",
+    "index",
+    "deletion",
+    "manifest",
+    "transaction",
+    "other",
+];
+
+/// Bytes and object count of one storage category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageCategory {
+    pub name: &'static str,
+    pub bytes: u64,
+    pub objects: u64,
+}
+
+/// A table's current-version data next to everything stored under its location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageFootprint {
+    pub version: u64,
+    /// Data files the current version references (manifest `total_files_size`).
+    pub data_bytes: u64,
+    /// Files of the current version's indices.
+    pub index_bytes: u64,
+    pub total_bytes: u64,
+    pub total_objects: u64,
+    /// One entry per [`STORAGE_CATEGORIES`] name, in that order.
+    pub categories: Vec<StorageCategory>,
+}
+
 #[derive(sqlx::FromRow)]
 struct TableRow {
     location: String,
@@ -170,6 +203,56 @@ impl PostgresNamespace {
                     bytes_on_disk,
                 })
                 .collect(),
+        })
+    }
+
+    /// Lists every object under the registered location (metadata only, never writes) and
+    /// buckets it by its path relative to that location. The prefix match is per path segment,
+    /// so sibling directories such as `<table>.lance_tags/` are excluded.
+    pub async fn storage_footprint(&self, id: &[String]) -> Result<StorageFootprint> {
+        let (location, dataset) = self.open_table(id, None).await?;
+        let index_bytes = dataset
+            .describe_indices(None)
+            .await
+            .map_err(lance_error(format!("describe indices at {location}")))?
+            .iter()
+            .filter(|d| d.metadata().first().is_some_and(|m| !is_system_index(m)))
+            .filter_map(|d| d.total_size_bytes())
+            .sum();
+        let store = dataset
+            .object_store(None)
+            .await
+            .map_err(lance_error(format!("open object store at {location}")))?;
+        let base = dataset.branch_location().path;
+        let mut categories: Vec<StorageCategory> = STORAGE_CATEGORIES
+            .iter()
+            .map(|&name| StorageCategory {
+                name,
+                bytes: 0,
+                objects: 0,
+            })
+            .collect();
+        let mut objects = store.read_dir_all(&base, None);
+        while let Some(meta) = objects
+            .try_next()
+            .await
+            .map_err(lance_error(format!("list objects at {location}")))?
+        {
+            let path = meta.location.as_ref();
+            let relative = path
+                .strip_prefix(base.as_ref())
+                .map_or(path, |p| p.trim_start_matches('/'));
+            let category = &mut categories[storage_category(relative)];
+            category.bytes += meta.size;
+            category.objects += 1;
+        }
+        Ok(StorageFootprint {
+            version: dataset.version_id(),
+            data_bytes: dataset.manifest().summary().total_files_size,
+            index_bytes,
+            total_bytes: categories.iter().map(|c| c.bytes).sum(),
+            total_objects: categories.iter().map(|c| c.objects).sum(),
+            categories,
         })
     }
 
@@ -1153,4 +1236,21 @@ fn paginate_sorted<T>(
         }
         _ => None,
     }
+}
+
+/// Index into [`STORAGE_CATEGORIES`] for a path relative to the dataset location.
+fn storage_category(relative: &str) -> usize {
+    let category = match relative.split_once('/') {
+        Some(("data", file)) if file.ends_with(".lance") => "data",
+        Some(("data", file)) if file.ends_with(".blob") => "blob",
+        Some(("_indices", _)) => "index",
+        Some(("_deletions", _)) => "deletion",
+        Some(("_versions", _)) => "manifest",
+        Some(("_transactions", _)) => "transaction",
+        _ => "other",
+    };
+    STORAGE_CATEGORIES
+        .iter()
+        .position(|&name| name == category)
+        .expect("category is listed")
 }

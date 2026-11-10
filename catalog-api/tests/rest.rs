@@ -57,7 +57,8 @@ async fn rest_catalog_routes() {
     support::add_scalar_index(&users).await;
     let ui = tempfile::tempdir().unwrap();
     std::fs::write(ui.path().join("index.html"), "<html>catalog</html>").unwrap();
-    let app = catalog_api_lib::app(ns, ui.path().to_str());
+    let pricing = catalog_api_lib::config::StoragePricing::default();
+    let app = catalog_api_lib::app(ns, pricing.clone(), ui.path().to_str());
 
     assert_eq!(get(&app, "/healthz").await.0, StatusCode::OK);
     assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK);
@@ -263,6 +264,56 @@ async fn rest_catalog_routes() {
             + storage["columns"][1]["bytes_on_disk"].as_i64().unwrap(),
         stats["total_bytes"].as_i64().unwrap()
     );
+
+    // On-storage footprint: categories partition the listing, priced per decimal GB-month.
+    let (status, footprint) = get(&app, "/catalog/v1/table/prod%24users/storage").await;
+    assert_eq!(status, StatusCode::OK, "{footprint}");
+    assert_eq!(footprint["version"], 2);
+    let on_storage = &footprint["on_storage"];
+    let categories = on_storage["categories"].as_array().unwrap();
+    let names: Vec<_> = categories
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "data",
+            "blob",
+            "index",
+            "deletion",
+            "manifest",
+            "transaction",
+            "other"
+        ]
+    );
+    let sum = |key: &str| {
+        categories
+            .iter()
+            .map(|c| c[key].as_u64().unwrap())
+            .sum::<u64>()
+    };
+    let total_bytes = on_storage["total_bytes"].as_u64().unwrap();
+    assert_eq!(sum("bytes"), total_bytes);
+    assert_eq!(
+        sum("objects"),
+        on_storage["total_objects"].as_u64().unwrap()
+    );
+    let category = |name: &str| categories.iter().find(|c| c["name"] == name).unwrap();
+    assert_eq!(
+        category("data")["bytes"],
+        footprint["current"]["data_bytes"]
+    );
+    assert_eq!(
+        category("index")["bytes"],
+        footprint["current"]["index_bytes"]
+    );
+    let price = &footprint["pricing"];
+    assert_eq!(price["price_per_gb_month"], pricing.price_per_gb_month);
+    assert_eq!(price["tier"], pricing.tier);
+    assert_eq!(price["currency"], "USD");
+    let expected = total_bytes as f64 / 1e9 * pricing.price_per_gb_month;
+    assert!((price["estimated_monthly_cost"].as_f64().unwrap() - expected).abs() < 1e-12);
     assert_eq!(
         post(&app, "/v1/table/prod%24users/exists", json!({})).await,
         (StatusCode::OK, Value::Null)
@@ -293,6 +344,7 @@ async fn rest_catalog_routes() {
     error(StatusCode::NOT_FOUND, 4)(
         get(&app, "/catalog/v1/table/prod%24gone/column-storage").await,
     );
+    error(StatusCode::NOT_FOUND, 4)(get(&app, "/catalog/v1/table/prod%24gone/storage").await);
     assert_eq!(
         post(&app, "/v1/table/prod%24gone/deregister", json!({}))
             .await
