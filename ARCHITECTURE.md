@@ -73,7 +73,8 @@ groups it by category, and prices the total at
   unreadable URI never becomes a table.
 - **Describe** reads Postgres only, unless `load_detailed_metadata` is set; then
   it opens the dataset and returns version, schema, `stats`, and `metadata`:
-  the current manifest summary, `config.*` table config entries, and
+  the current manifest summary, `table_metadata.*` entries (Lance
+  `Dataset::metadata`), `config.*` entries (Lance `Dataset::config`), and
   `lance.data_storage_version`.
 - **Lance read routes** (stats, versions, indices, tags, branches, column
   storage) open the dataset on every request; nothing is cached. Stats and

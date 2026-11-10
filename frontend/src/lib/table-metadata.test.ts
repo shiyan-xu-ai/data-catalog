@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   configEntries,
+  tableMetadataEntries,
   extraProperties,
   fragmentBoxPlot,
   indexCoverage,
@@ -41,6 +42,7 @@ const META = {
   total_deletion_file_rows: "120",
   "config.lance.auto_cleanup.interval": "20",
   "config.a": "1",
+  "table_metadata.producer": "export",
   "lance.data_storage_version": "2.2",
 };
 
@@ -63,12 +65,13 @@ describe("parseManifestSummary", () => {
   });
 });
 
-describe("configEntries / storageFormatVersion", () => {
-  it("strips the config prefix and sorts", () => {
+describe("configEntries / tableMetadataEntries / storageFormatVersion", () => {
+  it("splits the two manifest maps by prefix and sorts", () => {
     expect(configEntries(META)).toEqual([
       ["a", "1"],
       ["lance.auto_cleanup.interval", "20"],
     ]);
+    expect(tableMetadataEntries(META)).toEqual([["producer", "export"]]);
     expect(configEntries(null)).toEqual([]);
   });
   it("reads the data storage version", () => {

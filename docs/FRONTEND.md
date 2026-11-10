@@ -63,7 +63,8 @@ page can fill; the table page puts its SQL panel there.
     skeleton and error.
   - **Properties:** the About facts first (description, owner, copyable
     location, registered and updated times, tags, branches), then client
-    properties and Lance table configuration.
+    properties, Lance table metadata (`table_metadata`), and Lance table
+    configuration (`config`).
   - **Schema:** an expandable field tree with compact types (full type on
     hover), nullability, and field metadata, a raw JSON view, and schema-level
     metadata.
@@ -111,7 +112,7 @@ paths, and display as dotted names. Names containing `$` are rejected.
 `/v1/table/...` spec routes and the `/catalog/v1` column-storage route, and
 parses `{error, code}` error bodies. `src/lib/ids.ts` builds ids from segment
 arrays, and `src/lib/table-metadata.ts` reads the Lance manifest summary and
-`config.*` keys from describe and version metadata. Registration and
+`table_metadata.*` / `config.*` keys from describe and version metadata. Registration and
 deregistration change catalog metadata only, never the data at a table's
 location.
 

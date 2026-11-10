@@ -10,6 +10,7 @@ export const OWNER = "owner";
 export const DESCRIPTION = "description";
 
 const CONFIG_PREFIX = "config.";
+const TABLE_METADATA_PREFIX = "table_metadata.";
 const STORAGE_VERSION = "lance.data_storage_version";
 
 /** Lance manifest summary for one version. Fields are null when the key is absent or not a
@@ -40,12 +41,21 @@ export function parseManifestSummary(meta: Metadata): ManifestSummary {
   };
 }
 
+function prefixedEntries(meta: Metadata, prefix: string): [string, string][] {
+  return Object.entries(meta ?? {})
+    .filter(([k]) => k.startsWith(prefix))
+    .map(([k, v]): [string, string] => [k.slice(prefix.length), v])
+    .sort(([a], [b]) => a.localeCompare(b));
+}
+
 /** Lance table config entries (`config.<key>` in describe metadata), sorted by key. */
 export function configEntries(meta: Metadata): [string, string][] {
-  return Object.entries(meta ?? {})
-    .filter(([k]) => k.startsWith(CONFIG_PREFIX))
-    .map(([k, v]): [string, string] => [k.slice(CONFIG_PREFIX.length), v])
-    .sort(([a], [b]) => a.localeCompare(b));
+  return prefixedEntries(meta, CONFIG_PREFIX);
+}
+
+/** Lance table metadata entries (`table_metadata.<key>` in describe metadata), sorted by key. */
+export function tableMetadataEntries(meta: Metadata): [string, string][] {
+  return prefixedEntries(meta, TABLE_METADATA_PREFIX);
 }
 
 export function storageFormatVersion(meta: Metadata): string | null {

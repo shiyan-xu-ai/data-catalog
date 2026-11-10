@@ -18,7 +18,7 @@ Identifiers in paths are segments joined by `$`; the root namespace is `$`. For 
 | GET | `/v1/namespace/:id/table/list` | List tables in a namespace. |
 | GET | `/v1/table` | List all tables. |
 | POST | `/v1/table/:id/register` | Register an existing Lance dataset at `location`. The URI must open as Lance. Optional `owner` and `description` properties; `catalog.*` keys are reserved. |
-| POST | `/v1/table/:id/describe` | Return location and properties, including server-managed `catalog.registered_at` and `catalog.updated_at`. With `?load_detailed_metadata=true`, also return version, schema, stats, and `metadata` (manifest summary, `config.*` table config, `lance.data_storage_version`). |
+| POST | `/v1/table/:id/describe` | Return location and properties, including server-managed `catalog.registered_at` and `catalog.updated_at`. With `?load_detailed_metadata=true`, also return version, schema, stats, and `metadata` (manifest summary, `table_metadata.*` from Lance `Dataset::metadata`, `config.*` from Lance `Dataset::config`, `lance.data_storage_version`). |
 | POST | `/v1/table/:id/exists` | Return 200 if the table exists, or 404. |
 | POST | `/v1/table/:id/deregister` | Remove the registration. Source data is not deleted. |
 | POST | `/v1/table/:id/stats` | Total bytes, rows, index count, and fragment length stats. Reads field statistics, so it is slow on large tables. |

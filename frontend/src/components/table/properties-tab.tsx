@@ -9,6 +9,7 @@ import {
   UPDATED_AT,
   configEntries,
   extraProperties,
+  tableMetadataEntries,
 } from "@/lib/table-metadata";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
@@ -140,9 +141,9 @@ function About({
 }
 
 /** About facts first (catalog-recorded from the cheap describe, tags and branches from their
- *  routes), then client properties and Lance table configuration. Storage format and current
- *  version live in the page header; schema metadata lives on the Schema tab. Each
- *  Lance-derived part loads and fails on its own. */
+ *  routes), then client properties and the two Lance manifest maps (`table_metadata`, `config`).
+ *  Storage format and current version live in the page header; schema metadata lives on the
+ *  Schema tab. Each Lance-derived part loads and fails on its own. */
 export function PropertiesTab({
   segments,
   cheap,
@@ -168,7 +169,19 @@ export function PropertiesTab({
         )}
       </Section>
 
-      <Section title="Lance table configuration" description="Manifest config entries of the current version">
+      <Section
+        title="Lance table metadata"
+        description="Manifest table_metadata of the current version (Dataset::metadata)"
+      >
+        <LanceBody detail={detail}>
+          {(d) => <PropertiesList entries={tableMetadataEntries(d.metadata)} empty="No Lance table metadata." />}
+        </LanceBody>
+      </Section>
+
+      <Section
+        title="Lance table configuration"
+        description="Manifest config of the current version (Dataset::config)"
+      >
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={configEntries(d.metadata)} empty="No Lance table configuration." />}
         </LanceBody>

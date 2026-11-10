@@ -123,7 +123,7 @@ export const describeTableResponseSchema = z.object({
   version: z.number().nullish(),
   schema: jsonArrowSchemaSchema.nullish(),
   stats: tableStatsSchema.nullish(),
-  /** Detailed describe only: Lance version summary, `config.*`, `lance.data_storage_version`. */
+  /** Detailed describe only: Lance version summary, `table_metadata.*`, `config.*`, `lance.data_storage_version`. */
   metadata: propertiesSchema.nullish(),
 });
 export type DescribeTableResponse = z.infer<typeof describeTableResponseSchema>;
