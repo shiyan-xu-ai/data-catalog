@@ -34,7 +34,8 @@ The right column of the table page becomes a SQL panel. It has an editor pre-fil
 - R33. Every query has limits: at most 1,000 result rows (larger results are truncated and flagged), a server-side time limit, a memory limit, and a cap on concurrent queries per instance. A query over any limit returns a clear error, never a partial silent result.
 - R34. Results show column names and types, rows (nested values rendered compactly), row count, elapsed time, and whether results were truncated. Errors show the DataFusion message.
 - R35. Blob columns never return payload bytes in query results.
-- R36. The SQL panel occupies the right side of the table page and can be collapsed and widened. The main tabs keep working while a query runs.
+- R36. The SQL panel docks at the bottom of the table page, spanning the full width to the right of the left navigation. It can be collapsed and resized vertically, and the main tabs keep working while a query runs.
+- R43. Each Overview tile with qualifying detail carries a help (?) icon whose tooltip explains what the figure covers and excludes. Every help icon in the UI opens on hover and keyboard focus.
 - R37. The Properties tab starts with the former About facts (description, owner, copyable location, storage format, current version, registered and updated times, tags, branches), followed by catalog properties, Lance table configuration, and schema metadata.
 - R38. The left navigation collapses to an icon rail and expands again, remembering the choice across reloads.
 - R39. The UI shows no Deregister action. The deregister API remains.
