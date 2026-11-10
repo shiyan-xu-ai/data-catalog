@@ -1,129 +1,149 @@
+import { idPathSegment } from "./ids";
 import {
-  auxSampleResponseSchema,
+  createNamespaceResponseSchema,
+  deregisterTableResponseSchema,
   describeNamespaceResponseSchema,
+  dropNamespaceResponseSchema,
+  describeTableResponseSchema,
   errorResponseSchema,
   listNamespacesResponseSchema,
-  tableEntrySchema,
-  tableVersionSchema,
-  type AuxSampleResponse,
+  listTablesResponseSchema,
+  registerTableResponseSchema,
+  type CreateNamespaceResponse,
+  type DeregisterTableResponse,
   type DescribeNamespaceResponse,
+  type DropNamespaceResponse,
+  type DescribeTableResponse,
   type ListNamespacesResponse,
-  type TableEntry,
-  type TableVersion,
+  type ListTablesResponse,
+  type RegisterTableResponse,
 } from "./schemas";
 
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
 
 export class ApiError extends Error {
   status: number;
-  errorCode: number | undefined;
-  constructor(status: number, message: string, errorCode?: number) {
+  /** Spec `ErrorCode`, when the body was a spec `ErrorResponse`. */
+  code: number | undefined;
+  constructor(status: number, message: string, code?: number) {
     super(message);
     this.name = "ApiError";
     this.status = status;
-    this.errorCode = errorCode;
+    this.code = code;
   }
 }
 
-async function parseError(res: Response): Promise<never> {
+/** Build an `ApiError` from a non-2xx response body (spec `{error, code}`, or anything else). */
+export function apiErrorFrom(status: number, statusText: string, body: string): ApiError {
+  let message = `${status} ${statusText}`.trim();
   let code: number | undefined;
-  let message = `${res.status} ${res.statusText}`;
   try {
-    const body = await res.json();
-    const parsed = errorResponseSchema.safeParse(body);
+    const parsed = errorResponseSchema.safeParse(JSON.parse(body));
     if (parsed.success) {
-      code = parsed.data.error_code;
-      message = parsed.data.message;
+      code = parsed.data.code;
+      if (parsed.data.error) message = parsed.data.error;
     }
   } catch {
-    // non-JSON body — keep default message
+    // Non-JSON body: keep the status line.
   }
-  throw new ApiError(res.status, message, code);
+  return new ApiError(status, message, code);
 }
 
-async function getJson<T>(path: string, schema: { parse: (x: unknown) => T }): Promise<T> {
-  const res = await fetch(BASE + path, { headers: { Accept: "application/json" } });
-  if (!res.ok) await parseError(res);
-  const body = await res.json();
-  return schema.parse(body);
+interface Parser<T> {
+  parse: (x: unknown) => T;
 }
 
-async function sendJson<T>(
-  method: "PUT" | "POST" | "DELETE",
+async function request<T>(
+  method: "GET" | "POST",
   path: string,
-  schema: { parse: (x: unknown) => T },
+  schema: Parser<T>,
   body?: unknown,
 ): Promise<T> {
-  const init: RequestInit = {
-    method,
-    headers: { Accept: "application/json" },
-  };
+  const init: RequestInit = { method, headers: { Accept: "application/json" } };
   if (body !== undefined) {
     init.headers = { ...init.headers, "Content-Type": "application/json" };
     init.body = JSON.stringify(body);
   }
   const res = await fetch(BASE + path, init);
-  if (!res.ok) await parseError(res);
-  if (res.status === 204) return undefined as T;
   const text = await res.text();
-  if (!text) return undefined as T;
-  return schema.parse(JSON.parse(text));
+  if (!res.ok) throw apiErrorFrom(res.status, res.statusText, text);
+  return schema.parse(text ? JSON.parse(text) : {});
 }
 
-// GET /v1/namespaces
-export function listNamespaces(): Promise<ListNamespacesResponse> {
-  return getJson("/v1/namespaces", listNamespacesResponseSchema);
+function pageQuery(pageToken?: string | null, limit?: number): string {
+  const q = new URLSearchParams();
+  if (pageToken) q.set("page_token", pageToken);
+  if (limit !== undefined) q.set("limit", String(limit));
+  const s = q.toString();
+  return s ? `?${s}` : "";
 }
 
-// GET /v1/namespaces/:id  (id is colon-joined)
-export function describeNamespace(id: string): Promise<DescribeNamespaceResponse> {
-  return getJson(`/v1/namespaces/${encodeURIComponent(id)}`, describeNamespaceResponseSchema);
-}
+// --- namespaces ---
 
-// GET /ext/v1/tables  (enriched listing; full merged detail)
-export function listTables(): Promise<TableEntry[]> {
-  return getJson("/ext/v1/tables", zArray(tableEntrySchema));
-}
-
-// GET /v1/table/:id
-export function describeTable(id: string): Promise<TableEntry> {
-  return getJson(`/v1/table/${encodeURIComponent(id)}`, tableEntrySchema);
-}
-
-export function declareTable(id: string, body: { owner?: string }): Promise<TableEntry> {
-  return sendJson("PUT", `/v1/table/${encodeURIComponent(id)}`, tableEntrySchema, body);
-}
-
-// GET /ext/v1/tables/:id/versions/:vid
-export function getVersion(id: string, vid: string): Promise<TableVersion> {
-  return getJson(
-    `/ext/v1/tables/${encodeURIComponent(id)}/versions/${encodeURIComponent(vid)}`,
-    tableVersionSchema,
+export function listNamespaces(
+  ns: readonly string[],
+  pageToken?: string | null,
+  limit?: number,
+): Promise<ListNamespacesResponse> {
+  return request(
+    "GET",
+    `/v1/namespace/${idPathSegment(ns)}/list${pageQuery(pageToken, limit)}`,
+    listNamespacesResponseSchema,
   );
 }
 
-// GET /ext/v1/tables/:id/versions/:vid/aux/sample?name=&limit=
-// `name` may contain slashes (nested sidecar paths), so it must be URL-encoded.
-export function sampleAux(
-  id: string,
-  vid: string,
-  name: string,
-  limit: number,
-): Promise<AuxSampleResponse> {
-  const q = new URLSearchParams({ name, limit: String(limit) });
-  return getJson(
-    `/ext/v1/tables/${encodeURIComponent(id)}/versions/${encodeURIComponent(vid)}/aux/sample?${q}`,
-    auxSampleResponseSchema,
+export function describeNamespace(ns: readonly string[]): Promise<DescribeNamespaceResponse> {
+  return request("POST", `/v1/namespace/${idPathSegment(ns)}/describe`, describeNamespaceResponseSchema, {});
+}
+
+export function createNamespace(
+  ns: readonly string[],
+  properties?: Record<string, string>,
+): Promise<CreateNamespaceResponse> {
+  return request("POST", `/v1/namespace/${idPathSegment(ns)}/create`, createNamespaceResponseSchema, {
+    ...(properties && Object.keys(properties).length ? { properties } : {}),
+  });
+}
+
+export function dropNamespace(ns: readonly string[]): Promise<DropNamespaceResponse> {
+  return request("POST", `/v1/namespace/${idPathSegment(ns)}/drop`, dropNamespaceResponseSchema, {});
+}
+
+export function listTables(
+  ns: readonly string[],
+  pageToken?: string | null,
+  limit?: number,
+): Promise<ListTablesResponse> {
+  return request(
+    "GET",
+    `/v1/namespace/${idPathSegment(ns)}/table/list${pageQuery(pageToken, limit)}`,
+    listTablesResponseSchema,
   );
 }
 
-// --- helpers ---
+// --- tables ---
 
-function zArray<T>(el: { parse: (x: unknown) => T }): { parse: (x: unknown) => T[] } {
-  return {
-    parse: (x: unknown) => {
-      if (!Array.isArray(x)) throw new Error("expected array");
-      return x.map((e) => el.parse(e));
-    },
-  };
+/** Detailed describe: opens the dataset for version, schema, and stats. */
+export function describeTable(table: readonly string[]): Promise<DescribeTableResponse> {
+  return request(
+    "POST",
+    `/v1/table/${idPathSegment(table)}/describe?load_detailed_metadata=true`,
+    describeTableResponseSchema,
+    {},
+  );
+}
+
+export function registerTable(
+  table: readonly string[],
+  location: string,
+  properties?: Record<string, string>,
+): Promise<RegisterTableResponse> {
+  return request("POST", `/v1/table/${idPathSegment(table)}/register`, registerTableResponseSchema, {
+    location,
+    ...(properties && Object.keys(properties).length ? { properties } : {}),
+  });
+}
+
+export function deregisterTable(table: readonly string[]): Promise<DeregisterTableResponse> {
+  return request("POST", `/v1/table/${idPathSegment(table)}/deregister`, deregisterTableResponseSchema, {});
 }

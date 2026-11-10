@@ -20,7 +20,7 @@ is just deploying the container — see
 ```sh
 cd frontend
 bun install
-bun run dev        # http://localhost:5173, proxies /v1 and /ext to localhost:8080
+bun run dev        # http://localhost:5173, proxies /v1 to localhost:8080
 ```
 
 Point it at a non-local API with `VITE_API_BASE=https://host bun run dev` (that
@@ -34,4 +34,4 @@ bun run build      # tsc --noEmit && vite build → dist/
 ```
 
 The build checks the runtime schemas in `src/lib/schemas.ts` against their
-TypeScript callers. These hand-mirror the Rust API; CI builds the UI on frontend changes.
+TypeScript callers. These hand-mirror the Lance REST Catalog spec models; CI builds the UI on frontend changes.

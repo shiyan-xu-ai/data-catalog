@@ -1,7 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
 
-// Sync freshness is bounded by the sync interval; align staleTime so the UI never pretends to
-// be more current than the catalog is. 30s matches a typical sync cadence.
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

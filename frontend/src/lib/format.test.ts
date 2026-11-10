@@ -1,49 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, formatTime, nsToString, shapeLabel } from "./format";
+import { formatCount } from "./format";
 
-describe("formatTime", () => {
-  it("renders the instant in UTC when mode is utc", () => {
-    const out = formatTime("2026-07-05T12:00:00Z", "utc");
-    expect(out).toContain("12:00");
-    expect(out).toContain("GMT");
-  });
-  it("returns dash for missing input", () => {
-    expect(formatTime(null, "utc")).toBe("—");
-  });
-});
-
-describe("formatBytes", () => {
-  it("returns dash for null/0", () => {
-    expect(formatBytes(null)).toBe("—");
-    expect(formatBytes(0)).toBe("—");
-  });
-  it("formats bytes under 1 KiB as B", () => {
-    expect(formatBytes(512)).toBe("512 B");
-  });
-  it("formats KiB and above with one decimal when small", () => {
-    expect(formatBytes(1536)).toBe("1.5 KiB");
-    expect(formatBytes(1048576)).toBe("1 MiB");
-  });
-  it("rounds GiB and above, retaining one decimal for fractional values", () => {
-    expect(formatBytes(1073741824 * 5)).toBe("5 GiB");
-    expect(formatBytes(1073741824 * 2.56)).toBe("2.6 GiB");
-  });
-});
-
-describe("nsToString", () => {
-  it("joins segments with dots", () => {
-    expect(nsToString(["a", "b", "c"])).toBe("a.b.c");
-    expect(nsToString([])).toBe("");
-  });
-});
-
-describe("shapeLabel", () => {
-  it("maps known shapes", () => {
-    expect(shapeLabel("full")).toBe("full");
-    expect(shapeLabel("lance_only_partial")).toBe("lance partial");
-    expect(shapeLabel("seg_only")).toBe("segments only");
-  });
-  it("passes through unknown", () => {
-    expect(shapeLabel("weird")).toBe("weird");
+describe("formatCount", () => {
+  it("returns dash for null/undefined and formats zero", () => {
+    expect(formatCount(null)).toBe("—");
+    expect(formatCount(undefined)).toBe("—");
+    expect(formatCount(0)).toBe("0");
   });
 });

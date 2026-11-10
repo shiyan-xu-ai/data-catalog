@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { useQueryClient, useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { declareTable } from "@/lib/api";
+import { registerTable } from "@/lib/api";
+import { displayName, joinId, segmentError } from "@/lib/ids";
+import { buildProperties, type PropertyRow } from "@/lib/properties";
 import {
   Dialog,
   DialogContent,
@@ -13,70 +16,96 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PropertiesEditor } from "@/components/properties-editor";
 
 interface RegisterDialogProps {
+  namespace: readonly string[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function RegisterDialog({ open, onOpenChange }: RegisterDialogProps) {
+/** Register an existing Lance dataset URI as a table in `namespace`. */
+export function RegisterDialog({ namespace, open, onOpenChange }: RegisterDialogProps) {
   const qc = useQueryClient();
-  const [id, setId] = useState("");
+  const navigate = useNavigate();
+  const [name, setName] = useState("");
+  const [location, setLocation] = useState("");
   const [owner, setOwner] = useState("");
+  const [rows, setRows] = useState<PropertyRow[]>([]);
+
+  const nameError = name ? segmentError(name) : null;
+  const props = buildProperties(owner, rows);
+  const canSubmit = name.length > 0 && !nameError && location.trim().length > 0 && props.ok;
 
   const mutation = useMutation({
-    mutationFn: () => declareTable(id.trim(), { owner: owner.trim() || undefined }),
-    onSuccess: (table) => {
-      toast.success(`Registered "${table.id}"`);
-      qc.invalidateQueries({ queryKey: ["tables"] });
-      qc.invalidateQueries({ queryKey: ["namespaces"] });
-      reset();
-      onOpenChange(false);
+    mutationFn: () => {
+      if (!props.ok) throw new Error(props.error);
+      return registerTable([...namespace, name], location.trim(), props.properties);
+    },
+    onSuccess: () => {
+      const table = [...namespace, name];
+      toast.success(`Registered "${displayName(table)}"`);
+      qc.invalidateQueries({ queryKey: ["tables", joinId(namespace)] });
+      close();
+      navigate({ to: "/tables/$tableId", params: { tableId: joinId(table) } });
     },
     onError: (e: unknown) => toast.error((e as Error).message),
   });
 
-  function reset() {
-    setId("");
+  function close() {
+    setName("");
+    setLocation("");
     setOwner("");
+    setRows([]);
+    onOpenChange(false);
   }
 
-  const hasId = id.trim().length > 0;
-
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) reset(); onOpenChange(o); }}>
+    <Dialog open={open} onOpenChange={(o) => (o ? onOpenChange(true) : close())}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Register table</DialogTitle>
           <DialogDescription>
-            Track a table by its region:bucket:namespace:name id. Versions and sizes
-            are filled by the next sync.
+            Register an existing Lance dataset in{" "}
+            <span className="font-mono">{displayName(namespace)}</span>. Registration records
+            metadata only; it does not copy or modify data.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 py-2">
+        <form
+          className="grid gap-4 py-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (canSubmit && !mutation.isPending) mutation.mutate();
+          }}
+        >
           <div className="grid gap-2">
-            <Label htmlFor="reg-id">Table id</Label>
+            <Label htmlFor="reg-name">Table name</Label>
+            <Input id="reg-name" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            {nameError && <p className="text-xs text-destructive">{nameError}</p>}
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="reg-location">Location</Label>
             <Input
-              id="reg-id"
-              value={id}
-              onChange={(e) => setId(e.target.value)}
-              placeholder="region:bucket:namespace:table"
-              autoFocus
+              id="reg-location"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="s3://bucket/path/table.lance"
             />
           </div>
           <div className="grid gap-2">
             <Label htmlFor="reg-owner">Owner (optional)</Label>
             <Input id="reg-owner" value={owner} onChange={(e) => setOwner(e.target.value)} placeholder="team@example" />
           </div>
-        </div>
+          <PropertiesEditor rows={rows} onChange={setRows} error={props.ok ? undefined : props.error} />
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button disabled={!hasId || mutation.isPending} onClick={() => mutation.mutate()}>
-            {mutation.isPending ? "Registering…" : "Register"}
-          </Button>
-        </DialogFooter>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={close}>Cancel</Button>
+            <Button type="submit" disabled={!canSubmit || mutation.isPending}>
+              {mutation.isPending ? "Registering…" : "Register"}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

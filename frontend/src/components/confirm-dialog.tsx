@@ -38,6 +38,8 @@ export function ConfirmDialog({
       await onConfirm();
       setOpen(false);
       onSuccess?.();
+    } catch {
+      // `onConfirm` reports its own failure; stay open so the user can retry or cancel.
     } finally {
       setPending(false);
     }

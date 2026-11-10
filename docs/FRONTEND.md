@@ -6,33 +6,31 @@ platform access boundary; no separate frontend host or application login is used
 
 ## Supported workflow
 
-- Register a table by composite id and optional owner.
-- Browse registered tables and namespaces, with client-side search, sorting,
-  grouping, and pagination on the table list.
-- Inspect a table's version history and latest auxiliary datasets.
-- Inspect a version's shape, byte breakdown, row/fragment/index counts, schema,
-  Lance/writer metadata, and auxiliary datasets.
-- View auxiliary schemas and bounded samples from supported Lance/Parquet data.
-- Switch theme and local/UTC timestamp display.
+- Browse the namespace tree from the root, with paginated child namespace and
+  table lists.
+- Create a namespace with optional properties, and drop an empty namespace
+  (dropping a non-empty namespace reports an error).
+- Register an existing Lance dataset by URI into a namespace, with an optional
+  owner (`properties.owner`) and extra key/value properties.
+- Inspect a table's location, properties, version, schema, and fragment and
+  deleted-row stats, and deregister it.
+- Switch between light, dark, and system themes.
 
-Bucket overview, TTL policies and actions, protection controls, user recording,
-and identity/role displays are not supported.
-The API's enriched table listing returns the complete catalog; pagination in
-the browser does not limit the server response.
+Ids travel as `$`-joined path segments (root namespace `$`) in routes and API
+paths, and display as dotted names. Names containing `$` are rejected.
 
 ## Implementation
 
 - TanStack Router defines file-based routes and generates `src/routeTree.gen.ts`.
-- TanStack Query handles fetching and cache invalidation.
-- TanStack Table handles the table list.
-- Zod response schemas in `src/lib/schemas.ts` mirror the Rust wire types.
+- TanStack Query handles fetching, `page_token` pagination, and cache invalidation.
+- Zod schemas in `src/lib/schemas.ts` mirror the Lance REST Catalog spec models.
 - Tailwind and local shadcn/ui components supply styles and controls.
 
-`src/lib/api.ts` contains the client for the retained REST endpoints.
-Registration changes catalog metadata, not source data. Browsing reads the
-catalog snapshot; it does not trigger a source-data sync.
-See [README.md](../README.md#stats-freshness) for the pull model and freshness
-limits.
+`src/lib/api.ts` is the client for the supported `/v1/namespace/...` and
+`/v1/table/...` spec routes and parses spec `{error, code}` error bodies.
+`src/lib/ids.ts` builds ids from segment arrays. Registration and
+deregistration change catalog metadata only, never the data at a table's
+location.
 
 ## Development and verification
 

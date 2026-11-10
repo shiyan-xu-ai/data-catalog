@@ -12,12 +12,3 @@ export function CodeBlock({ children, className }: { children: string; className
     </pre>
   );
 }
-
-export function prettyJson(s: string | null | undefined): string {
-  if (!s) return "";
-  try {
-    return JSON.stringify(JSON.parse(s), null, 2);
-  } catch {
-    return s;
-  }
-}
