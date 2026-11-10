@@ -3,7 +3,6 @@ import {
   configEntries,
   tableMetadataEntries,
   extraProperties,
-  fragmentBoxPlot,
   indexCoverage,
   niceAxis,
   parseManifestSummary,
@@ -14,7 +13,7 @@ import {
 } from "./table-metadata";
 import type { IndexContent } from "./schemas";
 
-describe("fragment box plot", () => {
+describe("nice axis", () => {
   it("rounds the axis up to at most 4 nice intervals", () => {
     expect(niceAxis(2038)).toEqual({ axisMax: 3000, ticks: [0, 1000, 2000, 3000] });
     expect(niceAxis(2000)).toEqual({ axisMax: 2000, ticks: [0, 500, 1000, 1500, 2000] });
@@ -22,14 +21,6 @@ describe("fragment box plot", () => {
     expect(niceAxis(7)).toEqual({ axisMax: 8, ticks: [0, 2, 4, 6, 8] });
     expect(niceAxis(3)).toEqual({ axisMax: 3, ticks: [0, 1, 2, 3] });
     expect(niceAxis(0)).toEqual({ axisMax: 1, ticks: [0, 1] });
-  });
-  it("places each statistic as a percent of the axis", () => {
-    const plot = fragmentBoxPlot({ min: 5, p25: 1771, p50: 1831, p75: 1879, p99: 1966, max: 2038, mean: 1791 });
-    expect(plot.axisMax).toBe(3000);
-    expect(plot.ticks).toEqual([0, 1000, 2000, 3000]);
-    expect(plot.pct.min).toBeCloseTo(0.1667);
-    expect(plot.pct.p50).toBeCloseTo(61.03);
-    expect(plot.pct.max).toBeCloseTo(67.93);
   });
 });
 

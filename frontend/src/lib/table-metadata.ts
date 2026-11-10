@@ -151,30 +151,6 @@ export function niceAxis(max: number): { axisMax: number; ticks: number[] } {
   }
 }
 
-/** Positions (percent of a nice axis from 0) for a rows-per-fragment range plot, plus the
- *  axis ticks. */
-export function fragmentBoxPlot(lengths: FragmentLengths): {
-  axisMax: number;
-  ticks: number[];
-  pct: Record<keyof FragmentLengths, number>;
-} {
-  const { axisMax, ticks } = niceAxis(lengths.max);
-  const at = (v: number) => (v / axisMax) * 100;
-  return {
-    axisMax,
-    ticks,
-    pct: {
-      min: at(lengths.min),
-      p25: at(lengths.p25),
-      p50: at(lengths.p50),
-      p75: at(lengths.p75),
-      p99: at(lengths.p99),
-      max: at(lengths.max),
-      mean: at(lengths.mean),
-    },
-  };
-}
-
 /** The table's `lance.compaction.target_rows_per_fragment` override from describe metadata
  *  (`config.` prefixed), or null when unset or not a positive integer. */
 export function compactionTargetOverride(meta: Metadata): number | null {
