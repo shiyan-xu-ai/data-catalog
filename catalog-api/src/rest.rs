@@ -1,4 +1,5 @@
-//! Lance REST Catalog routes over a [`LanceNamespace`].
+//! Lance REST Catalog routes over a [`LanceNamespace`], plus the catalog's own `/catalog/v1`
+//! routes for facts no spec model carries.
 //!
 //! Mirrors the upstream `lance-namespace-impls` RestAdapter conventions (route paths, `$` id
 //! delimiter, body/route id reconciliation, `ErrorCode` to HTTP status mapping) for the
@@ -15,17 +16,22 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use catalog_store::PostgresNamespace;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
     DeregisterTableResponse, DescribeNamespaceRequest, DescribeNamespaceResponse,
-    DescribeTableRequest, DescribeTableResponse, DropNamespaceRequest, DropNamespaceResponse,
-    ErrorResponse, ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest,
-    ListTablesResponse, NamespaceExistsRequest, RegisterTableRequest, RegisterTableResponse,
-    TableExistsRequest,
+    DescribeTableIndexStatsRequest, DescribeTableIndexStatsResponse, DescribeTableRequest,
+    DescribeTableResponse, DescribeTableVersionRequest, DescribeTableVersionResponse,
+    DropNamespaceRequest, DropNamespaceResponse, ErrorResponse, GetTableStatsRequest,
+    GetTableStatsResponse, ListNamespacesRequest, ListNamespacesResponse, ListTableBranchesRequest,
+    ListTableBranchesResponse, ListTableIndicesRequest, ListTableIndicesResponse,
+    ListTableTagsRequest, ListTableTagsResponse, ListTableVersionsRequest,
+    ListTableVersionsResponse, ListTablesRequest, ListTablesResponse, NamespaceExistsRequest,
+    RegisterTableRequest, RegisterTableResponse, TableExistsRequest,
 };
 use lance_namespace::{Error, ErrorCode, LanceNamespace, NamespaceError};
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 type Backend = Arc<dyn LanceNamespace>;
 type ApiResult<T> = Result<T, ApiError>;
@@ -46,15 +52,44 @@ pub fn router(backend: Backend) -> Router {
         .route("/table/:id/describe", post(describe_table))
         .route("/table/:id/exists", post(table_exists))
         .route("/table/:id/deregister", post(deregister_table))
+        .route("/table/:id/stats", post(get_table_stats))
+        .route("/table/:id/version/list", post(list_table_versions))
+        .route("/table/:id/version/describe", post(describe_table_version))
+        .route("/table/:id/index/list", post(list_table_indices))
+        .route(
+            "/table/:id/index/:index_name/stats",
+            post(describe_table_index_stats),
+        )
+        .route("/table/:id/tags/list", post(list_table_tags))
+        .route("/table/:id/branches/list", post(list_table_branches))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
         .with_state(backend)
+}
+
+/// Router for the catalog's own read-only routes; nest it at `/catalog/v1`.
+pub fn catalog_router(namespace: Arc<PostgresNamespace>) -> Router {
+    Router::new()
+        .route("/table/:id/column-storage", get(column_storage))
+        .fallback(unsupported)
+        .layer(axum::middleware::map_response(rejection_to_error_response))
+        .with_state(namespace)
 }
 
 #[derive(Deserialize)]
 struct PaginationQuery {
     page_token: Option<String>,
     limit: Option<i32>,
+}
+
+/// Spec list routes take pagination as query parameters; a JSON body is accepted too, and the
+/// query wins where both are set.
+#[derive(Deserialize)]
+struct VersionListQuery {
+    page_token: Option<String>,
+    limit: Option<i32>,
+    descending: Option<bool>,
+    branch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -189,6 +224,128 @@ async fn deregister_table(
     let mut request: DeregisterTableRequest = parse_body(&body)?;
     reconcile_id(&mut request.id, &id)?;
     Ok(Json(ns.deregister_table(request).await?))
+}
+
+async fn get_table_stats(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<Json<GetTableStatsResponse>> {
+    let mut request: GetTableStatsRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    Ok(Json(ns.get_table_stats(request).await?))
+}
+
+async fn list_table_versions(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    Query(q): Query<VersionListQuery>,
+    body: Bytes,
+) -> ApiResult<Json<ListTableVersionsResponse>> {
+    let mut request: ListTableVersionsRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    request.page_token = q.page_token.or(request.page_token);
+    request.limit = q.limit.or(request.limit);
+    request.descending = q.descending.or(request.descending);
+    request.branch = q.branch.or(request.branch);
+    Ok(Json(ns.list_table_versions(request).await?))
+}
+
+async fn describe_table_version(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<Json<DescribeTableVersionResponse>> {
+    let mut request: DescribeTableVersionRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    Ok(Json(ns.describe_table_version(request).await?))
+}
+
+async fn list_table_indices(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<Json<ListTableIndicesResponse>> {
+    let mut request: ListTableIndicesRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    Ok(Json(ns.list_table_indices(request).await?))
+}
+
+async fn describe_table_index_stats(
+    State(ns): State<Backend>,
+    Path((id, index_name)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult<Json<DescribeTableIndexStatsResponse>> {
+    let mut request: DescribeTableIndexStatsRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    if request
+        .index_name
+        .as_ref()
+        .is_some_and(|n| *n != index_name)
+    {
+        return Err(ApiError::invalid_input(format!(
+            "body index_name {:?} does not match route index name {index_name:?}",
+            request.index_name
+        )));
+    }
+    request.index_name = Some(index_name);
+    Ok(Json(ns.describe_table_index_stats(request).await?))
+}
+
+async fn list_table_tags(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    Query(q): Query<PaginationQuery>,
+    body: Bytes,
+) -> ApiResult<Json<ListTableTagsResponse>> {
+    let mut request: ListTableTagsRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    request.page_token = q.page_token.or(request.page_token);
+    request.limit = q.limit.or(request.limit);
+    Ok(Json(ns.list_table_tags(request).await?))
+}
+
+async fn list_table_branches(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    Query(q): Query<PaginationQuery>,
+    body: Bytes,
+) -> ApiResult<Json<ListTableBranchesResponse>> {
+    let mut request: ListTableBranchesRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    request.page_token = q.page_token.or(request.page_token);
+    request.limit = q.limit.or(request.limit);
+    Ok(Json(ns.list_table_branches(request).await?))
+}
+
+#[derive(Serialize)]
+struct ColumnStorageResponse {
+    version: u64,
+    columns: Vec<ColumnBytesResponse>,
+}
+
+#[derive(Serialize)]
+struct ColumnBytesResponse {
+    name: String,
+    bytes_on_disk: u64,
+}
+
+async fn column_storage(
+    State(ns): State<Arc<PostgresNamespace>>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ColumnStorageResponse>> {
+    let storage = ns.column_storage(&parse_id(&id)).await?;
+    Ok(Json(ColumnStorageResponse {
+        version: storage.version,
+        columns: storage
+            .columns
+            .into_iter()
+            .map(|c| ColumnBytesResponse {
+                name: c.name,
+                bytes_on_disk: c.bytes_on_disk,
+            })
+            .collect(),
+    }))
 }
 
 async fn unsupported() -> ApiError {

@@ -30,6 +30,7 @@ base64 = "0.22"
 arrow-array.workspace = true
 arrow-schema.workspace = true
 lance.workspace = true
+lance-index.workspace = true
 tempfile.workspace = true
 tower = "0.5"
 sqlx.workspace = true

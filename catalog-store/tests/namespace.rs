@@ -6,9 +6,11 @@ use std::collections::HashMap;
 
 use lance::Dataset;
 use lance_namespace::models::{
-    CreateNamespaceRequest, DeregisterTableRequest, DescribeNamespaceRequest, DescribeTableRequest,
-    DropNamespaceRequest, ListNamespacesRequest, ListTablesRequest, NamespaceExistsRequest,
-    RegisterTableRequest, TableExistsRequest,
+    CreateNamespaceRequest, DeregisterTableRequest, DescribeNamespaceRequest,
+    DescribeTableIndexStatsRequest, DescribeTableRequest, DescribeTableVersionRequest,
+    DropNamespaceRequest, GetTableStatsRequest, ListNamespacesRequest, ListTableBranchesRequest,
+    ListTableIndicesRequest, ListTableTagsRequest, ListTableVersionsRequest, ListTablesRequest,
+    NamespaceExistsRequest, RegisterTableRequest, TableExistsRequest,
 };
 use lance_namespace::{ErrorCode, LanceNamespace};
 use support::{code, id};
@@ -18,6 +20,8 @@ const NAMESPACE_EXISTS: u32 = ErrorCode::NamespaceAlreadyExists as u32;
 const NAMESPACE_NOT_EMPTY: u32 = ErrorCode::NamespaceNotEmpty as u32;
 const TABLE_NOT_FOUND: u32 = ErrorCode::TableNotFound as u32;
 const TABLE_EXISTS: u32 = ErrorCode::TableAlreadyExists as u32;
+const TABLE_VERSION_NOT_FOUND: u32 = ErrorCode::TableVersionNotFound as u32;
+const TABLE_INDEX_NOT_FOUND: u32 = ErrorCode::TableIndexNotFound as u32;
 const INVALID_INPUT: u32 = ErrorCode::InvalidInput as u32;
 const UNSUPPORTED: u32 = ErrorCode::Unsupported as u32;
 
@@ -294,7 +298,7 @@ async fn tables_lifecycle() {
     assert_eq!(cheap.table.as_deref(), Some("users"));
     assert_eq!(cheap.namespace, id(&["prod"]));
     assert_eq!(cheap.location.as_deref(), Some(users.as_str()));
-    assert_eq!(cheap.properties, props(&[("owner", "alice")]));
+    assert_eq!(cheap.properties.unwrap()["owner"], "alice");
     assert!(cheap.version.is_none() && cheap.schema.is_none() && cheap.stats.is_none());
     let detailed = ns.describe_table(describe(true)).await.unwrap();
     assert_eq!(detailed.version, Some(1));
@@ -403,4 +407,229 @@ async fn tables_lifecycle() {
             .unwrap(),
         3
     );
+}
+
+#[tokio::test]
+async fn table_details() {
+    let Some(ns) = support::namespace("store_details").await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    // Version 1 writes three rows; version 2 adds the `id_idx` scalar index.
+    let metrics = support::write_dataset(dir.path(), "metrics.lance").await;
+    support::add_scalar_index(&metrics).await;
+    ns.create_namespace(create(&["prod"])).await.unwrap();
+    let table = || id(&["prod", "metrics"]);
+
+    // AE3: catalog-managed keys are rejected; times are recorded and survive overwrite.
+    for key in ["catalog.registered_at", "catalog.anything"] {
+        let err = ns
+            .register_table(RegisterTableRequest {
+                properties: props(&[(key, "x")]),
+                ..register(&["prod", "metrics"], &metrics)
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(code(err), INVALID_INPUT);
+    }
+    let registered = ns
+        .register_table(RegisterTableRequest {
+            properties: props(&[("owner", "alice"), ("description", "d1"), ("tier", "gold")]),
+            ..register(&["prod", "metrics"], &metrics)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        registered.properties,
+        props(&[("owner", "alice"), ("description", "d1"), ("tier", "gold")])
+    );
+    let describe = |detailed: bool| DescribeTableRequest {
+        id: table(),
+        load_detailed_metadata: Some(detailed),
+        ..Default::default()
+    };
+    let first = ns.describe_table(describe(false)).await.unwrap();
+    let first = first.properties.unwrap();
+    assert_eq!(first["owner"], "alice");
+    assert_eq!(first["description"], "d1");
+    assert_eq!(first["catalog.registered_at"], first["catalog.updated_at"]);
+    assert!(first["catalog.registered_at"].ends_with('Z'));
+    ns.register_table(RegisterTableRequest {
+        mode: Some("overwrite".into()),
+        properties: props(&[("owner", "bob")]),
+        ..register(&["prod", "metrics"], &metrics)
+    })
+    .await
+    .unwrap();
+    let second = ns.describe_table(describe(false)).await.unwrap();
+    let second = second.properties.unwrap();
+    assert_eq!(second.len(), 3, "{second:?}");
+    assert_eq!(second["owner"], "bob");
+    assert_eq!(
+        second["catalog.registered_at"],
+        first["catalog.registered_at"]
+    );
+    assert!(second["catalog.updated_at"] > first["catalog.updated_at"]);
+
+    // Detailed describe carries the manifest summary and storage format.
+    let detailed = ns.describe_table(describe(true)).await.unwrap();
+    assert_eq!(detailed.version, Some(2));
+    let metadata = detailed.metadata.unwrap();
+    assert_eq!(metadata["total_rows"], "3");
+    assert_eq!(metadata["total_fragments"], "1");
+    assert!(metadata["total_files_size"].parse::<u64>().unwrap() > 0);
+    assert!(metadata.contains_key("lance.data_storage_version"));
+    assert!(!metadata.keys().any(|k| k.starts_with("config.")));
+
+    // Versions paginate by version number in either order.
+    let list_versions = |page_token, limit, descending| ListTableVersionsRequest {
+        id: table(),
+        page_token,
+        limit,
+        descending,
+        ..Default::default()
+    };
+    let page1 = ns
+        .list_table_versions(list_versions(None, Some(1), None))
+        .await
+        .unwrap();
+    assert_eq!(page1.versions.len(), 1);
+    assert_eq!(page1.versions[0].version, 1);
+    assert_eq!(page1.page_token.as_deref(), Some("1"));
+    let v1 = &page1.versions[0];
+    assert_eq!(v1.metadata.as_ref().unwrap()["total_rows"], "3");
+    assert!(v1.timestamp_millis.is_some() && v1.manifest_size.is_some());
+    let page2 = ns
+        .list_table_versions(list_versions(page1.page_token, Some(1), None))
+        .await
+        .unwrap();
+    assert_eq!(page2.versions[0].version, 2);
+    assert_eq!(page2.page_token, None);
+    let desc = ns
+        .list_table_versions(list_versions(None, None, Some(true)))
+        .await
+        .unwrap();
+    let numbers: Vec<_> = desc.versions.iter().map(|v| v.version).collect();
+    assert_eq!(numbers, [2, 1]);
+    let describe_version = |version| DescribeTableVersionRequest {
+        id: table(),
+        version,
+        ..Default::default()
+    };
+    let v1 = ns
+        .describe_table_version(describe_version(Some(1)))
+        .await
+        .unwrap();
+    assert_eq!(*v1.version, page1.versions[0]);
+    let latest = ns
+        .describe_table_version(describe_version(None))
+        .await
+        .unwrap();
+    assert_eq!(latest.version.version, 2);
+    let err = ns
+        .describe_table_version(describe_version(Some(9)))
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), TABLE_VERSION_NOT_FOUND);
+
+    // Indices, index stats, and table stats.
+    let indices = ns
+        .list_table_indices(ListTableIndicesRequest {
+            id: table(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(indices.indexes.len(), 1);
+    let index = &indices.indexes[0];
+    assert_eq!(index.index_name, "id_idx");
+    assert_eq!(index.columns, ["id"]);
+    assert_eq!(
+        (index.num_indexed_rows, index.num_unindexed_rows),
+        (Some(3), Some(0))
+    );
+    assert!(index.index_type.is_some() && index.size_bytes.is_some_and(|s| s > 0));
+    let index_stats = |name: &str| DescribeTableIndexStatsRequest {
+        id: table(),
+        index_name: Some(name.into()),
+        ..Default::default()
+    };
+    let stats = ns
+        .describe_table_index_stats(index_stats("id_idx"))
+        .await
+        .unwrap();
+    assert_eq!(stats.num_indexed_rows, Some(3));
+    let err = ns
+        .describe_table_index_stats(index_stats("nope"))
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), TABLE_INDEX_NOT_FOUND);
+    let table_stats = ns
+        .get_table_stats(GetTableStatsRequest {
+            id: table(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!((table_stats.num_rows, table_stats.num_indices), (3, 1));
+    assert!(table_stats.total_bytes > 0);
+    let fragments = &table_stats.fragment_stats;
+    assert_eq!(
+        (fragments.num_fragments, fragments.num_small_fragments),
+        (1, 1)
+    );
+    assert_eq!((fragments.lengths.min, fragments.lengths.max), (3, 3));
+
+    // Column storage rolls fields up to top-level columns.
+    let storage = ns.column_storage(&table().unwrap()).await.unwrap();
+    assert_eq!(storage.version, 2);
+    let names: Vec<_> = storage.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "name"]);
+    assert!(storage.columns.iter().all(|c| c.bytes_on_disk > 0));
+    assert_eq!(
+        storage.columns.iter().map(|c| c.bytes_on_disk).sum::<u64>() as i64,
+        table_stats.total_bytes
+    );
+
+    // No tags or branches; reading another branch is Unsupported.
+    let tags = ns
+        .list_table_tags(ListTableTagsRequest {
+            id: table(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(tags.tags.is_empty());
+    let branches = ns
+        .list_table_branches(ListTableBranchesRequest {
+            id: table(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(branches.branches.is_empty());
+    let err = ns
+        .list_table_versions(ListTableVersionsRequest {
+            branch: Some("dev".into()),
+            ..list_versions(None, None, None)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), UNSUPPORTED);
+
+    // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found.
+    std::fs::remove_dir_all(&metrics).unwrap();
+    let cheap = ns.describe_table(describe(false)).await.unwrap();
+    assert_eq!(cheap.properties.unwrap()["owner"], "bob");
+    assert_eq!(
+        code(ns.describe_table(describe(true)).await.unwrap_err()),
+        TABLE_NOT_FOUND
+    );
+    let err = ns
+        .list_table_versions(list_versions(None, None, None))
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), TABLE_NOT_FOUND);
+    let err = ns.column_storage(&table().unwrap()).await.unwrap_err();
+    assert_eq!(code(err), TABLE_NOT_FOUND);
 }

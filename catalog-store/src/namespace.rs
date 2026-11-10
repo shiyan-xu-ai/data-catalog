@@ -2,16 +2,25 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
+use lance::dataset::statistics::DatasetStatisticsExt;
+use lance::index::DatasetIndexExt;
 use lance::session::Session;
 use lance::Dataset;
+use lance_index::is_system_index;
 use lance_namespace::models::{
-    CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
+    BranchContents, CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
     DeregisterTableResponse, DescribeNamespaceRequest, DescribeNamespaceResponse,
-    DescribeTableRequest, DescribeTableResponse, DropNamespaceRequest, DropNamespaceResponse,
-    ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+    DescribeTableIndexStatsRequest, DescribeTableIndexStatsResponse, DescribeTableRequest,
+    DescribeTableResponse, DescribeTableVersionRequest, DescribeTableVersionResponse,
+    DropNamespaceRequest, DropNamespaceResponse, FragmentStats, FragmentSummary,
+    GetTableStatsRequest, GetTableStatsResponse, IndexContent, ListNamespacesRequest,
+    ListNamespacesResponse, ListTableBranchesRequest, ListTableBranchesResponse,
+    ListTableIndicesRequest, ListTableIndicesResponse, ListTableTagsRequest, ListTableTagsResponse,
+    ListTableVersionsRequest, ListTableVersionsResponse, ListTablesRequest, ListTablesResponse,
     NamespaceExistsRequest, RegisterTableRequest, RegisterTableResponse, TableBasicStats,
-    TableExistsRequest,
+    TableExistsRequest, TableVersion, TagContents,
 };
 use lance_namespace::schema::arrow_schema_to_json;
 use lance_namespace::{Error, LanceNamespace, NamespaceError, Result};
@@ -21,12 +30,74 @@ use sqlx::PgPool;
 /// Path delimiter of REST ids. Names may not contain it, so joined ids stay unambiguous.
 const DELIMITER: &str = "$";
 
+/// Property keys stored in dedicated `tables` columns instead of the properties JSON.
+const OWNER: &str = "owner";
+const DESCRIPTION: &str = "description";
+/// Server-managed property keys; clients may not set any key under the prefix.
+const CATALOG_PREFIX: &str = "catalog.";
+const REGISTERED_AT: &str = "catalog.registered_at";
+const UPDATED_AT: &str = "catalog.updated_at";
+
+/// `tables` columns read into [`TableRow`], with times rendered as RFC 3339 UTC.
+const TABLE_COLUMNS: &str = r#"location, properties, owner, description,
+    to_char(registered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS registered_at,
+    to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at"#;
+
+/// Fragments below the compaction target row count, as upstream `get_table_stats` counts them.
+const SMALL_FRAGMENT_ROWS: u64 = 1024 * 1024;
+/// Object-store reads (manifests, fragment footers) issued concurrently per request.
+const READ_CONCURRENCY: usize = 16;
+
 type Properties = HashMap<String, String>;
+
+/// Bytes on disk of one top-level column, nested fields included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnBytes {
+    pub name: String,
+    pub bytes_on_disk: u64,
+}
+
+/// Per-column storage of a table's current version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnStorage {
+    pub version: u64,
+    pub columns: Vec<ColumnBytes>,
+}
+
+#[derive(sqlx::FromRow)]
+struct TableRow {
+    location: String,
+    properties: Json<Properties>,
+    owner: Option<String>,
+    description: Option<String>,
+    registered_at: String,
+    updated_at: String,
+}
+
+impl TableRow {
+    /// The properties as the client registered them.
+    fn client_properties(&self) -> Properties {
+        let mut properties = self.properties.0.clone();
+        for (key, value) in [(OWNER, &self.owner), (DESCRIPTION, &self.description)] {
+            if let Some(value) = value {
+                properties.insert(key.to_string(), value.clone());
+            }
+        }
+        properties
+    }
+
+    fn properties_with_times(&self) -> Properties {
+        let mut properties = self.client_properties();
+        properties.insert(REGISTERED_AT.to_string(), self.registered_at.clone());
+        properties.insert(UPDATED_AT.to_string(), self.updated_at.clone());
+        properties
+    }
+}
 
 /// A [`LanceNamespace`] whose namespaces and table registrations live in Postgres.
 ///
-/// Postgres stores identity, location, and properties only; version, schema, and stats are read
-/// from the Lance manifest when detailed metadata is requested. `storage_options` are used to
+/// Postgres stores identity, location, properties, and registration times only; version, schema,
+/// and stats are read from the Lance manifest on demand and never cached. `storage_options` are used to
 /// open datasets server-side and are never returned to callers.
 pub struct PostgresNamespace {
     pool: PgPool,
@@ -63,6 +134,83 @@ impl PostgresNamespace {
             builder = builder.with_version(version);
         }
         builder.load().await
+    }
+
+    /// Per top-level column bytes on disk of the current version; nested fields roll up into
+    /// their top-level column. Reads every data file's metadata, so it is slow on large tables.
+    pub async fn column_storage(&self, id: &[String]) -> Result<ColumnStorage> {
+        let (location, dataset) = self.open_table(id, None).await?;
+        let dataset = Arc::new(dataset);
+        let stats = dataset
+            .calculate_data_stats()
+            .await
+            .map_err(lance_error(format!("calculate data stats at {location}")))?;
+        let fields = &dataset.schema().fields;
+        let mut top_level = HashMap::new();
+        for (index, field) in fields.iter().enumerate() {
+            let mut stack = vec![field];
+            while let Some(f) = stack.pop() {
+                top_level.insert(f.id as u32, index);
+                stack.extend(f.children.iter());
+            }
+        }
+        let mut bytes = vec![0u64; fields.len()];
+        for field in stats.fields {
+            if let Some(&index) = top_level.get(&field.id) {
+                bytes[index] += field.bytes_on_disk;
+            }
+        }
+        Ok(ColumnStorage {
+            version: dataset.version_id(),
+            columns: fields
+                .iter()
+                .zip(bytes)
+                .map(|(f, bytes_on_disk)| ColumnBytes {
+                    name: f.name.clone(),
+                    bytes_on_disk,
+                })
+                .collect(),
+        })
+    }
+
+    async fn table_row(&self, id: &[String]) -> Result<TableRow> {
+        let (namespace, name) = split_table_id(id)?;
+        sqlx::query_as(&format!(
+            "SELECT {TABLE_COLUMNS} FROM tables WHERE namespace_path = $1 AND name = $2"
+        ))
+        .bind(namespace)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(|| table_not_found(id))
+    }
+
+    /// Opens a registered table's dataset, returning its location too.
+    async fn open_table(&self, id: &[String], version: Option<u64>) -> Result<(String, Dataset)> {
+        let location = self.table_row(id).await?.location;
+        let dataset = self.open_registered(&location, version).await?;
+        Ok((location, dataset))
+    }
+
+    /// A registered dataset that cannot be found is TableNotFound (or TableVersionNotFound),
+    /// so callers can tell a vanished dataset from a failing one.
+    async fn open_registered(&self, location: &str, version: Option<u64>) -> Result<Dataset> {
+        self.open_dataset(location, version).await.map_err(|e| {
+            let message = format!("cannot open Lance dataset at {location}: {e}");
+            let missing = matches!(
+                e,
+                lance::Error::DatasetNotFound { .. }
+                    | lance::Error::NotFound { .. }
+                    | lance::Error::VersionNotFound { .. }
+            );
+            match (missing, version) {
+                (true, Some(_)) => NamespaceError::TableVersionNotFound { message },
+                (true, None) => NamespaceError::TableNotFound { message },
+                (false, _) => NamespaceError::Internal { message },
+            }
+            .into()
+        })
     }
 
     /// Fails with NamespaceNotFound unless `path` is the root or a stored namespace.
@@ -317,28 +465,17 @@ impl LanceNamespace for PostgresNamespace {
             }
             .into());
         }
-        let version = request
-            .version
-            .map(|v| u64::try_from(v).map_err(|_| invalid_input(format!("invalid version {v}"))))
-            .transpose()?;
+        let version = parse_version(request.version)?;
         let id = request.id.unwrap_or_default();
         let (namespace, name) = split_table_id(&id)?;
-        let row: Option<(String, Json<Properties>)> = sqlx::query_as(
-            "SELECT location, properties FROM tables WHERE namespace_path = $1 AND name = $2",
-        )
-        .bind(namespace)
-        .bind(name)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_error)?;
-        let (location, Json(properties)) = row.ok_or_else(|| table_not_found(&id))?;
+        let row = self.table_row(&id).await?;
 
         let mut response = DescribeTableResponse {
             table: Some(name.to_string()),
             namespace: Some(namespace.to_vec()),
-            location: Some(location.clone()),
-            table_uri: Some(location.clone()),
-            properties: Some(properties),
+            location: Some(row.location.clone()),
+            table_uri: Some(row.location.clone()),
+            properties: Some(row.properties_with_times()),
             ..Default::default()
         };
         let detailed = request.load_detailed_metadata.unwrap_or(false);
@@ -350,34 +487,32 @@ impl LanceNamespace for PostgresNamespace {
             return Ok(response);
         }
 
-        let dataset = self.open_dataset(&location, version).await.map_err(|e| {
-            let message = format!("cannot open Lance dataset at {location}: {e}");
-            let missing = matches!(
-                e,
-                lance::Error::DatasetNotFound { .. }
-                    | lance::Error::NotFound { .. }
-                    | lance::Error::VersionNotFound { .. }
-            );
-            match (missing, version) {
-                (true, Some(_)) => NamespaceError::TableVersionNotFound { message },
-                (true, None) => NamespaceError::TableNotFound { message },
-                (false, _) => NamespaceError::Internal { message },
-            }
-        })?;
+        let location = &row.location;
+        let dataset = self.open_registered(location, version).await?;
         let arrow_schema: arrow_schema::Schema = dataset.schema().into();
-        let num_deleted_rows =
+        let num_deleted_rows = dataset
+            .count_deleted_rows()
+            .await
+            .map_err(lance_error(format!("count deleted rows at {location}")))?;
+        let lance_version = dataset.version();
+        let mut metadata: Properties = lance_version.metadata.into_iter().collect();
+        metadata.extend(
             dataset
-                .count_deleted_rows()
-                .await
-                .map_err(|e| NamespaceError::Internal {
-                    message: format!("count deleted rows at {location}: {e}"),
-                })?;
-        response.version = Some(dataset.version().version as i64);
+                .config()
+                .iter()
+                .map(|(key, value)| (format!("config.{key}"), value.clone())),
+        );
+        metadata.insert(
+            "lance.data_storage_version".into(),
+            dataset.manifest().data_storage_format.version.to_string(),
+        );
+        response.version = Some(lance_version.version as i64);
         response.schema = Some(Box::new(arrow_schema_to_json(&arrow_schema)?));
         response.stats = Some(Box::new(TableBasicStats::new(
             saturating_i32(num_deleted_rows),
             saturating_i32(dataset.count_fragments()),
         )));
+        response.metadata = Some(metadata);
         Ok(response)
     }
 
@@ -419,19 +554,36 @@ impl LanceNamespace for PostgresNamespace {
                 ))
             })?;
 
-        let properties = Json(request.properties.unwrap_or_default());
+        let client_properties = request.properties.unwrap_or_default();
+        if let Some(key) = client_properties
+            .keys()
+            .find(|key| key.starts_with(CATALOG_PREFIX))
+        {
+            return Err(invalid_input(format!(
+                "property {key:?} is managed by the catalog; keys under {CATALOG_PREFIX:?} are reserved"
+            )));
+        }
+        let mut properties = client_properties.clone();
+        let owner = properties.remove(OWNER);
+        let description = properties.remove(DESCRIPTION);
+        // Overwrite advances updated_at and keeps registered_at.
         let sql = if overwrite {
-            "INSERT INTO tables (namespace_path, name, location, properties) VALUES ($1, $2, $3, $4)
+            "INSERT INTO tables (namespace_path, name, location, properties, owner, description)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (namespace_path, name)
-             DO UPDATE SET location = EXCLUDED.location, properties = EXCLUDED.properties"
+             DO UPDATE SET location = EXCLUDED.location, properties = EXCLUDED.properties,
+                 owner = EXCLUDED.owner, description = EXCLUDED.description, updated_at = now()"
         } else {
-            "INSERT INTO tables (namespace_path, name, location, properties) VALUES ($1, $2, $3, $4)"
+            "INSERT INTO tables (namespace_path, name, location, properties, owner, description)
+             VALUES ($1, $2, $3, $4, $5, $6)"
         };
         sqlx::query(sql)
             .bind(namespace)
             .bind(name)
             .bind(&request.location)
-            .bind(&properties)
+            .bind(Json(&properties))
+            .bind(owner)
+            .bind(description)
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -445,7 +597,7 @@ impl LanceNamespace for PostgresNamespace {
             })?;
         Ok(RegisterTableResponse {
             location: Some(request.location),
-            properties: Some(properties.0),
+            properties: Some(client_properties),
             ..Default::default()
         })
     }
@@ -472,20 +624,338 @@ impl LanceNamespace for PostgresNamespace {
     ) -> Result<DeregisterTableResponse> {
         let id = request.id.unwrap_or_default();
         let (namespace, name) = split_table_id(&id)?;
-        let row: Option<(String, Json<Properties>)> = sqlx::query_as(
-            "DELETE FROM tables WHERE namespace_path = $1 AND name = $2
-             RETURNING location, properties",
-        )
+        let row: Option<TableRow> = sqlx::query_as(&format!(
+            "DELETE FROM tables WHERE namespace_path = $1 AND name = $2 RETURNING {TABLE_COLUMNS}"
+        ))
         .bind(namespace)
         .bind(name)
         .fetch_optional(&self.pool)
         .await
         .map_err(db_error)?;
-        let (location, Json(properties)) = row.ok_or_else(|| table_not_found(&id))?;
+        let row = row.ok_or_else(|| table_not_found(&id))?;
         Ok(DeregisterTableResponse {
             id: Some(id),
-            location: Some(location),
-            properties: Some(properties),
+            properties: Some(row.client_properties()),
+            location: Some(row.location),
+            ..Default::default()
+        })
+    }
+
+    /// Mirrors upstream `DirectoryNamespace::get_table_stats`: total bytes from field-level data
+    /// statistics, fragment lengths from per-fragment physical rows. Slow on large tables.
+    async fn get_table_stats(
+        &self,
+        request: GetTableStatsRequest,
+    ) -> Result<GetTableStatsResponse> {
+        reject_branch(request.branch.as_deref())?;
+        let (location, dataset) = self
+            .open_table(&request.id.unwrap_or_default(), None)
+            .await?;
+        let dataset = Arc::new(dataset);
+        let data_stats = dataset
+            .calculate_data_stats()
+            .await
+            .map_err(lance_error(format!("calculate data stats at {location}")))?;
+        let total_bytes: u64 = data_stats.fields.iter().map(|f| f.bytes_on_disk).sum();
+
+        let mut lengths: Vec<u64> = futures::stream::iter(dataset.get_fragments())
+            .map(|f| async move { f.physical_rows().await.map(|rows| rows as u64) })
+            .buffered(READ_CONCURRENCY)
+            .try_collect()
+            .await
+            .map_err(lance_error(format!("count fragment rows at {location}")))?;
+        lengths.sort_unstable();
+        let num_rows: u64 = lengths.iter().sum();
+        let num_small_fragments = lengths.iter().filter(|&&n| n < SMALL_FRAGMENT_ROWS).count();
+        let summary = match (lengths.first(), lengths.last()) {
+            (Some(&min), Some(&max)) => {
+                let pct = |p: f64| lengths[((lengths.len() - 1) as f64 * p) as usize] as i64;
+                FragmentSummary::new(
+                    min as i64,
+                    max as i64,
+                    (num_rows / lengths.len() as u64) as i64,
+                    pct(0.25),
+                    pct(0.50),
+                    pct(0.75),
+                    pct(0.99),
+                )
+            }
+            _ => FragmentSummary::new(0, 0, 0, 0, 0, 0, 0),
+        };
+
+        let indices = dataset
+            .load_indices()
+            .await
+            .map_err(lance_error(format!("load indices at {location}")))?;
+        let num_indices = indices.iter().filter(|m| !is_system_index(m)).count();
+        Ok(GetTableStatsResponse::new(
+            total_bytes as i64,
+            num_rows as i64,
+            num_indices as i64,
+            FragmentStats::new(lengths.len() as i64, num_small_fragments as i64, summary),
+        ))
+    }
+
+    /// Start-after pagination by version number in the requested order; the token is the last
+    /// version of the page. Only the page's manifests are read.
+    async fn list_table_versions(
+        &self,
+        request: ListTableVersionsRequest,
+    ) -> Result<ListTableVersionsResponse> {
+        reject_branch(request.branch.as_deref())?;
+        let (location, dataset) = self
+            .open_table(&request.id.unwrap_or_default(), None)
+            .await?;
+        let mut versions: Vec<u64> = dataset
+            .version_refs()
+            .await
+            .map_err(lance_error(format!("list versions at {location}")))?
+            .into_iter()
+            .map(|v| v.version)
+            .collect();
+        let descending = request.descending.unwrap_or(false);
+        if descending {
+            versions.reverse();
+        }
+        if let Some(token) = request.page_token.filter(|t| !t.is_empty()) {
+            let after: u64 = token
+                .parse()
+                .map_err(|_| invalid_input(format!("invalid page token {token:?}")))?;
+            versions.retain(|&v| if descending { v < after } else { v > after });
+        }
+        let mut page_token = None;
+        if let Some(limit) = request.limit.and_then(|l| usize::try_from(l).ok()) {
+            if versions.len() > limit {
+                versions.truncate(limit);
+                page_token = versions.last().map(u64::to_string);
+            }
+        }
+        let dataset = &dataset;
+        let versions = futures::stream::iter(versions)
+            .map(|version| async move {
+                if version == dataset.version_id() {
+                    return Ok(table_version(dataset));
+                }
+                dataset
+                    .checkout_version(version)
+                    .await
+                    .map(|checked_out| table_version(&checked_out))
+            })
+            .buffered(READ_CONCURRENCY)
+            .try_collect()
+            .await
+            .map_err(lance_error(format!("read versions at {location}")))?;
+        Ok(ListTableVersionsResponse {
+            versions,
+            page_token,
+            ..Default::default()
+        })
+    }
+
+    /// Describes `version`, or the latest version when it is unset.
+    async fn describe_table_version(
+        &self,
+        request: DescribeTableVersionRequest,
+    ) -> Result<DescribeTableVersionResponse> {
+        reject_branch(request.branch.as_deref())?;
+        let version = parse_version(request.version)?;
+        let (_, dataset) = self
+            .open_table(&request.id.unwrap_or_default(), version)
+            .await?;
+        Ok(DescribeTableVersionResponse {
+            version: Box::new(table_version(&dataset)),
+            ..Default::default()
+        })
+    }
+
+    /// Mirrors upstream `DirectoryNamespace::list_table_indices`, hiding system indices.
+    async fn list_table_indices(
+        &self,
+        request: ListTableIndicesRequest,
+    ) -> Result<ListTableIndicesResponse> {
+        reject_branch(request.branch.as_deref())?;
+        let version = parse_version(request.version)?;
+        let (location, dataset) = self
+            .open_table(&request.id.unwrap_or_default(), version)
+            .await?;
+        let total_rows = dataset
+            .count_rows(None)
+            .await
+            .map_err(lance_error(format!("count rows at {location}")))?
+            as u64;
+        let descriptions = dataset
+            .describe_indices(None)
+            .await
+            .map_err(lance_error(format!("describe indices at {location}")))?;
+        let schema = dataset.schema();
+        let mut indexes = Vec::new();
+        for description in descriptions {
+            let Some(first) = description.metadata().first() else {
+                continue;
+            };
+            if is_system_index(first) {
+                continue;
+            }
+            // A field id that no longer resolves is labelled by its id rather than failing
+            // the whole listing.
+            let columns = description
+                .field_ids()
+                .iter()
+                .map(|&field_id| {
+                    i32::try_from(field_id)
+                        .ok()
+                        .and_then(|field_id| schema.field_path_minimal(field_id).ok())
+                        .unwrap_or_else(|| field_id.to_string())
+                })
+                .collect();
+            let segments = description.segments();
+            indexes.push(IndexContent {
+                index_name: description.name().to_string(),
+                index_uuid: first.uuid.to_string(),
+                columns,
+                status: "SUCCEEDED".to_string(),
+                index_type: Some(description.index_type().to_string()),
+                type_url: Some(description.type_url().to_string()),
+                num_indexed_rows: Some(description.rows_indexed() as i64),
+                num_unindexed_rows: Some(
+                    total_rows.saturating_sub(description.rows_indexed()) as i64
+                ),
+                size_bytes: description.total_size_bytes().map(|size| size as i64),
+                num_segments: Some(saturating_i32(segments.len())),
+                created_at: segments
+                    .iter()
+                    .filter_map(|segment| segment.created_at)
+                    .min()
+                    .map(|ts| ts.to_rfc3339()),
+                index_version: segments.first().map(|segment| segment.index_version),
+                index_details: description.details().ok(),
+            });
+        }
+        indexes.sort_by(|a, b| a.index_name.cmp(&b.index_name));
+        let page_token = paginate_sorted(&mut indexes, request.page_token, request.limit, |i| {
+            &i.index_name
+        });
+        Ok(ListTableIndicesResponse {
+            indexes,
+            page_token,
+            ..Default::default()
+        })
+    }
+
+    /// Mirrors upstream `DirectoryNamespace::describe_table_index_stats`.
+    async fn describe_table_index_stats(
+        &self,
+        request: DescribeTableIndexStatsRequest,
+    ) -> Result<DescribeTableIndexStatsResponse> {
+        reject_branch(request.branch.as_deref())?;
+        let version = parse_version(request.version)?;
+        let index_name = request
+            .index_name
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid_input("index name is required".into()))?;
+        let (location, dataset) = self
+            .open_table(&request.id.unwrap_or_default(), version)
+            .await?;
+        let index_not_found = |e: lance::Error| -> Error {
+            NamespaceError::TableIndexNotFound {
+                message: format!("index {index_name:?} at {location}: {e}"),
+            }
+            .into()
+        };
+        let metadatas = dataset
+            .load_indices_by_name(&index_name)
+            .await
+            .map_err(index_not_found)?;
+        if metadatas.first().is_some_and(is_system_index) {
+            return Err(NamespaceError::Unsupported {
+                message: format!("system index {index_name:?} is not exposed"),
+            }
+            .into());
+        }
+        let stats = dataset
+            .index_statistics(&index_name)
+            .await
+            .map_err(index_not_found)?;
+        let stats: serde_json::Value = serde_json::from_str(&stats)
+            .map_err(|e| internal(format!("parse index statistics at {location}: {e}")))?;
+        let get_i64 = |key: &str| {
+            stats
+                .get(key)
+                .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64)))
+        };
+        let get_str = |key: &str| stats.get(key).and_then(|v| v.as_str()).map(str::to_string);
+        Ok(DescribeTableIndexStatsResponse {
+            distance_type: get_str("distance_type"),
+            index_type: get_str("index_type"),
+            num_indexed_rows: get_i64("num_indexed_rows"),
+            num_unindexed_rows: get_i64("num_unindexed_rows"),
+            num_indices: get_i64("num_indices").and_then(|n| i32::try_from(n).ok()),
+            ..Default::default()
+        })
+    }
+
+    async fn list_table_tags(
+        &self,
+        request: ListTableTagsRequest,
+    ) -> Result<ListTableTagsResponse> {
+        let (location, dataset) = self
+            .open_table(&request.id.unwrap_or_default(), None)
+            .await?;
+        let mut tags: Vec<_> = dataset
+            .tags()
+            .list()
+            .await
+            .map_err(lance_error(format!("list tags at {location}")))?
+            .into_iter()
+            .collect();
+        tags.sort_by(|a, b| a.0.cmp(&b.0));
+        let page_token = paginate_sorted(&mut tags, request.page_token, request.limit, |t| &t.0);
+        Ok(ListTableTagsResponse {
+            tags: tags
+                .into_iter()
+                .map(|(name, contents)| {
+                    let mut tag =
+                        TagContents::new(contents.version as i64, contents.manifest_size as i64);
+                    tag.branch = contents.branch;
+                    (name, tag)
+                })
+                .collect(),
+            page_token,
+            ..Default::default()
+        })
+    }
+
+    async fn list_table_branches(
+        &self,
+        request: ListTableBranchesRequest,
+    ) -> Result<ListTableBranchesResponse> {
+        let (location, dataset) = self
+            .open_table(&request.id.unwrap_or_default(), None)
+            .await?;
+        let mut branches: Vec<_> = dataset
+            .list_branches()
+            .await
+            .map_err(lance_error(format!("list branches at {location}")))?
+            .into_iter()
+            .collect();
+        branches.sort_by(|a, b| a.0.cmp(&b.0));
+        let page_token =
+            paginate_sorted(&mut branches, request.page_token, request.limit, |b| &b.0);
+        Ok(ListTableBranchesResponse {
+            branches: branches
+                .into_iter()
+                .map(|(name, contents)| {
+                    let mut branch = BranchContents::new(
+                        contents.parent_version as i64,
+                        contents.create_at as i64,
+                        contents.manifest_size as i64,
+                    );
+                    branch.parent_branch = contents.parent_branch;
+                    branch.metadata = (!contents.metadata.is_empty()).then_some(contents.metadata);
+                    (name, branch)
+                })
+                .collect(),
+            page_token,
             ..Default::default()
         })
     }
@@ -625,5 +1095,62 @@ fn on_foreign_key(e: sqlx::Error, error: impl FnOnce() -> Error) -> Error {
         error()
     } else {
         db_error(e)
+    }
+}
+
+fn parse_version(version: Option<i64>) -> Result<Option<u64>> {
+    version
+        .map(|v| u64::try_from(v).map_err(|_| invalid_input(format!("invalid version {v}"))))
+        .transpose()
+}
+
+/// Only the main branch is readable; "main" is accepted as its explicit name.
+fn reject_branch(branch: Option<&str>) -> Result<()> {
+    match branch {
+        None | Some("" | "main") => Ok(()),
+        Some(branch) => Err(NamespaceError::Unsupported {
+            message: format!("reading branch {branch:?} is not supported"),
+        }
+        .into()),
+    }
+}
+
+fn internal(message: String) -> Error {
+    NamespaceError::Internal { message }.into()
+}
+
+fn lance_error(context: String) -> impl FnOnce(lance::Error) -> Error {
+    move |e| internal(format!("{context}: {e}"))
+}
+
+fn table_version(dataset: &Dataset) -> TableVersion {
+    let location = dataset.manifest_location();
+    let version = dataset.version();
+    TableVersion {
+        version: version.version as i64,
+        manifest_path: location.path.to_string(),
+        manifest_size: location.size.map(|size| size as i64),
+        e_tag: location.e_tag.clone(),
+        timestamp_millis: Some(version.timestamp.timestamp_millis()),
+        metadata: Some(version.metadata.into_iter().collect()),
+    }
+}
+
+/// Start-after pagination over items sorted by `key`; returns the next page token.
+fn paginate_sorted<T>(
+    items: &mut Vec<T>,
+    page_token: Option<String>,
+    limit: Option<i32>,
+    key: impl Fn(&T) -> &String,
+) -> Option<String> {
+    if let Some(after) = page_token.filter(|t| !t.is_empty()) {
+        items.retain(|item| *key(item) > after);
+    }
+    match limit.and_then(|l| usize::try_from(l).ok()) {
+        Some(limit) if items.len() > limit => {
+            items.truncate(limit);
+            items.last().map(|item| key(item).clone())
+        }
+        _ => None,
     }
 }

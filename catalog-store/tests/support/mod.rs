@@ -57,6 +57,22 @@ pub async fn write_dataset(dir: &std::path::Path, name: &str) -> String {
     uri
 }
 
+/// Adds a BTree index named `id_idx` on `id`, committing the dataset's next version.
+pub async fn add_scalar_index(uri: &str) {
+    use lance::index::DatasetIndexExt;
+    let mut dataset = Dataset::open(uri).await.expect("open dataset");
+    dataset
+        .create_index(
+            &["id"],
+            lance_index::IndexType::BTree,
+            Some("id_idx".into()),
+            &lance_index::scalar::ScalarIndexParams::default(),
+            false,
+        )
+        .await
+        .expect("create index");
+}
+
 /// The spec error code carried by a namespace error.
 pub fn code(err: Error) -> u32 {
     match &err {

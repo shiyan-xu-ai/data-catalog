@@ -53,6 +53,8 @@ async fn rest_catalog_routes() {
     };
     let data = tempfile::tempdir().unwrap();
     let users = support::write_dataset(data.path(), "users.lance").await;
+    // Version 2 adds the `id_idx` scalar index.
+    support::add_scalar_index(&users).await;
     let ui = tempfile::tempdir().unwrap();
     std::fs::write(ui.path().join("index.html"), "<html>catalog</html>").unwrap();
     let app = catalog_api_lib::app(ns, ui.path().to_str());
@@ -155,8 +157,23 @@ async fn rest_catalog_routes() {
         (StatusCode::OK, json!({"tables": ["prod$users"]}))
     );
 
-    let (status, cheap) = post(&app, "/v1/table/prod%24users/describe", json!({})).await;
+    // AE3 over HTTP: catalog-managed keys are rejected.
+    error(StatusCode::BAD_REQUEST, 13)(
+        post(
+            &app,
+            "/v1/table/prod%24users/register",
+            json!({"location": users, "mode": "overwrite", "properties": {"catalog.updated_at": "x"}}),
+        )
+        .await,
+    );
+
+    let (status, mut cheap) = post(&app, "/v1/table/prod%24users/describe", json!({})).await;
     assert_eq!(status, StatusCode::OK);
+    let properties = cheap["properties"].take();
+    assert_eq!(properties["owner"], "alice");
+    assert!(properties["catalog.registered_at"].is_string());
+    assert!(properties["catalog.updated_at"].is_string());
+    assert_eq!(properties.as_object().unwrap().len(), 3, "{properties}");
     assert_eq!(
         cheap,
         json!({
@@ -164,7 +181,7 @@ async fn rest_catalog_routes() {
             "namespace": ["prod"],
             "location": users,
             "table_uri": users,
-            "properties": {"owner": "alice"},
+            "properties": null,
         })
     );
     let (status, detailed) = post(
@@ -174,7 +191,7 @@ async fn rest_catalog_routes() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(detailed["version"], 1);
+    assert_eq!(detailed["version"], 2);
     assert_eq!(detailed["is_only_declared"], false);
     assert_eq!(
         detailed["stats"],
@@ -182,7 +199,70 @@ async fn rest_catalog_routes() {
     );
     assert_eq!(detailed["schema"]["fields"][0]["name"], "id");
     assert_eq!(detailed["schema"]["fields"][0]["type"]["type"], "int32");
+    assert_eq!(detailed["metadata"]["total_rows"], "3");
+    assert!(detailed["metadata"]["lance.data_storage_version"].is_string());
     assert!(detailed.get("storage_options").is_none());
+
+    // Read-only Lance metadata routes.
+    let (status, page) = post(
+        &app,
+        "/v1/table/prod%24users/version/list",
+        json!({"limit": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["versions"][0]["version"], 1);
+    assert_eq!(page["versions"][0]["metadata"]["total_rows"], "3");
+    assert_eq!(page["page_token"], "1");
+    let (_, page) = post(
+        &app,
+        "/v1/table/prod%24users/version/list?limit=1&page_token=1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(page["versions"][0]["version"], 2);
+    assert!(page.get("page_token").is_none());
+    let (status, described) = post(
+        &app,
+        "/v1/table/prod%24users/version/describe",
+        json!({"version": 1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(described["version"]["version"], 1);
+    let (status, indices) = post(&app, "/v1/table/prod%24users/index/list", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(indices["indexes"][0]["index_name"], "id_idx");
+    assert_eq!(indices["indexes"][0]["columns"], json!(["id"]));
+    assert_eq!(indices["indexes"][0]["num_indexed_rows"], 3);
+    let (status, index_stats) =
+        post(&app, "/v1/table/prod%24users/index/id_idx/stats", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(index_stats["num_indexed_rows"], 3);
+    let (status, stats) = post(&app, "/v1/table/prod%24users/stats", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stats["num_rows"], 3);
+    assert_eq!(stats["num_indices"], 1);
+    assert_eq!(stats["fragment_stats"]["num_fragments"], 1);
+    assert_eq!(stats["fragment_stats"]["lengths"]["p50"], 3);
+    assert_eq!(
+        post(&app, "/v1/table/prod%24users/tags/list", json!({})).await,
+        (StatusCode::OK, json!({"tags": {}}))
+    );
+    assert_eq!(
+        post(&app, "/v1/table/prod%24users/branches/list", json!({})).await,
+        (StatusCode::OK, json!({"branches": {}}))
+    );
+    let (status, storage) = get(&app, "/catalog/v1/table/prod%24users/column-storage").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(storage["version"], 2);
+    assert_eq!(storage["columns"][0]["name"], "id");
+    assert_eq!(storage["columns"][1]["name"], "name");
+    assert_eq!(
+        storage["columns"][0]["bytes_on_disk"].as_i64().unwrap()
+            + storage["columns"][1]["bytes_on_disk"].as_i64().unwrap(),
+        stats["total_bytes"].as_i64().unwrap()
+    );
     assert_eq!(
         post(&app, "/v1/table/prod%24users/exists", json!({})).await,
         (StatusCode::OK, Value::Null)
@@ -207,6 +287,12 @@ async fn rest_catalog_routes() {
         )
         .await,
     );
+    error(StatusCode::NOT_FOUND, 4)(
+        post(&app, "/v1/table/prod%24gone/version/list", json!({})).await,
+    );
+    error(StatusCode::NOT_FOUND, 4)(
+        get(&app, "/catalog/v1/table/prod%24gone/column-storage").await,
+    );
     assert_eq!(
         post(&app, "/v1/table/prod%24gone/deregister", json!({}))
             .await
@@ -220,6 +306,10 @@ async fn rest_catalog_routes() {
         "/v1/table/prod%24users/drop",
         "/v1/table/prod%24users/query",
         "/v1/transaction/x/describe",
+        "/v1/table/prod%24users/tags/create",
+        "/v1/table/prod%24users/branches/create",
+        "/v1/table/prod%24users/version/create",
+        "/v1/table/prod%24users/create_index",
     ] {
         error(StatusCode::NOT_ACCEPTABLE, 0)(post(&app, uri, json!({})).await);
     }
