@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { BarChart3, Layers, ListTree, Table2, TableProperties, Trash2 } from "lucide-react";
+import { BarChart3, Layers, ListTree, SlidersHorizontal, Table2, TableProperties, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { ApiError, deregisterTable } from "@/lib/api";
 import {
@@ -9,6 +9,7 @@ import {
   useTableCheap,
   useTableDetail,
   useTableIndices,
+  useTableStorage,
   useTableVersions,
 } from "@/lib/catalog-queries";
 import { formatCount } from "@/lib/format";
@@ -25,10 +26,11 @@ import { ErrorState } from "@/components/error-state";
 import { DetailsSidebar } from "@/components/table/details-sidebar";
 import { IndicesTab } from "@/components/table/indices-tab";
 import { OverviewTab } from "@/components/table/overview-tab";
+import { PropertiesTab } from "@/components/table/properties-tab";
 import { SchemaTab } from "@/components/table/schema-tab";
 import { VersionsTab } from "@/components/table/versions-tab";
 
-const TABS = ["overview", "schema", "versions", "indices"] as const;
+const TABS = ["overview", "properties", "schema", "versions", "indices"] as const;
 type Tab = (typeof TABS)[number];
 
 export const Route = createFileRoute("/tables/$tableId")({
@@ -54,8 +56,11 @@ function TablePage({ tableId }: { tableId: string }) {
   const detail = useTableDetail(segments);
   const versions = useTableVersions(segments);
   const indices = useTableIndices(segments);
-  // Per-column storage reads every fragment; start it only once the rest of the page settled.
-  const columns = useColumnStorage(segments, !detail.isPending && !versions.isPending && !indices.isPending);
+  // Per-column storage and the storage listing read every fragment or object; start them only
+  // once the rest of the page settled.
+  const settled = !detail.isPending && !versions.isPending && !indices.isPending;
+  const columns = useColumnStorage(segments, settled);
+  const storage = useTableStorage(segments, settled);
 
   async function deregister() {
     try {
@@ -81,7 +86,13 @@ function TablePage({ tableId }: { tableId: string }) {
 
   const name = segments[segments.length - 1];
   const format = storageFormatVersion(detail.data?.metadata);
-  const tabIcon = { overview: BarChart3, schema: TableProperties, versions: Layers, indices: ListTree };
+  const tabIcon = {
+    overview: BarChart3,
+    properties: SlidersHorizontal,
+    schema: TableProperties,
+    versions: Layers,
+    indices: ListTree,
+  };
   const counts: Partial<Record<Tab, number | undefined>> = {
     schema: detail.data?.schema?.fields.length,
     versions: versions.data?.length,
@@ -157,7 +168,10 @@ function TablePage({ tableId }: { tableId: string }) {
             })}
           </TabsList>
           <TabsContent value="overview">
-            <OverviewTab detail={detail} versions={versions} indices={indices} columns={columns} />
+            <OverviewTab detail={detail} versions={versions} indices={indices} columns={columns} storage={storage} />
+          </TabsContent>
+          <TabsContent value="properties">
+            <PropertiesTab cheap={cheap} detail={detail} />
           </TabsContent>
           <TabsContent value="schema">
             <SchemaTab detail={detail} />

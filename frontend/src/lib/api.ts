@@ -15,6 +15,7 @@ import {
   listTableVersionsResponseSchema,
   listTablesResponseSchema,
   registerTableResponseSchema,
+  tableStorageResponseSchema,
   type ColumnStorageResponse,
   type CreateNamespaceResponse,
   type DeregisterTableResponse,
@@ -28,6 +29,7 @@ import {
   type ListTableVersionsResponse,
   type ListTablesResponse,
   type RegisterTableResponse,
+  type TableStorageResponse,
 } from "./schemas";
 
 const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
@@ -224,6 +226,12 @@ export function listTableBranches(table: readonly string[]): Promise<ListTableBr
 /** Catalog route: bytes on disk per top-level column. Reads every fragment, so it is slow. */
 export function getColumnStorage(table: readonly string[]): Promise<ColumnStorageResponse> {
   return request("GET", `/catalog/v1/table/${idPathSegment(table)}/column-storage`, columnStorageResponseSchema);
+}
+
+/** Catalog route: bytes on object storage under the table location, by file category, with
+ *  the configured storage price. Lists the whole dataset prefix, so it is slow. */
+export function getTableStorage(table: readonly string[]): Promise<TableStorageResponse> {
+  return request("GET", `/catalog/v1/table/${idPathSegment(table)}/storage`, tableStorageResponseSchema);
 }
 
 export function registerTable(

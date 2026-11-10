@@ -4,6 +4,7 @@ import { ID_DELIMITER, splitId } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 import { GlobalSearch } from "@/components/global-search";
 import { NamespaceTree } from "@/components/namespace-tree";
+import { PreferenceControls } from "@/components/preference-controls";
 
 /** Joined id of the current namespace or table page and the namespace chain to expand. */
 export function useCurrentLocation() {
@@ -60,6 +61,9 @@ export function AppSidebar({ className, onNavigate }: { className?: string; onNa
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         <NamespaceTree expanded={expanded} toggle={toggle} activeId={activeId} onNavigate={onNavigate} />
+      </div>
+      <div className="shrink-0 border-t px-4 py-3">
+        <PreferenceControls />
       </div>
     </aside>
   );

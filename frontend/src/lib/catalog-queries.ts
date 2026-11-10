@@ -4,6 +4,7 @@ import {
   describeTableCheap,
   followPages,
   getColumnStorage,
+  getTableStorage,
   listAllTableIndices,
   listAllTables,
   listNamespaces,
@@ -31,6 +32,7 @@ export const keys = {
   tableTags: (id: string) => ["table", id, "tags"] as const,
   tableBranches: (id: string) => ["table", id, "branches"] as const,
   tableColumns: (id: string) => ["table", id, "columns"] as const,
+  tableStorage: (id: string) => ["table", id, "storage"] as const,
 };
 
 const PAGE_SIZE = 100;
@@ -167,6 +169,15 @@ export function useColumnStorage(segments: readonly string[], enabled: boolean) 
   return useQuery({
     queryKey: keys.tableColumns(joinId(segments)),
     queryFn: () => getColumnStorage(segments),
+    enabled,
+  });
+}
+
+/** On-storage footprint and cost; slow (lists the dataset prefix), enabled like column storage. */
+export function useTableStorage(segments: readonly string[], enabled: boolean) {
+  return useQuery({
+    queryKey: keys.tableStorage(joinId(segments)),
+    queryFn: () => getTableStorage(segments),
     enabled,
   });
 }

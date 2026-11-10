@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   formatCompact,
+  formatCost,
   formatCount,
   formatDateTime,
+  formatGigabytes,
   formatPercent,
+  formatRate,
   formatRelative,
   parseTime,
 } from "./format";
@@ -70,7 +73,31 @@ describe("formatRelative", () => {
 });
 
 describe("formatDateTime", () => {
-  it("renders an absolute 24-hour time in the given zone", () => {
-    expect(formatDateTime(new Date("2026-11-10T14:03:22Z"), "UTC")).toBe("Nov 10, 2026, 14:03:22 UTC");
+  const d = new Date("2026-11-10T14:03:22Z");
+  it("renders an absolute 24-hour time in UTC when preferred", () => {
+    expect(formatDateTime(d, "utc")).toBe("Nov 10, 2026, 14:03:22 UTC");
+  });
+  it("renders local time with the local zone's offset", () => {
+    const local = formatDateTime(d, "local");
+    const hour = String(d.getHours()).padStart(2, "0");
+    expect(local).toContain(`${hour}:03:22`);
+    expect(formatDateTime(null, "utc")).toBe("—");
+  });
+});
+
+describe("storage cost formatting", () => {
+  it("prints decimal gigabytes", () => {
+    expect(formatGigabytes(19_069_123_456_789)).toBe("19,069 GB");
+    expect(formatGigabytes(990_123_456)).toBe("0.99 GB");
+    expect(formatGigabytes(null)).toBe("—");
+  });
+  it("prints the cost in cents and the rate at full precision", () => {
+    expect(formatCost(255.2875, "USD")).toBe("$255.29");
+    expect(formatCost(0, "USD")).toBe("$0.00");
+    expect(formatRate(0.0133875, "USD")).toBe("$0.0133875 / GB-month");
+    expect(formatRate(0.0065, "USD")).toBe("$0.0065 / GB-month");
+  });
+  it("falls back to the raw code for a non-ISO currency", () => {
+    expect(formatCost(1.5, "credits")).toBe("1.50 credits");
   });
 });

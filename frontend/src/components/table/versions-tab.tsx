@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Layers } from "lucide-react";
-import { formatBytes, formatCount, formatDateTime, formatRelative, parseTime } from "@/lib/format";
+import { formatBytes, formatCount, formatRelative, parseTime } from "@/lib/format";
+import { useDateTimeFormatter } from "@/lib/preferences";
 import { parseManifestSummary } from "@/lib/table-metadata";
 import type { TableVersion } from "@/lib/schemas";
 import { cn } from "@/lib/utils";
@@ -34,6 +35,7 @@ export function VersionsTab({
   currentVersion: number | null | undefined;
 }) {
   const [page, setPage] = useState(0);
+  const formatDateTime = useDateTimeFormatter();
   if (versions.error) return <ErrorState message={`Versions unavailable: ${versions.error.message}`} />;
   if (versions.isPending) {
     return (

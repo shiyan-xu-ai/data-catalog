@@ -7,13 +7,10 @@ import {
   OWNER,
   REGISTERED_AT,
   UPDATED_AT,
-  configEntries,
-  extraProperties,
   storageFormatVersion,
 } from "@/lib/table-metadata";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
-import { PropertiesList } from "@/components/properties-list";
 import { Timestamp } from "@/components/timestamp";
 
 function Group({ title, children }: { title: string; children: React.ReactNode }) {
@@ -107,16 +104,6 @@ export function DetailsSidebar({
             <Timestamp value={props[UPDATED_AT]} stacked />
           </Field>
         </div>
-      </Group>
-
-      <Group title="Properties">
-        <PropertiesList entries={extraProperties(props)} empty="No additional properties." />
-      </Group>
-
-      <Group title="Table configuration">
-        <Lance query={detail}>
-          {(d) => <PropertiesList entries={configEntries(d.metadata)} empty="No Lance table configuration." />}
-        </Lance>
       </Group>
 
       <Group title="Tags">

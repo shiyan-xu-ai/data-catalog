@@ -1,13 +1,14 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import { BarChart3, Database, FileStack, Layers, ListTree, Rows3, Trash2 } from "lucide-react";
-import { formatBytes, formatCount } from "@/lib/format";
-import {
-  parseManifestSummary,
-  topColumns,
-  totalIndexBytes,
-  versionSeries,
-} from "@/lib/table-metadata";
-import type { ColumnStorageResponse, DescribeTableResponse, IndexContent, TableVersion } from "@/lib/schemas";
+import { BarChart3, CircleDollarSign, Database, FileStack, HardDrive, Layers, ListTree, Rows3, Trash2 } from "lucide-react";
+import { formatBytes, formatCost, formatCount, formatGigabytes, formatPercent, formatRate } from "@/lib/format";
+import { parseManifestSummary, topColumns, totalIndexBytes, versionSeries } from "@/lib/table-metadata";
+import type {
+  ColumnStorageResponse,
+  DescribeTableResponse,
+  IndexContent,
+  TableStorageResponse,
+  TableVersion,
+} from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
@@ -21,6 +22,7 @@ function Kpi({
   label,
   value,
   sub,
+  note,
   loading,
   failed,
 }: {
@@ -28,8 +30,11 @@ function Kpi({
   label: string;
   value: string;
   sub?: string;
+  /** Qualifier printed under the figure, e.g. what it excludes. */
+  note?: string;
   loading?: boolean;
-  failed?: boolean;
+  /** Error message; the card shows "Unavailable" with the message on hover. */
+  failed?: string;
 }) {
   return (
     <div className="rounded-lg border bg-card p-4 shadow-xs">
@@ -42,11 +47,12 @@ function Kpi({
           <Skeleton className="mt-1.5 h-3 w-16" />
         </>
       ) : failed ? (
-        <div className="mt-2 text-sm text-muted-foreground">Unavailable</div>
+        <div className="mt-2 text-sm text-muted-foreground" title={failed}>Unavailable</div>
       ) : (
         <>
           <div className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{value}</div>
-          <div className="mt-0.5 h-4 truncate text-xs text-muted-foreground tabular-nums">{sub}</div>
+          <div className="mt-0.5 min-h-4 text-xs text-muted-foreground tabular-nums">{sub}</div>
+          {note && <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground/80">{note}</p>}
         </>
       )}
     </div>
@@ -67,42 +73,68 @@ export function OverviewTab({
   versions,
   indices,
   columns,
+  storage,
 }: {
   detail: UseQueryResult<DescribeTableResponse>;
   versions: UseQueryResult<TableVersion[]>;
   indices: UseQueryResult<IndexContent[]>;
   columns: UseQueryResult<ColumnStorageResponse>;
+  storage: UseQueryResult<TableStorageResponse>;
 }) {
   const s = parseManifestSummary(detail.data?.metadata);
   const indexBytes = indices.data ? totalIndexBytes(indices.data) : null;
   const series = versions.data ? versionSeries(versions.data) : [];
+  // The storage listing is enabled lazily, so "not loaded yet" covers both idle and fetching.
+  const storageLoading = !storage.data && !storage.error;
+  const pricing = storage.data?.pricing;
+  const onStorage = storage.data?.on_storage;
 
   return (
     <div className="@container space-y-6">
       {detail.error && <ErrorState message={`Lance metadata unavailable: ${detail.error.message}`} />}
-      <div className="grid grid-cols-2 gap-3 @xl:grid-cols-3 @5xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 @3xl:grid-cols-4">
         <Kpi
           icon={Rows3}
           label="Rows"
           value={formatCount(s.rows)}
           sub={s.fragments != null ? `${formatCount(s.fragments)} fragments` : undefined}
           loading={detail.isPending}
-          failed={!!detail.error}
+          failed={detail.error?.message}
         />
         <Kpi
           icon={Database}
-          label="Data size"
+          label="Current version data"
           value={formatBytes(s.dataBytes)}
-          sub="data files on disk"
+          sub={s.dataFiles != null ? `${formatCount(s.dataFiles)} data files` : undefined}
+          note="Excludes blob payloads, index files, and files kept only by older versions."
           loading={detail.isPending}
-          failed={!!detail.error}
+          failed={detail.error?.message}
+        />
+        <Kpi
+          icon={HardDrive}
+          label="Total on storage"
+          value={formatBytes(onStorage?.total_bytes)}
+          sub={onStorage ? `${formatGigabytes(onStorage.total_bytes)} · ${formatCount(onStorage.total_objects)} objects` : undefined}
+          note="Every object under the table location, across all versions."
+          loading={storageLoading}
+          failed={storage.error?.message}
+        />
+        <Kpi
+          icon={CircleDollarSign}
+          label="Est. monthly cost"
+          value={pricing ? formatCost(pricing.estimated_monthly_cost, pricing.currency) : "—"}
+          sub={pricing ? `${formatRate(pricing.price_per_gb_month, pricing.currency)} · ${pricing.tier}` : undefined}
+          note="Estimate; an upper bound if objects were auto-tiered to Infrequent. Excludes requests, retrieval, and egress."
+          loading={storageLoading}
+          failed={storage.error?.message}
         />
         <Kpi
           icon={FileStack}
           label="Data files"
           value={formatCount(s.dataFiles)}
+          sub="current version"
           loading={detail.isPending}
-          failed={!!detail.error}
+          failed={detail.error?.message}
         />
         <Kpi
           icon={Trash2}
@@ -110,7 +142,7 @@ export function OverviewTab({
           value={formatCount(s.deletedRows)}
           sub={s.deletionFiles != null ? `${formatCount(s.deletionFiles)} deletion files` : undefined}
           loading={detail.isPending}
-          failed={!!detail.error}
+          failed={detail.error?.message}
         />
         <Kpi
           icon={Layers}
@@ -118,7 +150,7 @@ export function OverviewTab({
           value={formatCount(versions.data?.length)}
           sub={detail.data?.version != null ? `current v${detail.data.version}` : undefined}
           loading={versions.isPending}
-          failed={!!versions.error}
+          failed={versions.error?.message}
         />
         <Kpi
           icon={ListTree}
@@ -126,18 +158,14 @@ export function OverviewTab({
           value={formatCount(indices.data?.length)}
           sub={indexBytes != null ? `${formatBytes(indexBytes)} on disk` : undefined}
           loading={indices.isPending}
-          failed={!!indices.error}
+          failed={indices.error?.message}
         />
       </div>
 
       <div className="grid gap-6 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section
           title="Storage by column"
-          description={
-            columns.data
-              ? `Bytes on disk per top-level column at version ${columns.data.version}`
-              : "Bytes on disk per top-level column"
-          }
+          description={`Current version data${columns.data ? ` (v${columns.data.version})` : ""} per top-level column; excludes blob payloads`}
         >
           {columns.error ? (
             <ErrorState message={columns.error.message} />
@@ -150,26 +178,18 @@ export function OverviewTab({
           )}
         </Section>
 
-        <Section title="Storage composition" description="Data and index files, from manifest and index sizes">
-          {detail.error ? (
-            <ErrorState message={detail.error.message} />
-          ) : detail.isPending || indices.isPending ? (
-            <ChartSkeleton />
+        <Section title="Storage composition" description="Every object under the table location, by file category">
+          {storage.error ? (
+            <ErrorState message={storage.error.message} />
+          ) : !storage.data ? (
+            <ChartSkeleton caption="Listing every object under the table location; large tables take several seconds." />
           ) : (
-            <StorageComposition
-              dataBytes={s.dataBytes}
-              dataFiles={s.dataFiles}
-              indexBytes={indexBytes}
-              indexCount={indices.data?.length ?? null}
-              indicesFailed={!!indices.error}
-              deletionFiles={s.deletionFiles}
-              deletedRows={s.deletedRows}
-            />
+            <StorageComposition onStorage={storage.data.on_storage} />
           )}
         </Section>
       </div>
 
-      <Section title="Growth" description="Rows and data size at every version">
+      <Section title="Growth" description="Rows and current-version data size at every version">
         {versions.error ? (
           <ErrorState message={versions.error.message} />
         ) : versions.isPending ? (
@@ -195,58 +215,43 @@ export function OverviewTab({
   );
 }
 
-/** Data vs index bytes. Deletion files carry no byte size in the manifest, so they are shown
- *  as counts only rather than as an estimated slice. */
-function StorageComposition({
-  dataBytes,
-  dataFiles,
-  indexBytes,
-  indexCount,
-  indicesFailed,
-  deletionFiles,
-  deletedRows,
-}: {
-  dataBytes: number | null;
-  dataFiles: number | null;
-  indexBytes: number | null;
-  indexCount: number | null;
-  indicesFailed: boolean;
-  deletionFiles: number | null;
-  deletedRows: number | null;
-}) {
-  const slices: StorageSlice[] = [];
-  if (dataBytes != null) slices.push({ key: "data", label: "Data files", bytes: dataBytes, color: "hsl(var(--chart-1))" });
-  if (indexBytes != null) slices.push({ key: "index", label: "Index files", bytes: indexBytes, color: "hsl(var(--chart-3))" });
+// Display order and colors for the route's categories; unknown names fall into the muted color.
+const CATEGORIES: Record<string, { label: string; color: string }> = {
+  data: { label: "Data files", color: "hsl(var(--chart-1))" },
+  blob: { label: "Blob files", color: "hsl(var(--chart-4))" },
+  index: { label: "Index files", color: "hsl(var(--chart-3))" },
+  deletion: { label: "Deletion files", color: "hsl(var(--chart-5))" },
+  manifest: { label: "Manifests", color: "hsl(var(--chart-2))" },
+  transaction: { label: "Transactions", color: "hsl(var(--chart-6))" },
+  other: { label: "Other", color: "hsl(var(--muted-foreground) / 0.5)" },
+};
+const ORDER = Object.keys(CATEGORIES);
 
-  const indexNote = indicesFailed
-    ? "Index list unavailable"
-    : indexCount === 0
-      ? "No indices"
-      : indexBytes == null
-        ? "Index sizes not reported"
-        : `${formatCount(indexCount)} ${indexCount === 1 ? "index" : "indices"}`;
+function StorageComposition({ onStorage }: { onStorage: TableStorageResponse["on_storage"] }) {
+  const rank = (name: string) => (ORDER.includes(name) ? ORDER.indexOf(name) : ORDER.length);
+  const categories = [...onStorage.categories].sort((a, b) => rank(a.name) - rank(b.name));
+  const style = (name: string) => CATEGORIES[name] ?? { label: name, color: "hsl(var(--muted-foreground) / 0.5)" };
+  const slices: StorageSlice[] = categories
+    .filter((c) => c.bytes > 0)
+    .map((c) => ({ key: c.name, label: style(c.name).label, bytes: c.bytes, color: style(c.name).color }));
 
   return (
     <div className="space-y-4">
-      {slices.every((x) => x.bytes === 0) ? (
-        <EmptyState icon={Database} title="No sizes recorded">The manifest records no file sizes.</EmptyState>
+      {slices.length === 0 ? (
+        <EmptyState icon={HardDrive} title="Nothing on storage">No objects were found under the table location.</EmptyState>
       ) : (
-        <StorageSplitChart slices={slices.filter((x) => x.bytes > 0)} />
+        <StorageSplitChart slices={slices} caption="on storage" />
       )}
       <div className="space-y-2">
-        <LegendItem
-          color="hsl(var(--chart-1))"
-          label="Data files"
-          value={formatBytes(dataBytes)}
-          note={dataFiles != null ? `${formatCount(dataFiles)} files` : undefined}
-        />
-        <LegendItem color="hsl(var(--chart-3))" label="Index files" value={formatBytes(indexBytes)} note={indexNote} />
-        <LegendItem
-          color="hsl(var(--muted-foreground) / 0.4)"
-          label="Deletion files"
-          value={`${formatCount(deletionFiles)} files`}
-          note={`${formatCount(deletedRows)} deleted rows · size not recorded`}
-        />
+        {categories.map((c) => (
+          <LegendItem
+            key={c.name}
+            color={style(c.name).color}
+            label={style(c.name).label}
+            value={formatBytes(c.bytes)}
+            note={`${formatCount(c.objects)} objects · ${formatPercent(onStorage.total_bytes ? c.bytes / onStorage.total_bytes : null)}`}
+          />
+        ))}
       </div>
     </div>
   );

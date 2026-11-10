@@ -1,8 +1,11 @@
-import { formatDateTime, formatRelative, parseTime } from "@/lib/format";
+import { formatRelative, parseTime } from "@/lib/format";
+import { useDateTimeFormatter } from "@/lib/preferences";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-/** Relative time with the absolute local time on hover; `stacked` also prints it below. */
+/** Relative time with the absolute time (in the preferred timezone) on hover; `stacked` also
+ *  prints it below. */
 export function Timestamp({ value, stacked = false }: { value: string | number | null | undefined; stacked?: boolean }) {
+  const formatDateTime = useDateTimeFormatter();
   const date = parseTime(value);
   if (!date) return <span className="text-muted-foreground">—</span>;
   const absolute = formatDateTime(date);

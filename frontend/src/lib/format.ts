@@ -64,8 +64,12 @@ export function formatRelative(date: Date | null, now: Date = new Date()): strin
   return DASH;
 }
 
-/** Absolute local time, e.g. `Nov 10, 2026, 14:03:22 PST`. `timeZone` is for tests. */
-export function formatDateTime(date: Date | null, timeZone?: string): string {
+/** Timezone preference for absolute times: the browser's zone or UTC. */
+export type TimeZonePref = "local" | "utc";
+
+/** Absolute time, e.g. `Nov 10, 2026, 14:03:22 PST`, in the preferred zone. Components use
+ *  `useDateTimeFormatter`, which supplies the stored preference. */
+export function formatDateTime(date: Date | null, zone: TimeZonePref): string {
   if (!date) return DASH;
   return date.toLocaleString("en-US", {
     year: "numeric",
@@ -76,6 +80,39 @@ export function formatDateTime(date: Date | null, timeZone?: string): string {
     second: "2-digit",
     hour12: false,
     timeZoneName: "short",
-    timeZone,
+    timeZone: zone === "utc" ? "UTC" : undefined,
   });
+}
+
+/** Decimal gigabytes, the unit storage is priced in: `19,069 GB`, `0.99 GB`. */
+export function formatGigabytes(bytes: number | null | undefined): string {
+  if (bytes == null) return DASH;
+  const gb = bytes / 1e9;
+  return `${gb.toLocaleString("en-US", { maximumFractionDigits: gb >= 100 ? 0 : 2 })} GB`;
+}
+
+function currencyFormat(amount: number, currency: string, maxDigits: number): string {
+  try {
+    return amount.toLocaleString("en-US", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: maxDigits,
+    });
+  } catch {
+    // Not an ISO 4217 code: print the number with the code as given.
+    return `${amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: maxDigits })} ${currency}`;
+  }
+}
+
+/** Monthly cost in whole cents: `$255.29`. */
+export function formatCost(amount: number | null | undefined, currency: string): string {
+  if (amount == null) return DASH;
+  return currencyFormat(amount, currency, 2);
+}
+
+/** Storage rate with its full precision: `$0.0133875 / GB-month`. */
+export function formatRate(pricePerGbMonth: number | null | undefined, currency: string): string {
+  if (pricePerGbMonth == null) return DASH;
+  return `${currencyFormat(pricePerGbMonth, currency, 8)} / GB-month`;
 }

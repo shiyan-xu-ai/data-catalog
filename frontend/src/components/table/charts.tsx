@@ -1,5 +1,6 @@
 import { Bar, BarChart, CartesianGrid, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
-import { formatBytes, formatCompact, formatCount, formatDateTime, formatPercent } from "@/lib/format";
+import { formatBytes, formatCompact, formatCount, formatPercent } from "@/lib/format";
+import { useDateTimeFormatter } from "@/lib/preferences";
 import type { ColumnSlice, VersionPoint } from "@/lib/table-metadata";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 
@@ -59,8 +60,8 @@ export interface StorageSlice {
   color: string;
 }
 
-/** Donut of measured storage; only slices with a recorded byte size are drawn. */
-export function StorageSplitChart({ slices }: { slices: StorageSlice[] }) {
+/** Donut of byte slices with the total in the center; callers pass only non-zero slices. */
+export function StorageSplitChart({ slices, caption }: { slices: StorageSlice[]; caption: string }) {
   const total = slices.reduce((s, x) => s + x.bytes, 0);
   const config = Object.fromEntries(slices.map((s) => [s.key, { label: s.label, color: s.color }])) satisfies ChartConfig;
   const data = slices.map((s) => ({ key: s.key, bytes: s.bytes, fill: `var(--color-${s.key})` }));
@@ -91,7 +92,7 @@ export function StorageSplitChart({ slices }: { slices: StorageSlice[] }) {
       </ChartContainer>
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-lg font-semibold tabular-nums">{formatBytes(total)}</span>
-        <span className="text-xs text-muted-foreground">measured</span>
+        <span className="text-xs text-muted-foreground">{caption}</span>
       </div>
     </div>
   );
@@ -105,6 +106,7 @@ const growthConfig = {
 /** Rows and data size per version on independent axes. */
 export function GrowthChart({ points }: { points: VersionPoint[] }) {
   const dots = points.length <= 60;
+  const formatDateTime = useDateTimeFormatter();
   return (
     <ChartContainer config={growthConfig} className="aspect-auto h-64 w-full">
       <LineChart data={points} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
