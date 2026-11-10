@@ -25,12 +25,15 @@ flowchart TB
 
 - `namespaces(path text[] primary key, parent_path → namespaces ON DELETE RESTRICT, properties)`.
   The root namespace is implicit and has no row.
-- `tables(namespace_path → namespaces ON DELETE RESTRICT, name, location, properties)`,
-  primary key `(namespace_path, name)`.
+- `tables(namespace_path → namespaces ON DELETE RESTRICT, name, location, properties,
+  owner, description, registered_at, updated_at)`, primary key `(namespace_path, name)`.
 
 Foreign keys make "parent must exist" and "drop only when empty" atomic under
-concurrent requests; primary keys enforce unique names per parent. The owner is an
-ordinary `owner` table property.
+concurrent requests; primary keys enforce unique names per parent. On the wire,
+owner and description are ordinary `owner` / `description` properties, and the
+timestamps are server-managed `catalog.registered_at` / `catalog.updated_at`
+properties (clients cannot set `catalog.*` keys). Overwrite re-registration
+advances `updated_at` only.
 
 ## Request handling
 
@@ -45,25 +48,35 @@ so `catalog-api` owns an axum router that follows the adapter's conventions:
 - Spec routes the catalog does not implement return `Unsupported` (code 0, 406).
 
 Supported operations: namespace list / describe / create / drop / exists; table
-list / list-all / register / describe / exists / deregister.
+list / list-all / register / describe / exists / deregister; read-only table
+stats, version list / describe, index list / stats, tag list, branch list. One
+catalog route outside `/v1`, `GET /catalog/v1/table/:id/column-storage`, returns
+bytes on disk per top-level column, which no spec model carries.
 
 - **Register** opens the location as a Lance dataset before inserting, so an
   unreadable URI never becomes a table.
 - **Describe** reads Postgres only, unless `load_detailed_metadata` is set; then
-  it opens the dataset and returns version, schema, and `stats`
-  (`num_fragments`, `num_deleted_rows`).
+  it opens the dataset and returns version, schema, `stats`, and `metadata`:
+  the current manifest summary, `config.*` table config entries, and
+  `lance.data_storage_version`.
+- **Lance read routes** (stats, versions, indices, tags, branches, column
+  storage) open the dataset on every request; nothing is cached. Stats and
+  column storage read field-level statistics and are slow on large tables. A
+  missing dataset returns `TableNotFound` (404).
 - **Lists** never open datasets. Pagination uses an exclusive start-after name
-  as `page_token`.
+  as `page_token` (version number for version lists).
 - **Deregister** deletes the catalog row only; source data is untouched.
+
+The catalog only ever opens datasets for reading.
 
 Datasets are opened with storage options built from the `AWS_*` environment and
 Secret Manager credentials. These are never returned to clients.
 
 ## Not implemented
 
-Data operations, catalog-managed versions and commits, tags, branches, indexes,
-transactions, rename/restore, credential vending, auxiliary datasets, and
-machine-client authentication (the service sits behind platform IAP).
+Data operations, catalog-managed versions and commits, tag / branch / index
+writes, transactions, rename/restore, credential vending, auxiliary datasets,
+and machine-client authentication (the service sits behind platform IAP).
 
 ## Deployment
 
