@@ -10,7 +10,9 @@ A left sidebar holds global search, the namespace tree, and, at the bottom, the
 theme (light, dark, system) and timezone (UTC, local) controls. It collapses to
 an icon rail (search, namespaces, theme, timezone). The collapsed state, theme,
 and timezone persist in `localStorage`, and every absolute timestamp renders in
-the chosen timezone. The top bar shows a breadcrumb.
+the chosen timezone. The top bar shows a breadcrumb. To the right of the
+sidebar, page content scrolls on its own above an optional bottom dock that a
+page can fill; the table page puts its SQL panel there.
 
 - **Namespace tree.** Expands lazily, one list request per opened namespace,
   with tables as leaves. The current namespace or table is highlighted and its
@@ -30,13 +32,15 @@ the chosen timezone. The top bar shows a breadcrumb.
   properties, drop an empty namespace, and register an existing Lance dataset by
   URI with an optional owner, description, and extra properties.
 - **Table page.** A header with the table name and format and version badges,
-  five tabs on the left (the active tab is in the `?tab=` query), and a SQL
-  panel on the right. The UI offers no deregistration; the API still does.
-  - **Overview:** rows; current-version data (the manifest's data-file size,
-    which excludes blob payloads, index files, and files kept only by older
-    versions); total bytes on storage and the estimated monthly storage cost
-    with its rate and tier (`GET /catalog/v1/table/{id}/storage`); data files,
-    deleted rows, version count, and index count. Charts: current-version bytes
+  five tabs (the active tab is in the `?tab=` query), and a SQL panel docked at
+  the bottom. The UI offers no deregistration; the API still does.
+  - **Overview:** tiles for rows, current-version data (the manifest's
+    data-file size), total bytes on storage, the estimated monthly storage cost
+    (`GET /catalog/v1/table/{id}/storage`), data files, deleted rows, version
+    count, and index count. Each tile keeps a short caption; a (?) tooltip
+    explains what the figure measures and excludes (for example blob payloads,
+    the rate and tier, and that the cost is an upper bound excluding requests
+    and egress). Charts: current-version bytes
     per column (`GET /catalog/v1/table/{id}/column-storage`), the on-storage
     composition by file category, and rows and data size over every version.
     Both catalog routes are slow, so they are requested only after the rest of
@@ -61,8 +65,11 @@ the chosen timezone. The top bar shows a breadcrumb.
   and shows column names and types, compact nested and binary values, row
   count, the queried version, elapsed time, a truncation notice past the
   server's row cap, and the server's error message. Cancel stops waiting; the
-  server's time limit ends the query. The panel collapses and widens by
-  dragging its left edge; both persist. The tabs stay usable while a query runs.
+  server's time limit ends the query. The dock spans the content width with
+  the editor on the left (about 40%) and scrollable results on the right
+  (stacked on narrow screens). Dragging its top edge resizes it, and it
+  collapses to a slim bar; height and collapsed state persist. The tabs stay
+  usable while a query runs.
 
 Catalog-recorded facts come from the cheap describe, and Lance-derived sections
 from the detailed describe and the version, index, tag, and branch routes. Each

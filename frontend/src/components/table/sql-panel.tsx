@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CircleHelp, Loader2, PanelRightClose, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
+import { Loader2, PanelBottomClose, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
 import { ApiError, runSql } from "@/lib/api";
 import { formatCount, parseTime } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
@@ -8,6 +8,7 @@ import { defaultQuery, formatCell, quoteIdent, shortTypeName, versionRef, type C
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HelpTooltip } from "@/components/help-tooltip";
 import { SqlEditor } from "@/components/sql-editor";
 
 const cellClass: Record<CellKind, string> = {
@@ -147,17 +148,42 @@ export function SqlPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-card text-card-foreground shadow-xs">
-      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+    <div className="flex h-full min-h-0 flex-col text-card-foreground">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5 md:px-6">
         <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
         <h2 className="text-sm font-semibold tracking-tight">SQL</h2>
         <Badge variant="outline">Read-only</Badge>
-        <div className="ml-auto flex min-w-0 items-center gap-1">
+        <div className="ml-2 flex items-center gap-2">
+          {running ? (
+            <Button size="sm" variant="outline" className="h-7" onClick={cancel}>
+              <Square /> Cancel
+            </Button>
+          ) : (
+            <Button size="sm" className="h-7" onClick={run} disabled={!query.trim()}>
+              <Play /> Run
+            </Button>
+          )}
+          {query !== initial && !running && (
+            <Button size="sm" variant="ghost" className="h-7" onClick={() => setQuery(initial)} title="Reset to the sample query">
+              <RotateCcw /> Reset
+            </Button>
+          )}
+          <span className="text-[11px] text-muted-foreground">
+            {running ? (
+              <span className="flex items-center gap-1.5 tabular-nums">
+                <Loader2 className="h-3 w-3 animate-spin" /> Running… {formatElapsed(now - (startedAt ?? now))}
+              </span>
+            ) : (
+              <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">⌘/Ctrl ↵</kbd>
+            )}
+          </span>
+        </div>
+        <div className="ml-auto flex min-w-0 items-center gap-1.5">
           <select
             aria-label="Table version to query"
             value={version ?? ""}
             onChange={(e) => setVersion(e.target.value === "" ? null : Number(e.target.value))}
-            className="h-7 min-w-0 max-w-56 truncate rounded-md border border-input bg-background px-2 text-xs shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            className="h-7 min-w-0 max-w-64 truncate rounded-md border border-input bg-background px-2 text-xs shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           >
             <option value="">{latest != null ? `Latest (v${latest})` : "Latest"}</option>
             {versions?.map((v) => (
@@ -167,80 +193,62 @@ export function SqlPanel({
               </option>
             ))}
           </select>
-          <span className="shrink-0 text-muted-foreground" title={versionHint} aria-label={versionHint}>
-            <CircleHelp className="h-3.5 w-3.5" />
-          </span>
+          <HelpTooltip label="About table versions in SQL">{versionHint}</HelpTooltip>
           <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onCollapse} aria-label="Collapse SQL panel" title="Collapse">
-            <PanelRightClose />
+            <PanelBottomClose />
           </Button>
         </div>
       </div>
 
-      <SqlEditor value={query} onChange={setQuery} onRun={run} schema={schema} className="h-40 shrink-0 border-b" />
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <SqlEditor
+          value={query}
+          onChange={setQuery}
+          onRun={run}
+          schema={schema}
+          className="h-32 shrink-0 border-b md:h-auto md:w-2/5 md:min-w-80 md:border-r md:border-b-0"
+        />
 
-      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-        {running ? (
-          <Button size="sm" variant="outline" onClick={cancel}>
-            <Square /> Cancel
-          </Button>
-        ) : (
-          <Button size="sm" onClick={run} disabled={!query.trim()}>
-            <Play /> Run
-          </Button>
-        )}
-        {query !== initial && !running && (
-          <Button size="sm" variant="ghost" onClick={() => setQuery(initial)} title="Reset to the sample query">
-            <RotateCcw /> Reset
-          </Button>
-        )}
-        <span className="ml-auto text-[11px] text-muted-foreground">
-          {running ? (
-            <span className="flex items-center gap-1.5 tabular-nums">
-              <Loader2 className="h-3 w-3 animate-spin" /> Running… {formatElapsed(now - (startedAt ?? now))}
-            </span>
-          ) : (
-            <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">⌘/Ctrl ↵</kbd>
-          )}
-        </span>
-      </div>
-
-      <div className={cn("min-h-0 flex-1 overflow-auto", running && "opacity-60")}>
-        {error ? (
-          <div className="m-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
-            <p className="text-sm font-medium">{errorTitle(error)}</p>
-            <pre className="mt-1.5 font-mono text-xs whitespace-pre-wrap break-words">{error.message}</pre>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className={cn("min-h-0 flex-1 overflow-auto", running && "opacity-60")}>
+            {error ? (
+              <div className="m-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+                <p className="text-sm font-medium">{errorTitle(error)}</p>
+                <pre className="mt-1.5 font-mono text-xs whitespace-pre-wrap break-words">{error.message}</pre>
+              </div>
+            ) : result ? (
+              <ResultGrid result={result} />
+            ) : (
+              <div className="space-y-2 p-4 text-xs text-muted-foreground">
+                <p>
+                  Run a query to see results. Only <span className="font-mono">SELECT</span> queries against this table
+                  run; results are capped at 1,000 rows.
+                </p>
+                <p>
+                  The version picker sets the version the table name reads. Reference another version as{" "}
+                  <code className="rounded bg-muted px-1 font-mono text-foreground">{exampleRef}</code>, e.g. to compare
+                  versions.
+                </p>
+              </div>
+            )}
           </div>
-        ) : result ? (
-          <ResultGrid result={result} />
-        ) : (
-          <div className="space-y-2 p-4 text-xs text-muted-foreground">
-            <p>
-              Run a query to see results. Only <span className="font-mono">SELECT</span> queries against this table run;
-              results are capped at 1,000 rows.
-            </p>
-            <p>
-              The picker above sets the version the table name reads. Reference another version as{" "}
-              <code className="rounded bg-muted px-1 font-mono text-foreground">{exampleRef}</code>, e.g. to compare
-              versions.
-            </p>
-          </div>
-        )}
-      </div>
 
-      {result && !error && (
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5 text-[11px] text-muted-foreground tabular-nums">
-          <span>
-            {formatCount(result.row_count)} row{result.row_count === 1 ? "" : "s"}
-          </span>
-          {result.version != null && <span>v{result.version}</span>}
-          <span>{formatElapsed(result.elapsed_ms)}</span>
-          {result.truncated && (
-            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
-              Truncated: showing the first {formatCount(result.rows.length)} rows
-            </span>
+          {result && !error && (
+            <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5 text-[11px] text-muted-foreground tabular-nums">
+              <span>
+                {formatCount(result.row_count)} row{result.row_count === 1 ? "" : "s"}
+              </span>
+              {result.version != null && <span>v{result.version}</span>}
+              <span>{formatElapsed(result.elapsed_ms)}</span>
+              {result.truncated && (
+                <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
+                  Truncated: showing the first {formatCount(result.rows.length)} rows
+                </span>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

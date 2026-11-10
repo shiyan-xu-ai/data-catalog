@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppSidebar, useCurrentLocation } from "@/components/app-sidebar";
+import { BottomDockProvider } from "@/components/bottom-dock";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -83,11 +84,13 @@ function RootComponent() {
             </Button>
             <Breadcrumb />
           </header>
-          <main className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-[1600px] px-4 py-6 md:px-8">
-              <Outlet />
-            </div>
-          </main>
+          <BottomDockProvider>
+            <main className="min-h-0 flex-1 overflow-y-auto">
+              <div className="mx-auto w-full max-w-[1600px] px-4 py-6 md:px-8">
+                <Outlet />
+              </div>
+            </main>
+          </BottomDockProvider>
         </div>
         <Toaster />
       </div>

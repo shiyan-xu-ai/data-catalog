@@ -1,6 +1,6 @@
 import { Suspense, lazy, useMemo } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { BarChart3, Layers, ListTree, PanelRightOpen, SlidersHorizontal, Table2, TableProperties } from "lucide-react";
+import { BarChart3, Layers, ListTree, PanelBottomOpen, SlidersHorizontal, Table2, TableProperties } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import {
   useColumnStorage,
@@ -18,6 +18,7 @@ import { storageFormatVersion } from "@/lib/table-metadata";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BottomDock } from "@/components/bottom-dock";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { IndicesTab } from "@/components/table/indices-tab";
@@ -32,10 +33,10 @@ const SqlPanel = lazy(() => import("@/components/table/sql-panel").then((m) => (
 const TABS = ["overview", "properties", "schema", "versions", "indices"] as const;
 type Tab = (typeof TABS)[number];
 
-const PANEL_MIN_WIDTH = 320;
-const PANEL_DEFAULT_WIDTH = 480;
-// Leave the tabs at least this much room when widening the SQL panel.
-const MAIN_MIN_WIDTH = 420;
+const DOCK_MIN_HEIGHT = 180;
+const DOCK_DEFAULT_HEIGHT = 340;
+// Leave the page content at least this much height when growing the SQL dock.
+const CONTENT_MIN_HEIGHT = 160;
 
 export const Route = createFileRoute("/tables/$tableId")({
   validateSearch: (search: Record<string, unknown>): { tab?: Tab } =>
@@ -49,8 +50,8 @@ function RouteComponent() {
   return <TablePage key={tableId} tableId={tableId} />;
 }
 
-/** Right-hand SQL panel: collapsible to a narrow tab and widened by dragging its left edge.
- *  Both choices persist. Below `lg` it stacks under the tabs at full width. */
+/** SQL panel docked under the page content, beside the left nav. It grows by dragging its top
+ *  edge and collapses to a slim bar; height and collapsed state persist. */
 function SqlDock({
   segments,
   columns,
@@ -62,20 +63,20 @@ function SqlDock({
   versions: readonly TableVersion[] | undefined;
   latestVersion: number | null | undefined;
 }) {
-  const [collapsed, setCollapsed] = useStoredState("sql-panel-collapsed", false);
-  const [width, setWidth] = useStoredState("sql-panel-width", PANEL_DEFAULT_WIDTH);
+  const [collapsed, setCollapsed] = useStoredState("sql-dock-collapsed", false);
+  const [height, setHeight] = useStoredState("sql-dock-height", DOCK_DEFAULT_HEIGHT);
 
   function startResize(e: React.PointerEvent<HTMLDivElement>) {
     e.preventDefault();
     const handle = e.currentTarget;
     handle.setPointerCapture(e.pointerId);
-    const startX = e.clientX;
-    // The page row (tabs + gap + panel) bounds how wide the panel may grow.
-    const row = handle.parentElement?.parentElement;
-    const max = Math.max(PANEL_MIN_WIDTH, (row?.clientWidth ?? window.innerWidth) - MAIN_MIN_WIDTH - 24);
-    const startWidth = width;
+    const startY = e.clientY;
+    const startHeight = height;
+    // handle → dock → dock slot → page column (top bar, scrolling content, dock).
+    const column = handle.parentElement?.parentElement?.parentElement;
+    const max = Math.max(DOCK_MIN_HEIGHT, (column?.clientHeight ?? window.innerHeight) - 56 - CONTENT_MIN_HEIGHT);
     const onMove = (ev: PointerEvent) =>
-      setWidth(Math.round(Math.min(max, Math.max(PANEL_MIN_WIDTH, startWidth + startX - ev.clientX))));
+      setHeight(Math.round(Math.min(max, Math.max(DOCK_MIN_HEIGHT, startHeight + startY - ev.clientY))));
     const onUp = () => {
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
@@ -90,28 +91,26 @@ function SqlDock({
         type="button"
         onClick={() => setCollapsed(false)}
         aria-label="Open SQL panel"
-        className="flex shrink-0 items-center gap-2 self-start rounded-lg border bg-card px-3 py-2 text-xs font-medium text-muted-foreground shadow-xs hover:text-foreground lg:sticky lg:top-6 lg:flex-col lg:px-1.5 lg:py-3"
+        className="flex h-9 w-full items-center gap-2 border-t bg-card px-4 text-xs font-medium text-muted-foreground hover:text-foreground md:px-6"
       >
-        <PanelRightOpen className="h-4 w-4" />
-        <span className="lg:[writing-mode:vertical-rl]">SQL</span>
+        <PanelBottomOpen className="h-4 w-4" />
+        SQL
+        <span className="font-normal text-muted-foreground/70">Read-only queries against this table</span>
       </button>
     );
   }
 
   return (
-    <div
-      className="relative h-[36rem] w-full shrink-0 lg:sticky lg:top-6 lg:h-[calc(100vh-3.5rem-3rem)] lg:w-[var(--sql-panel-width)]"
-      style={{ "--sql-panel-width": `${width}px` } as React.CSSProperties}
-    >
+    <div className="relative border-t bg-card" style={{ height }}>
       <div
         role="separator"
-        aria-orientation="vertical"
+        aria-orientation="horizontal"
         aria-label="Resize SQL panel"
         title="Drag to resize"
         onPointerDown={startResize}
-        className="absolute inset-y-0 -left-3 z-10 hidden w-3 cursor-col-resize lg:block after:absolute after:inset-y-4 after:left-1 after:w-0.5 after:rounded-full after:bg-transparent hover:after:bg-border"
+        className="absolute inset-x-0 -top-1.5 z-10 h-3 cursor-row-resize after:absolute after:top-1 after:left-1/2 after:h-1 after:w-12 after:-translate-x-1/2 after:rounded-full after:bg-border hover:after:bg-muted-foreground/50"
       />
-      <Suspense fallback={<Skeleton className="h-full w-full" />}>
+      <Suspense fallback={<Skeleton className="h-full w-full rounded-none" />}>
         <SqlPanel
           segments={segments}
           columns={columns}
@@ -165,8 +164,8 @@ function TablePage({ tableId }: { tableId: string }) {
   };
 
   return (
-    <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
-      <div className="min-w-0 flex-1 space-y-6">
+    <>
+      <div className="space-y-6">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
             <Table2 className="h-5 w-5 text-muted-foreground" />
@@ -229,12 +228,14 @@ function TablePage({ tableId }: { tableId: string }) {
         </Tabs>
       </div>
 
-      <SqlDock
-        segments={segments}
-        columns={columnNames}
-        versions={versions.data}
-        latestVersion={detail.data?.version}
-      />
-    </div>
+      <BottomDock>
+        <SqlDock
+          segments={segments}
+          columns={columnNames}
+          versions={versions.data}
+          latestVersion={detail.data?.version}
+        />
+      </BottomDock>
+    </>
   );
 }

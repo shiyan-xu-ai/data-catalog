@@ -10,6 +10,7 @@ import type {
   TableVersion,
 } from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
+import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
@@ -22,16 +23,17 @@ function Kpi({
   label,
   value,
   sub,
-  note,
+  help,
   loading,
   failed,
 }: {
   icon: typeof Rows3;
   label: string;
   value: string;
+  /** Short caption under the figure. */
   sub?: string;
-  /** Qualifier printed under the figure, e.g. what it excludes. */
-  note?: string;
+  /** What the figure measures and excludes, behind a (?) icon. */
+  help?: React.ReactNode;
   loading?: boolean;
   /** Error message; the card shows "Unavailable" with the message on hover. */
   failed?: string;
@@ -40,6 +42,7 @@ function Kpi({
     <div className="rounded-lg border bg-card p-4 shadow-xs">
       <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <Icon className="h-3.5 w-3.5" /> {label}
+        {help && <HelpTooltip label={`About ${label}`}>{help}</HelpTooltip>}
       </div>
       {loading ? (
         <>
@@ -51,8 +54,7 @@ function Kpi({
       ) : (
         <>
           <div className="mt-1 text-2xl font-semibold tracking-tight tabular-nums">{value}</div>
-          <div className="mt-0.5 min-h-4 text-xs text-muted-foreground tabular-nums">{sub}</div>
-          {note && <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground/80">{note}</p>}
+          <div className="mt-0.5 min-h-4 truncate text-xs text-muted-foreground tabular-nums">{sub}</div>
         </>
       )}
     </div>
@@ -98,6 +100,7 @@ export function OverviewTab({
           label="Rows"
           value={formatCount(s.rows)}
           sub={s.fragments != null ? `${formatCount(s.fragments)} fragments` : undefined}
+          help="Live rows in the current version (deleted rows excluded), from the manifest summary."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -106,7 +109,7 @@ export function OverviewTab({
           label="Current version data"
           value={formatBytes(s.dataBytes)}
           sub={s.dataFiles != null ? `${formatCount(s.dataFiles)} data files` : undefined}
-          note="Excludes blob payloads, index files, and files kept only by older versions."
+          help="Size of the data files the current version references, from the manifest summary. Excludes blob payloads, index files, and files kept only by older versions."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -114,8 +117,14 @@ export function OverviewTab({
           icon={HardDrive}
           label="Total on storage"
           value={formatBytes(onStorage?.total_bytes)}
-          sub={onStorage ? `${formatGigabytes(onStorage.total_bytes)} · ${formatCount(onStorage.total_objects)} objects` : undefined}
-          note="Every object under the table location, across all versions."
+          sub={onStorage ? `${formatCount(onStorage.total_objects)} objects` : undefined}
+          help={
+            <>
+              Every object under the table location across all versions, measured by listing the location
+              {onStorage ? ` (${formatGigabytes(onStorage.total_bytes)})` : ""}. Includes blob payloads, indices,
+              deletion files, manifests, and transactions.
+            </>
+          }
           loading={storageLoading}
           failed={storage.error?.message}
         />
@@ -123,8 +132,14 @@ export function OverviewTab({
           icon={CircleDollarSign}
           label="Est. monthly cost"
           value={pricing ? formatCost(pricing.estimated_monthly_cost, pricing.currency) : "—"}
-          sub={pricing ? `${formatRate(pricing.price_per_gb_month, pricing.currency)} · ${pricing.tier}` : undefined}
-          note="Estimate; an upper bound if objects were auto-tiered to Infrequent. Excludes requests, retrieval, and egress."
+          sub="storage only, estimate"
+          help={
+            <>
+              Total on storage × {pricing ? formatRate(pricing.price_per_gb_month, pricing.currency) : "the configured rate"}
+              {pricing ? ` (${pricing.tier})` : ""}. An upper bound if objects were auto-tiered to Infrequent. Excludes
+              requests, retrieval, and egress.
+            </>
+          }
           loading={storageLoading}
           failed={storage.error?.message}
         />
@@ -133,6 +148,7 @@ export function OverviewTab({
           label="Data files"
           value={formatCount(s.dataFiles)}
           sub="current version"
+          help="Data files referenced by the current version's fragments. Blob payload files are not counted."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -141,6 +157,7 @@ export function OverviewTab({
           label="Deleted rows"
           value={formatCount(s.deletedRows)}
           sub={s.deletionFiles != null ? `${formatCount(s.deletionFiles)} deletion files` : undefined}
+          help="Rows marked deleted by deletion files in the current version. They still occupy data files until compaction."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -149,6 +166,7 @@ export function OverviewTab({
           label="Versions"
           value={formatCount(versions.data?.length)}
           sub={detail.data?.version != null ? `current v${detail.data.version}` : undefined}
+          help="Table versions still listed in the dataset; versions removed by cleanup are not counted."
           loading={versions.isPending}
           failed={versions.error?.message}
         />
@@ -157,6 +175,7 @@ export function OverviewTab({
           label="Indices"
           value={formatCount(indices.data?.length)}
           sub={indexBytes != null ? `${formatBytes(indexBytes)} on disk` : undefined}
+          help="Indices on the current version. The size counts only the current index files, not files kept by older versions."
           loading={indices.isPending}
           failed={indices.error?.message}
         />
