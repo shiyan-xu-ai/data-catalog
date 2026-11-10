@@ -48,11 +48,14 @@ page can fill; the table page puts its SQL panel there.
       column (`GET /catalog/v1/table/{id}/column-storage`); blob payload files
       and index files are excluded, as its (?) help explains.
     - *Storage composition:* every object under the location by file category.
-    - *Fragments:* from the spec table stats (`POST /v1/table/{id}/stats`), a
-      box plot of physical rows per fragment (min, p25, median, p75, p99, max,
-      and mean) and the share of small fragments (fewer than 1,048,576 rows,
-      Lance's default compaction target), with a note when every fragment is
-      small.
+    - *Fragments:* from the spec table stats (`POST /v1/table/{id}/stats`), the
+      median rows per fragment over a range plot of physical rows per fragment
+      (whisker min to max, box p25 to p75, median line, mean diamond, p99
+      tick; hover a mark for its value) and a grid of the exact values, beside
+      the share of fragments with fewer than 1,048,576 rows (Lance's default
+      compaction target; fragments below it are compaction candidates). A
+      table's `lance.compaction.target_rows_per_fragment` override is shown
+      but not used, since the stats count against the fixed default.
     - *Trends:* rows and current-version data size over every version.
 
     Column storage, the storage listing, and table stats are slow, so they are

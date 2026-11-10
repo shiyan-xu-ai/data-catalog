@@ -125,28 +125,34 @@ export const COMPACTION_TARGET_ROWS = 1_048_576;
 
 export type FragmentLengths = TableStatsResponse["fragment_stats"]["lengths"];
 
-/** Smallest "nice" axis bound (1, 2, 2.5, or 5 × 10^k) at or above `value`. */
-export function niceCeil(value: number): number {
-  if (value <= 0) return 1;
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  for (const step of [1, 2, 2.5, 5, 10]) {
-    if (step * magnitude >= value) return step * magnitude;
+/** Axis from 0 with at most 4 equal intervals of a "nice" step (1, 2, 2.5, or 5 × 10^k, at
+ *  least 1 since rows are whole), using the smallest such step that covers `max`. */
+export function niceAxis(max: number): { axisMax: number; ticks: number[] } {
+  const target = Math.max(max, 1);
+  let magnitude = 10 ** Math.max(0, Math.floor(Math.log10(target / 4)));
+  for (;;) {
+    for (const m of [1, 2, 2.5, 5]) {
+      const step = m * magnitude;
+      if (!Number.isInteger(step)) continue;
+      const intervals = Math.max(1, Math.ceil(target / step));
+      if (intervals <= 4) return { axisMax: step * intervals, ticks: Array.from({ length: intervals + 1 }, (_, i) => i * step) };
+    }
+    magnitude *= 10;
   }
-  return 10 * magnitude;
 }
 
-/** Positions (percent of an axis from 0 to a nice bound above `max`) for a rows-per-fragment
- *  box plot, plus the axis ticks. */
+/** Positions (percent of a nice axis from 0) for a rows-per-fragment range plot, plus the
+ *  axis ticks. */
 export function fragmentBoxPlot(lengths: FragmentLengths): {
   axisMax: number;
   ticks: number[];
   pct: Record<keyof FragmentLengths, number>;
 } {
-  const axisMax = niceCeil(lengths.max);
+  const { axisMax, ticks } = niceAxis(lengths.max);
   const at = (v: number) => (v / axisMax) * 100;
   return {
     axisMax,
-    ticks: [0, 0.25, 0.5, 0.75, 1].map((f) => f * axisMax),
+    ticks,
     pct: {
       min: at(lengths.min),
       p25: at(lengths.p25),
@@ -157,4 +163,11 @@ export function fragmentBoxPlot(lengths: FragmentLengths): {
       mean: at(lengths.mean),
     },
   };
+}
+
+/** The table's `lance.compaction.target_rows_per_fragment` override from describe metadata
+ *  (`config.` prefixed), or null when unset or not a positive integer. */
+export function compactionTargetOverride(meta: Metadata): number | null {
+  const v = intOf(meta, "config.lance.compaction.target_rows_per_fragment");
+  return v != null && v > 0 ? v : null;
 }

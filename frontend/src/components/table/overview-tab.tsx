@@ -1,7 +1,14 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
 import { formatBytes, formatCost, formatCount, formatGigabytes, formatPercent, formatRate } from "@/lib/format";
-import { COMPACTION_TARGET_ROWS, parseManifestSummary, topColumns, totalIndexBytes, versionSeries } from "@/lib/table-metadata";
+import {
+  COMPACTION_TARGET_ROWS,
+  compactionTargetOverride,
+  parseManifestSummary,
+  topColumns,
+  totalIndexBytes,
+  versionSeries,
+} from "@/lib/table-metadata";
 import type {
   ColumnStorageResponse,
   DescribeTableResponse,
@@ -209,12 +216,11 @@ export function OverviewTab({
 
       <Section
         title="Fragments"
-        description="Physical rows per fragment in the current version"
         help={
           <>
-            From Lance GetTableStats (POST /v1/table/&#123;id&#125;/stats). Fragment row counts are physical rows,
-            including rows later marked deleted. A fragment is small when it has fewer than{" "}
-            {formatCount(COMPACTION_TARGET_ROWS)} rows, Lance&apos;s default compaction target.
+            From Lance GetTableStats. Rows per fragment are physical rows, including deleted rows. &apos;Small&apos;
+            uses Lance&apos;s default compaction target of {formatCount(COMPACTION_TARGET_ROWS)} rows (lance
+            CompactionOptions::default, overridable per table via lance.compaction.target_rows_per_fragment).
           </>
         }
       >
@@ -225,12 +231,15 @@ export function OverviewTab({
         ) : stats.data.fragment_stats.num_fragments === 0 ? (
           <EmptyState icon={BarChart3} title="No fragments">The current version has no data fragments.</EmptyState>
         ) : (
-          <div className="grid items-center gap-6 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          <div className="grid gap-6 @3xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             <FragmentBoxPlot lengths={stats.data.fragment_stats.lengths} />
-            <SmallFragmentShare
-              small={stats.data.fragment_stats.num_small_fragments}
-              total={stats.data.fragment_stats.num_fragments}
-            />
+            <div className="border-t pt-5 @3xl:border-t-0 @3xl:border-l @3xl:pt-0 @3xl:pl-6">
+              <SmallFragmentShare
+                small={stats.data.fragment_stats.num_small_fragments}
+                total={stats.data.fragment_stats.num_fragments}
+                targetOverride={compactionTargetOverride(detail.data?.metadata)}
+              />
+            </div>
           </div>
         )}
       </Section>
