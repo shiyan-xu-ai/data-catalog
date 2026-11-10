@@ -1,25 +1,32 @@
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
 import { formatCompact, formatCount, formatPercent } from "@/lib/format";
 import { COMPACTION_TARGET_ROWS, niceAxis, type FragmentLengths } from "@/lib/table-metadata";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 
-// Same chart config/styling as ColumnStorageChart so the Overview bars read alike.
-const rowsConfig = { rows: { label: "Rows per fragment", color: "hsl(var(--chart-1))" } } satisfies ChartConfig;
+// Same chart config/styling as ColumnStorageChart so the Overview bars read alike; the mean
+// gets its own color because it is not a percentile.
+const rowsConfig = {
+  rows: { label: "Rows per fragment", color: "hsl(var(--chart-1))" },
+  mean: { label: "Mean", color: "hsl(var(--chart-2))" },
+} satisfies ChartConfig;
 
 const STATS = [
   ["Min", "min"],
   ["P25", "p25"],
   ["Median", "p50"],
+  ["Mean", "mean"],
   ["P75", "p75"],
   ["P99", "p99"],
   ["Max", "max"],
-  ["Mean", "mean"],
 ] as const;
 
-/** Rows-per-fragment distribution: one horizontal bar per percentile, then the mean. */
+/** Rows-per-fragment distribution: one horizontal bar per statistic, ordered by value
+ *  (ties keep percentile order), with the mean highlighted. */
 export function FragmentDistributionChart({ lengths }: { lengths: FragmentLengths }) {
   const { axisMax, ticks } = niceAxis(lengths.max);
-  const data = STATS.map(([name, key]) => ({ name, rows: lengths[key] }));
+  const data = STATS.map(([name, key]) => ({ name, rows: lengths[key], isMean: key === "mean" })).sort(
+    (a, b) => a.rows - b.rows,
+  );
   return (
     <figure className="min-w-0" aria-label="Rows per fragment">
       <ChartContainer config={rowsConfig} className="aspect-auto w-full" style={{ height: data.length * 30 + 24 }}>
@@ -49,7 +56,11 @@ export function FragmentDistributionChart({ lengths }: { lengths: FragmentLength
               className: "fill-muted-foreground tabular-nums",
               formatter: (v: unknown) => formatCount(Number(v)),
             }}
-          />
+          >
+            {data.map((d) => (
+              <Cell key={d.name} fill={d.isMean ? "var(--color-mean)" : "var(--color-rows)"} />
+            ))}
+          </Bar>
         </BarChart>
       </ChartContainer>
     </figure>

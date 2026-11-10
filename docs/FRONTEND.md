@@ -50,8 +50,9 @@ page can fill; the table page puts its SQL panel there.
     - *Storage composition:* every object under the location by file category.
     - *Fragment distribution:* from the spec table stats
       (`POST /v1/table/{id}/stats`), horizontal bars of physical rows per
-      fragment at min, p25, median, p75, p99, max, and mean (styled like
-      Storage by column; hover a bar for its value), beside
+      fragment for min, p25, median, mean, p75, p99, and max, ordered by value
+      with the mean in its own color (styled like Storage by column; hover a
+      bar for its value), beside
       the share of fragments with fewer than 1,048,576 rows (Lance's default
       compaction target; fragments below it are compaction candidates). A
       table's `lance.compaction.target_rows_per_fragment` override is shown
