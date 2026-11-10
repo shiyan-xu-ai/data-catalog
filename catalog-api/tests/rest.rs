@@ -57,8 +57,11 @@ async fn rest_catalog_routes() {
     support::add_scalar_index(&users).await;
     let ui = tempfile::tempdir().unwrap();
     std::fs::write(ui.path().join("index.html"), "<html>catalog</html>").unwrap();
-    let pricing = catalog_api_lib::config::StoragePricing::default();
-    let app = catalog_api_lib::app(ns, pricing.clone(), ui.path().to_str());
+    let mut catalog = catalog_api_lib::config::CatalogConfig::default();
+    // A low row cap makes the three-row fixture exercise truncation.
+    catalog.sql.limits.max_rows = 2;
+    let pricing = catalog.storage_pricing.clone();
+    let app = catalog_api_lib::app(ns, catalog, ui.path().to_str());
 
     assert_eq!(get(&app, "/healthz").await.0, StatusCode::OK);
     assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK);
@@ -314,6 +317,58 @@ async fn rest_catalog_routes() {
     assert_eq!(price["currency"], "USD");
     let expected = total_bytes as f64 / 1e9 * pricing.price_per_gb_month;
     assert!((price["estimated_monthly_cost"].as_f64().unwrap() - expected).abs() < 1e-12);
+
+    // Read-only SQL over the table's leaf name: typed columns, Arrow JSON values, truncation.
+    let sql = |query: &str| json!({"sql": query});
+    let (status, mut typed) = post(
+        &app,
+        "/catalog/v1/table/prod%24users/sql",
+        sql("SELECT id, name, id * 2 AS doubled, NULL AS nothing FROM users WHERE id = 1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{typed}");
+    assert!(typed["elapsed_ms"].take().is_u64());
+    assert_eq!(
+        typed,
+        json!({
+            "columns": [
+                {"name": "id", "type": "Int32"},
+                {"name": "name", "type": "Utf8"},
+                {"name": "doubled", "type": "Int64"},
+                {"name": "nothing", "type": "Null"},
+            ],
+            "rows": [[1, "a", 2, null]],
+            "row_count": 1,
+            "truncated": false,
+            "elapsed_ms": null,
+        })
+    );
+    let (status, all) = post(
+        &app,
+        "/catalog/v1/table/prod%24users/sql",
+        sql("SELECT id FROM users ORDER BY id"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(all["rows"], json!([[1], [2]]));
+    assert_eq!(
+        (all["row_count"].as_u64(), all["truncated"].as_bool()),
+        (Some(2), Some(true))
+    );
+    let copied = data.path().join("copied.csv");
+    for statement in [
+        "CREATE TABLE t AS SELECT 1".to_string(),
+        "INSERT INTO users VALUES (4, 'd')".to_string(),
+        format!("COPY users TO '{}'", copied.display()),
+        "DROP TABLE users".to_string(),
+        "SELECT * FROM nope".to_string(),
+        String::new(),
+    ] {
+        error(StatusCode::BAD_REQUEST, 13)(
+            post(&app, "/catalog/v1/table/prod%24users/sql", sql(&statement)).await,
+        );
+    }
+    assert!(!copied.exists());
     assert_eq!(
         post(&app, "/v1/table/prod%24users/exists", json!({})).await,
         (StatusCode::OK, Value::Null)
@@ -345,6 +400,14 @@ async fn rest_catalog_routes() {
         get(&app, "/catalog/v1/table/prod%24gone/column-storage").await,
     );
     error(StatusCode::NOT_FOUND, 4)(get(&app, "/catalog/v1/table/prod%24gone/storage").await);
+    error(StatusCode::NOT_FOUND, 4)(
+        post(
+            &app,
+            "/catalog/v1/table/prod%24gone/sql",
+            json!({"sql": "SELECT 1"}),
+        )
+        .await,
+    );
     assert_eq!(
         post(&app, "/v1/table/prod%24gone/deregister", json!({}))
             .await

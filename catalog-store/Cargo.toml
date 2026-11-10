@@ -6,12 +6,14 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+arrow-json.workspace = true
 arrow-schema.workspace = true
 futures.workspace = true
 lance.workspace = true
 lance-index.workspace = true
 lance-namespace.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
 sqlx.workspace = true
 
 [dev-dependencies]

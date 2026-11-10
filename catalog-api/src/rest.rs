@@ -8,6 +8,7 @@
 //! the spec's Unsupported error.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::body::{to_bytes, Bytes};
 use axum::extract::{Path, Query, State};
@@ -32,8 +33,10 @@ use lance_namespace::models::{
 use lance_namespace::{Error, ErrorCode, LanceNamespace, NamespaceError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::sync::Semaphore;
 
-use crate::config::StoragePricing;
+use crate::config::{CatalogConfig, SqlConfig, StoragePricing};
 
 type Backend = Arc<dyn LanceNamespace>;
 type ApiResult<T> = Result<T, ApiError>;
@@ -74,21 +77,24 @@ pub fn router(backend: Backend) -> Router {
 struct Catalog {
     namespace: Arc<PostgresNamespace>,
     storage_pricing: Arc<StoragePricing>,
+    sql: Arc<SqlConfig>,
+    /// Per-instance cap on concurrent SQL queries.
+    sql_slots: Arc<Semaphore>,
 }
 
 /// Router for the catalog's own read-only routes; nest it at `/catalog/v1`.
-pub fn catalog_router(
-    namespace: Arc<PostgresNamespace>,
-    storage_pricing: StoragePricing,
-) -> Router {
+pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) -> Router {
     Router::new()
         .route("/table/:id/column-storage", get(column_storage))
         .route("/table/:id/storage", get(table_storage))
+        .route("/table/:id/sql", post(run_sql))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
         .with_state(Catalog {
             namespace,
-            storage_pricing: Arc::new(storage_pricing),
+            storage_pricing: Arc::new(config.storage_pricing),
+            sql_slots: Arc::new(Semaphore::new(config.sql.max_concurrent)),
+            sql: Arc::new(config.sql),
         })
 }
 
@@ -438,6 +444,66 @@ async fn table_storage(
             // Decimal GB, matching the rate card.
             estimated_monthly_cost: total_bytes as f64 / 1e9 * pricing.price_per_gb_month,
         },
+    }))
+}
+
+#[derive(Deserialize, Default)]
+struct SqlRequest {
+    #[serde(default)]
+    sql: String,
+}
+
+#[derive(Serialize)]
+struct SqlResponse {
+    columns: Vec<SqlColumnResponse>,
+    rows: Vec<Vec<Value>>,
+    row_count: usize,
+    truncated: bool,
+    elapsed_ms: u64,
+}
+
+#[derive(Serialize)]
+struct SqlColumnResponse {
+    name: String,
+    #[serde(rename = "type")]
+    data_type: String,
+}
+
+async fn run_sql(
+    State(catalog): State<Catalog>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<Json<SqlResponse>> {
+    let request: SqlRequest = parse_body(&body)?;
+    if request.sql.trim().is_empty() {
+        return Err(ApiError::invalid_input("sql is required".into()));
+    }
+    let _slot = catalog.sql_slots.try_acquire().map_err(|_| {
+        ApiError::from(Error::from(NamespaceError::Throttling {
+            message: format!(
+                "too many concurrent SQL queries (limit {}); retry shortly",
+                catalog.sql.max_concurrent
+            ),
+        }))
+    })?;
+    let started = Instant::now();
+    let result = catalog
+        .namespace
+        .query_sql(&parse_id(&id), &request.sql, &catalog.sql.limits)
+        .await?;
+    Ok(Json(SqlResponse {
+        columns: result
+            .columns
+            .into_iter()
+            .map(|c| SqlColumnResponse {
+                name: c.name,
+                data_type: c.data_type,
+            })
+            .collect(),
+        row_count: result.rows.len(),
+        rows: result.rows,
+        truncated: result.truncated,
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     }))
 }
 

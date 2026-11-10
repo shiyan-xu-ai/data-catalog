@@ -270,7 +270,11 @@ impl PostgresNamespace {
     }
 
     /// Opens a registered table's dataset, returning its location too.
-    async fn open_table(&self, id: &[String], version: Option<u64>) -> Result<(String, Dataset)> {
+    pub(crate) async fn open_table(
+        &self,
+        id: &[String],
+        version: Option<u64>,
+    ) -> Result<(String, Dataset)> {
         let location = self.table_row(id).await?.location;
         let dataset = self.open_registered(&location, version).await?;
         Ok((location, dataset))
@@ -1089,7 +1093,7 @@ impl Page {
     }
 }
 
-fn split_table_id(id: &[String]) -> Result<(&[String], &str)> {
+pub(crate) fn split_table_id(id: &[String]) -> Result<(&[String], &str)> {
     match id.split_last() {
         Some((name, namespace)) => Ok((namespace, name)),
         None => Err(invalid_input("table id must not be empty".into())),
@@ -1122,7 +1126,7 @@ fn saturating_i32(n: usize) -> i32 {
     i32::try_from(n).unwrap_or(i32::MAX)
 }
 
-fn invalid_input(message: String) -> Error {
+pub(crate) fn invalid_input(message: String) -> Error {
     NamespaceError::InvalidInput { message }.into()
 }
 
@@ -1198,7 +1202,7 @@ fn reject_branch(branch: Option<&str>) -> Result<()> {
     }
 }
 
-fn internal(message: String) -> Error {
+pub(crate) fn internal(message: String) -> Error {
     NamespaceError::Internal { message }.into()
 }
 

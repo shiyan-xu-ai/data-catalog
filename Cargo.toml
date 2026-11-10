@@ -19,6 +19,7 @@ lance-index = "14.0.2"
 futures = "0.3"
 arrow-array = "58.0.0"
 arrow-schema = "58.0.0"
+arrow-json = "58.0.0"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json"] }
 tempfile = "3"
 tracing = "0.1"

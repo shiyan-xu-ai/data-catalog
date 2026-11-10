@@ -1051,6 +1051,7 @@ name = "catalog-store"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
+ "arrow-json",
  "arrow-schema",
  "async-trait",
  "futures",

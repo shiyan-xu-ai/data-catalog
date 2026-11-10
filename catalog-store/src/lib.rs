@@ -1,6 +1,7 @@
 //! Postgres-backed Lance namespace: the catalog metastore and its migrations.
 
 mod namespace;
+mod sql;
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -11,6 +12,7 @@ pub use namespace::{
     ColumnBytes, ColumnStorage, PostgresNamespace, StorageCategory, StorageFootprint,
     STORAGE_CATEGORIES,
 };
+pub use sql::{SqlColumn, SqlLimits, SqlResult};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 

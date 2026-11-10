@@ -1,6 +1,10 @@
 //! Env-var driven configuration for `catalog-api` on Apps Platform (Cloud Run).
 
+use std::str::FromStr;
+use std::time::Duration;
+
 use anyhow::{Context, Result};
+use catalog_store::SqlLimits;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -15,8 +19,71 @@ pub struct AppConfig {
     /// Directory holding the built frontend (`CATALOG_WEBUI_DIR`, default `frontend/dist`).
     /// Served at `/` when it contains an `index.html`.
     pub webui_dir: String,
+    /// Settings of the `/catalog/v1` routes.
+    pub catalog: CatalogConfig,
+}
+
+/// Settings of the `/catalog/v1` routes.
+#[derive(Debug, Clone, Default)]
+pub struct CatalogConfig {
     /// Object-storage rate used for the storage cost estimate.
     pub storage_pricing: StoragePricing,
+    pub sql: SqlConfig,
+}
+
+impl CatalogConfig {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            storage_pricing: StoragePricing::from_env()?,
+            sql: SqlConfig::from_env()?,
+        })
+    }
+}
+
+/// Limits of the SQL route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlConfig {
+    /// `CATALOG_SQL_MAX_ROWS` (1000), `CATALOG_SQL_TIMEOUT_SECS` (60), and
+    /// `CATALOG_SQL_MEMORY_LIMIT_MB` (512).
+    pub limits: SqlLimits,
+    /// Queries running at once per instance (`CATALOG_SQL_MAX_CONCURRENT`, 2); more are throttled.
+    pub max_concurrent: usize,
+}
+
+impl Default for SqlConfig {
+    fn default() -> Self {
+        Self {
+            limits: SqlLimits {
+                max_rows: 1000,
+                timeout: Duration::from_secs(60),
+                memory_limit_bytes: 512 << 20,
+            },
+            max_concurrent: 2,
+        }
+    }
+}
+
+impl SqlConfig {
+    pub fn from_env() -> Result<Self> {
+        let default = Self::default();
+        let memory_limit_mb: usize = positive_env(
+            "CATALOG_SQL_MEMORY_LIMIT_MB",
+            default.limits.memory_limit_bytes >> 20,
+        )?;
+        Ok(Self {
+            limits: SqlLimits {
+                max_rows: positive_env("CATALOG_SQL_MAX_ROWS", default.limits.max_rows)?,
+                timeout: Duration::from_secs(positive_env(
+                    "CATALOG_SQL_TIMEOUT_SECS",
+                    default.limits.timeout.as_secs(),
+                )?),
+                memory_limit_bytes: memory_limit_mb
+                    .checked_mul(1 << 20)
+                    .context("CATALOG_SQL_MEMORY_LIMIT_MB is too large")?,
+            },
+            max_concurrent: positive_env("CATALOG_SQL_MAX_CONCURRENT", default.max_concurrent)?,
+        })
+    }
 }
 
 /// Object-storage price surfaced by the storage route, so the UI never hard-codes a rate.
@@ -71,11 +138,23 @@ impl AppConfig {
                 .ok()
                 .filter(|s| !s.is_empty()),
             webui_dir: env_or("CATALOG_WEBUI_DIR", "frontend/dist"),
-            storage_pricing: StoragePricing::from_env()?,
+            catalog: CatalogConfig::from_env()?,
         })
     }
 }
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// A positive integer from `name`, or `default` when unset.
+fn positive_env<T: FromStr + PartialOrd + Default>(name: &str, default: T) -> Result<T> {
+    match std::env::var(name) {
+        Ok(raw) => raw
+            .parse::<T>()
+            .ok()
+            .filter(|n| *n > T::default())
+            .with_context(|| format!("{name} must be a positive integer, got {raw:?}")),
+        Err(_) => Ok(default),
+    }
 }

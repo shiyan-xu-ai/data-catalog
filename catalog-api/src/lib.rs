@@ -14,13 +14,13 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::Router;
 use catalog_store::PostgresNamespace;
-use config::StoragePricing;
+use config::CatalogConfig;
 
 /// The full service: health probes, the `/v1` spec routes, the `/catalog/v1` catalog routes, and
 /// the SPA when `webui_dir` holds a build.
 pub fn app(
     namespace: Arc<PostgresNamespace>,
-    storage_pricing: StoragePricing,
+    catalog: CatalogConfig,
     webui_dir: Option<&str>,
 ) -> Router {
     let mut router = Router::new()
@@ -28,7 +28,7 @@ pub fn app(
         .route("/readyz", get(readyz).with_state(namespace.clone()))
         .nest(
             "/catalog/v1",
-            rest::catalog_router(namespace.clone(), storage_pricing),
+            rest::catalog_router(namespace.clone(), catalog),
         )
         .nest("/v1", rest::router(namespace));
     if let Some(ui) = webui_dir.and_then(webui::router) {
