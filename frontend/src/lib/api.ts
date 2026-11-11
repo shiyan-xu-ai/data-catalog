@@ -2,9 +2,7 @@ import { idPathSegment } from "./ids";
 import { z } from "zod";
 import {
   columnStorageResponseSchema,
-  createNamespaceResponseSchema,
   describeNamespaceResponseSchema,
-  dropNamespaceResponseSchema,
   describeTableResponseSchema,
   errorResponseSchema,
   listNamespacesResponseSchema,
@@ -13,16 +11,13 @@ import {
   listTableTagsResponseSchema,
   listTableVersionsResponseSchema,
   listTablesResponseSchema,
-  registerTableResponseSchema,
   sqlResponseSchema,
   tableStatsResponseSchema,
   tableStorageResponseSchema,
   timelineResponseSchema,
   type TimelineResponse,
   type ColumnStorageResponse,
-  type CreateNamespaceResponse,
   type DescribeNamespaceResponse,
-  type DropNamespaceResponse,
   type DescribeTableResponse,
   type IndexContent,
   type ListNamespacesResponse,
@@ -30,7 +25,6 @@ import {
   type ListTableTagsResponse,
   type ListTableVersionsResponse,
   type ListTablesResponse,
-  type RegisterTableResponse,
   type SqlResponse,
   type TableStatsResponse,
   type TableStorageResponse,
@@ -148,19 +142,6 @@ export function describeNamespace(ns: readonly string[]): Promise<DescribeNamesp
   return request("POST", `/v1/namespace/${idPathSegment(ns)}/describe`, describeNamespaceResponseSchema, {});
 }
 
-export function createNamespace(
-  ns: readonly string[],
-  properties?: Record<string, string>,
-): Promise<CreateNamespaceResponse> {
-  return request("POST", `/v1/namespace/${idPathSegment(ns)}/create`, createNamespaceResponseSchema, {
-    ...(properties && Object.keys(properties).length ? { properties } : {}),
-  });
-}
-
-export function dropNamespace(ns: readonly string[]): Promise<DropNamespaceResponse> {
-  return request("POST", `/v1/namespace/${idPathSegment(ns)}/drop`, dropNamespaceResponseSchema, {});
-}
-
 export function listTables(
   ns: readonly string[],
   pageToken?: string | null,
@@ -257,17 +238,6 @@ export function getTableTimeline(
     `/catalog/v1/table/${idPathSegment(table)}/timeline${pageQuery(pageToken, limit)}`,
     timelineResponseSchema,
   );
-}
-
-export function registerTable(
-  table: readonly string[],
-  location: string,
-  properties?: Record<string, string>,
-): Promise<RegisterTableResponse> {
-  return request("POST", `/v1/table/${idPathSegment(table)}/register`, registerTableResponseSchema, {
-    location,
-    ...(properties && Object.keys(properties).length ? { properties } : {}),
-  });
 }
 
 /** Catalog route: run one read-only SQL query. The plain table name reads `version` (the latest

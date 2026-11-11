@@ -29,15 +29,13 @@ page can fill; the table page puts its SQL panel there.
   breadcrumb), child namespaces, and a table list with name, description,
   owner, location, and registered and updated times. Each row fills from a cheap
   describe (Postgres only) once it scrolls into view, at most six at a time, so
-  listing never opens a dataset. Actions: create a namespace with optional
-  properties, drop an empty namespace, and register an existing Lance dataset by
-  URI with an optional owner, description, and extra properties.
+  listing never opens a dataset. The page is read-only: namespaces are
+  created and dropped, and tables registered, through the API.
 - **Table page.** A header with the table name and the storage format and
   current version badges (the namespace path is in the breadcrumb), six tabs
   (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
-  docked at the bottom. The UI offers no
-  deregistration; the API still does.
+  docked at the bottom. The UI offers no deregistration.
   - **Overview:** six tiles: rows (with fragment count), current-version data
     (the manifest's data-file size and count), deleted rows, current index size,
     total bytes on storage, and the estimated monthly storage cost

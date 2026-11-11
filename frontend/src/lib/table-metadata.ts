@@ -3,7 +3,6 @@ import type { IndexContent, TableStatsResponse, TableVersion } from "./schemas";
 type Metadata = Record<string, string> | null | undefined;
 
 // Server-managed catalog properties (`catalog.` prefix is reserved) and ordinary well-known ones.
-export const CATALOG_PREFIX = "catalog.";
 export const REGISTERED_AT = "catalog.registered_at";
 export const UPDATED_AT = "catalog.updated_at";
 export const OWNER = "owner";

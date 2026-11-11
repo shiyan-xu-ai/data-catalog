@@ -3,7 +3,6 @@ import {
   columnStorageResponseSchema,
   describeNamespaceResponseSchema,
   describeTableResponseSchema,
-  dropNamespaceResponseSchema,
   errorResponseSchema,
   listNamespacesResponseSchema,
   listTableBranchesResponseSchema,
@@ -115,11 +114,5 @@ describe("errorResponseSchema", () => {
   it("parses spec error bodies", () => {
     expect(errorResponseSchema.parse({ error: "not empty", code: 3 })).toEqual({ error: "not empty", code: 3 });
     expect(errorResponseSchema.parse({ code: 18 }).code).toBe(18);
-  });
-});
-
-describe("dropNamespaceResponseSchema", () => {
-  it("accepts an empty body", () => {
-    expect(dropNamespaceResponseSchema.parse({})).toEqual({});
   });
 });

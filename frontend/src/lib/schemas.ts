@@ -43,22 +43,6 @@ export const describeNamespaceResponseSchema = z.object({
 });
 export type DescribeNamespaceResponse = z.infer<typeof describeNamespaceResponseSchema>;
 
-export const createNamespaceResponseSchema = z.object({
-  properties: propertiesSchema.nullish(),
-});
-export type CreateNamespaceResponse = z.infer<typeof createNamespaceResponseSchema>;
-
-export const dropNamespaceResponseSchema = z.object({
-  properties: propertiesSchema.nullish(),
-});
-export type DropNamespaceResponse = z.infer<typeof dropNamespaceResponseSchema>;
-
-export const registerTableResponseSchema = z.object({
-  location: z.string().nullish(),
-  properties: propertiesSchema.nullish(),
-});
-export type RegisterTableResponse = z.infer<typeof registerTableResponseSchema>;
-
 /** Catalog route `POST /catalog/v1/table/{id}/sql` (not a spec model). Row values follow
  *  Arrow's JSON writer, so they stay `unknown` until formatted per column type. `version` is
  *  the table version the plain table name read. */

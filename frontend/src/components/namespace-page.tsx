@@ -1,9 +1,7 @@
-import { useState } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Folder, FolderPlus, Table2, Trash2, Upload } from "lucide-react";
-import { toast } from "sonner";
-import { ApiError, describeNamespace, dropNamespace } from "@/lib/api";
+import { Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { Folder, Table2 } from "lucide-react";
+import { describeNamespace } from "@/lib/api";
 import {
   keys,
   useChildNamespaces,
@@ -11,19 +9,15 @@ import {
   useTableCheap,
   type PagedNames,
 } from "@/lib/catalog-queries";
-import { displayName, joinId } from "@/lib/ids";
-import { ErrorCode } from "@/lib/schemas";
+import { joinId } from "@/lib/ids";
 import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT } from "@/lib/table-metadata";
 import { useInView } from "@/lib/use-in-view";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ConfirmDialog } from "@/components/confirm-dialog";
-import { CreateNamespaceDialog } from "@/components/create-namespace-dialog";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { PropertiesList } from "@/components/properties-list";
-import { RegisterDialog } from "@/components/register-dialog";
 import { Section } from "@/components/section";
 import { Timestamp } from "@/components/timestamp";
 
@@ -103,17 +97,11 @@ function TableListRow({ segments }: { segments: string[] }) {
   );
 }
 
-/** Namespace page; the catalog root when `segments` is empty. Tables live only in nested
- *  namespaces (the root has no catalog row), so table actions are hidden at the root. */
+/** Namespace page; the catalog root when `segments` is empty. Read-only: namespaces and tables
+ *  are created and registered through the API. Tables live only in nested namespaces. */
 export function NamespacePage({ segments }: { segments: readonly string[] }) {
-  const qc = useQueryClient();
-  const navigate = useNavigate();
-  const [createOpen, setCreateOpen] = useState(false);
-  const [registerOpen, setRegisterOpen] = useState(false);
   const isRoot = segments.length === 0;
   const id = joinId(segments);
-  const parent = segments.slice(0, -1);
-
   const describe = useQuery({
     queryKey: keys.namespace(id),
     queryFn: () => describeNamespace(segments),
@@ -121,68 +109,16 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
   });
   const children = useChildNamespaces(segments);
   const tables = useNamespaceTables(segments);
-
-  async function drop() {
-    try {
-      await dropNamespace(segments);
-    } catch (e) {
-      if (e instanceof ApiError && e.code === ErrorCode.NamespaceNotEmpty) {
-        toast.error(
-          `"${displayName(segments)}" is not empty. Drop its child namespaces and deregister its tables (through the API) first.`,
-        );
-      } else {
-        toast.error((e as Error).message);
-      }
-      throw e;
-    }
-    toast.success(`Dropped namespace "${displayName(segments)}"`);
-    qc.removeQueries({ queryKey: keys.namespace(id) });
-    qc.invalidateQueries({ queryKey: keys.namespaces(joinId(parent)) });
-    qc.invalidateQueries({ queryKey: keys.allNamespaces });
-    navigate(parent.length ? { to: "/namespaces/$nsId", params: { nsId: joinId(parent) } } : { to: "/namespaces" });
-  }
-
   const name = isRoot ? "Catalog" : segments[segments.length - 1];
   const nsEntries = Object.entries(describe.data?.properties ?? {}).sort(([a], [b]) => a.localeCompare(b));
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
-            <Folder className="h-5 w-5 text-muted-foreground" />
-          </div>
-          <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">{name}</h1>
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
+          <Folder className="h-5 w-5 text-muted-foreground" />
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => setCreateOpen(true)}>
-            <FolderPlus /> New namespace
-          </Button>
-          {!isRoot && (
-            <>
-              <Button onClick={() => setRegisterOpen(true)}>
-                <Upload /> Register table
-              </Button>
-              <ConfirmDialog
-                trigger={
-                  <Button variant="outline" className="text-destructive hover:text-destructive">
-                    <Trash2 /> Drop
-                  </Button>
-                }
-                title="Drop namespace"
-                description={
-                  <>
-                    Drop <span className="font-mono text-foreground">{displayName(segments)}</span>? Only
-                    empty namespaces can be dropped.
-                  </>
-                }
-                confirmLabel="Drop namespace"
-                destructive
-                onConfirm={drop}
-              />
-            </>
-          )}
-        </div>
+        <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight">{name}</h1>
       </div>
 
       {describe.error && <ErrorState message={describe.error.message} />}
@@ -208,7 +144,7 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
             {tables.names.length === 0 ? (
               <div className="px-4 pb-4">
                 <EmptyState icon={Table2} title="No tables">
-                  Register an existing Lance dataset to add one.
+                  No tables are registered in this namespace.
                 </EmptyState>
               </div>
             ) : (
@@ -238,7 +174,7 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
         <ListStatus query={children}>
           {children.names.length === 0 ? (
             <EmptyState icon={Folder} title="No namespaces">
-              {isRoot ? "Create a namespace to start registering tables." : "This namespace has no children."}
+              {isRoot ? "No namespaces exist yet." : "This namespace has no children."}
             </EmptyState>
           ) : (
             <ul className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-2">
@@ -258,9 +194,6 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
           )}
         </ListStatus>
       </Section>
-
-      <CreateNamespaceDialog parent={segments} open={createOpen} onOpenChange={setCreateOpen} />
-      {!isRoot && <RegisterDialog namespace={segments} open={registerOpen} onOpenChange={setRegisterOpen} />}
     </div>
   );
 }

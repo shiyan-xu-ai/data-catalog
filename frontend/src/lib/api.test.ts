@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError, apiErrorFrom, decodeBody, followPages } from "./api";
-import { ErrorCode, dropNamespaceResponseSchema, listTablesResponseSchema } from "./schemas";
+import { ErrorCode, describeNamespaceResponseSchema, listTablesResponseSchema } from "./schemas";
 
 describe("apiErrorFrom", () => {
   it("uses the spec error message and code", () => {
@@ -20,7 +20,7 @@ describe("decodeBody", () => {
   const schema = listTablesResponseSchema;
   it("parses a valid body and treats an empty body as {}", () => {
     expect(decodeBody(200, '{"tables":["t"]}', schema).tables).toEqual(["t"]);
-    expect(decodeBody(200, "", dropNamespaceResponseSchema)).toEqual({});
+    expect(decodeBody(200, "", describeNamespaceResponseSchema)).toEqual({});
   });
   it("raises ApiError for malformed JSON and for shape mismatches", () => {
     expect(() => decodeBody(200, "<html>", schema)).toThrow(ApiError);
