@@ -1,10 +1,12 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const { version } = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "utf8")) as { version: string };
 
 // Dev-server proxy: `/v1` and `/catalog` are forwarded to a locally-running catalog-api on
 // :8080. In production the built dist/ is served by catalog-api itself at the same origin,
@@ -20,6 +22,9 @@ export default defineConfig({
     }),
     react(),
   ],
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

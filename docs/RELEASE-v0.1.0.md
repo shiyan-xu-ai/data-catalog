@@ -1,117 +1,53 @@
-# Release notes — v1.0.0
+# Release notes — v0.1.0
 
-First release of the Lance data catalog service.
+First versioned release of the Lance REST catalog: a Postgres-backed catalog for
+existing Lance datasets, with a web UI and read-only SQL. The supported surface
+is documented in [README.md](../README.md) and
+[ARCHITECTURE.md](../ARCHITECTURE.md).
 
-> Historical release notes. The supported surface is documented in
-> [README.md](../README.md) and [ARCHITECTURE.md](../ARCHITECTURE.md).
+## Catalog
 
-## Current changes
+- **Postgres metastore.** Nested namespaces and table registrations (location,
+  owner, description, properties, registered and updated times) live in
+  Postgres. Lance manifests stay authoritative for table state.
+- **Lance REST Catalog routes.** Namespace list, describe, create, drop, and
+  exists; table list, list-all, register, describe, exists, and deregister;
+  read-only table stats, version list and describe, index list and stats, and
+  tag and branch lists. Other spec operations return `Unsupported`.
+- **Read-only by construction.** Registration opens a dataset to validate it.
+  No route writes to a registered dataset.
 
-- Removed TTL policies, protection, dry-run/apply/audit APIs, and source-delete helpers.
-- Removed bucket overview, its storage-scan dataset, and bucket-root scanning.
-- Removed application identity, user recording, and admin roles. Platform access controls and object-store credentials remain required.
-- Retained table registration/owners, namespace and version browsing, per-version stats, auxiliary sampling, and pull-based sync.
-- Older catalog data remains readable; retired fields are ignored. No stored data is deleted by this change.
+## Catalog routes outside the spec
 
-## Features
+- `GET /catalog/v1/table/:id/column-storage`: bytes per top-level column of the
+  current version.
+- `GET /catalog/v1/table/:id/storage`: objects under the table location by
+  category, with an estimated monthly storage cost.
+- `POST /catalog/v1/table/:id/sql`: read-only DataFusion SQL with version time
+  travel (`"<table>@v<N>"`) and row, time, memory, and concurrency limits.
+- `GET /catalog/v1/table/:id/timeline`: per-version operation history from each
+  version's Lance transaction and manifest.
 
-- **S3 sweep with full-history timestamp-path versioning.** Periodically
-  sweeps a configured S3 root, discovers Lance tables under timestamp-named
-  snapshot directories (`<table>/<YYYY-MM-DD_HH-MM-SS>/`), and records
-  per-version metadata into a Lance-backed registry under `_catalog/`.
-  Supports both pre- and post-2026-06-26 cutoff aux layouts (sidecar inside
-  `dataset.lance/` vs. top-level `dataset.sidecar/`) so the full version
-  history is cataloged.
-- **Per-version shape classification + size split.** Each version is
-  classified `full` / `lance_only` / `seg_only` / `lance_only_partial` /
-  `empty`, with a `partial` flag. Storage bytes are split per-component
-  (`lance_core`, `sidecar`, `segments`, `other_aux`) so pre-cutoff versions
-  attribute sidecar bytes correctly.
-- **Aux format detection.** Aux directories are recorded with a detected
-  format (`parquet`, `lance`, `csv`, `mixed`, `unknown`) and a fingerprint.
-- **Leader-elected single-writer registry.** A k8s `coordination.k8s.io/v1`
-  Lease with CAS-guarded acquire + renew (no server-side apply) ensures only
-  one pod writes the registry. A shared in-process `RegistryWriteLock`
-  serializes all registry writers (sweep loop + API mutations). Read replicas
-  serve from an in-memory registry cache refreshed every 5s.
-- **REST API.** Basic ops (`/v1`: ListNamespaces, DescribeNamespace,
-  ListTables, DescribeTable, DeclareTable, DeregisterTable) + an enriched
-  `/ext/v1` surface (full-detail listing, version detail, version `protect`).
-  Read endpoints serve from the cache on every pod; mutations are leader-only.
-- **TTL engine (hard delete).** Per-table API policy
-  (`keep_last_n` + `max_age_days`, AND-logic), `protected` flag exemption,
-  shape safety gate, mandatory dry-run-before-apply workflow, irreversible
-  hard delete, and an audited apply path. Audit log readable via
-  `GET /ext/v1/tables/:id/ttl/audit`.
-- **Prometheus + Grafana monitoring.** In-repo manifests: ServiceMonitor,
-  PrometheusRule (`NoLeader`, `FreshnessBreach`, `SweepStalled`,
-  `S3Throttling`, `TTLDeletesFailed`, `ReadAvailabilityBurn`,
-  `ReadLatencyHigh`), and Grafana dashboards (Overview, Sweep & Convergence,
-  TTL & Storage). Bounded-label HTTP RED metrics using the matched route
-  pattern (not the concrete path).
-- **kustomize base + overlays.** `deploy/base/` (Deployment, Service, RBAC,
-  ConfigMap, IRSA stub) + `local` (kind + MinIO + fixtures), `staging`, and
-  `prod` (IRSA, HPA, PDB, anti-affinity) overlays. Tiltfile for local dev.
-- **Minimal static frontend.** Vanilla TS + Vite SPA (hash-based routing, no
-  framework) on S3 + CloudFront: table list, drill-down, TTL dry-run/apply
-  (with type-the-table-name confirmation gate) + audit log view.
+## UI
 
-## Configuration
+- Namespace tree, global search, and theme and timezone preferences.
+- Table page tabs: Overview (tiles, storage charts, fragment distribution),
+  Properties, Timeline (vertical operation history with a detail pane),
+  Versions (paginated history with a sticky trends chart), Schema, and Indices.
+- SQL panel docked at the bottom, with a collapsible and resizable editor,
+  resizable result columns, and CSV download.
 
-Env-var driven (see `catalog-api/src/config.rs`). Defaults suit local dev.
-Key vars: `CATALOG_SWEEP_ROOT_URI`, `CATALOG_REGISTRY_PATH`,
-`CATALOG_LEADER_MODE` (`kube` / `forced-on` / `forced-off`),
-`CATALOG_SWEEP_INTERVAL_SECS`, `CATALOG_LEASE_DURATION_SECS`.
+## Deployment
 
-## Documentation
-
-- [`README.md`](../README.md) — overview, quickstart, config table, API surface.
-- [`ARCHITECTURE.md`](../ARCHITECTURE.md) — as-built architecture.
-- [`docs/RUNBOOK-DEPLOY.md`](RUNBOOK-DEPLOY.md) — deploy (local/staging/prod),
-  leader-election validation, frontend deploy.
-- The TTL runbook and kind smoke-test instructions described by this release
-  are retired; use the current deployment runbook.
-- [`docs/design.md`](design.md) — long-term design (v1.0.0 as-built notes
-  appended).
+- One Cloud Run container serves the API and UI. With `enable_postgres`, the
+  entrypoint starts the Cloud SQL Auth Proxy and derives `DATABASE_URL`. See
+  [the deploy runbook](RUNBOOK-DEPLOY.md).
 
 ## Known limitations
 
-- Real-cluster validation (KubeLeaseElector kill-leader e2e, kind boot,
-  real-S3/MinIO TTL conformance, load smoke against the real 65-table root)
-  requires a live cluster — procedures documented in the runbooks.
-- Registry write has no storage-layer CAS backstop; single-writer guarantee
-  rests on the atomic lease acquire/renew + the in-process write lock.
-- TTL audit-vs-registry write is not atomic across the two Lance tables
-  (audit log is best-effort under a mid-apply crash).
-- `/debug/*` and mutation routes are unauthenticated; CORS is permissive.
-  Acceptable behind an admin boundary; revisit before exposing beyond that.
-- `/ext/v1/tables` has no pagination (fine at admin scale).
-- Design features dropped for v1.0.0: lineage, MCP, Flight SQL, profiling,
-  maintenance/compaction engine, cost analysis, credential vending, operation
-  history, inbox. See [`docs/design.md`](design.md).
-
-## Since v1.0.0
-
-- **S3-only deployment on Apps Platform (Cloud Run).** Leader election
-  (k8s Lease), the in-process write lock, and the Prometheus/Grafana/
-  kustomize stack described above are gone. Catalog state now splits into a
-  derived snapshot (sweep output, last-wins, no coordination) and a small
-  per-table authored overlay (`owner`/`ttl_policy`/`protected`) guarded by
-  S3 ETag-CAS. Sweep runs from a Cloud Scheduler-triggered endpoint instead
-  of a background loop. Observability moved to Cloud Logging; there is no
-  `/metrics` Prometheus endpoint. See `ARCHITECTURE.md` and the design
-  doc's as-built notes for the current model.
-- **Sweep performance.** A single per-version LIST now drives shape/size/aux
-  classification, all registered tables' pending versions sweep
-  concurrently from one bounded work queue, and clean immutable versions
-  already in the prior snapshot are carried forward without re-opening
-  their datasets. A `CATALOG_SWEEP_DEEP_STATS` knob (`all`/`latest`/`none`)
-  gates the index-load + `count_rows` fallback per version.
-- **Richer auxiliary table metadata.** Aux entries record a `category`
-  (`sidecar` vs `nested_sidecar` — a lance dataset discovered nested inside
-  another table's `dataset.lance/`), row count, schema, and Lance/writer
-  version, derived from the dataset manifest at no extra S3 cost.
-  `GET /ext/v1/tables/:id/versions/:vid/aux/sample` reads sample rows from
-  an aux table (Lance or Parquet, via DataFusion).
-- **Frontend rewritten** on React + TanStack Router/Query + shadcn/ui (see
-  [`docs/FRONTEND.md`](FRONTEND.md)), replacing the vanilla-TS/Vite SPA.
+- Data operations, catalog-managed versions and commits, tag, branch, and index
+  writes, and credential vending are not implemented.
+- Cleanup of old versions is not committed by Lance, so the timeline shows it
+  only as a gap in version numbers.
+- Column-storage, storage-listing, table-stats, and version-history reads scale
+  with fragment and version counts and are slow on large tables.

@@ -77,7 +77,7 @@ export function AppSidebar({
     return (
       <aside className={cn("flex h-full w-14 shrink-0 flex-col items-center border-r bg-sidebar", className)}>
         <div className="flex h-14 w-full shrink-0 items-center justify-center border-b">
-          <Link to="/namespaces" aria-label="Data Catalog home" title="Data Catalog">
+          <Link to="/namespaces" aria-label="Data Catalog home" title={`Data Catalog v${__APP_VERSION__}`}>
             <img src="/logo-light.png" alt="" className="h-5 w-5 object-cover object-left dark:hidden" />
             <img src="/logo-dark.png" alt="" aria-hidden="true" className="hidden h-5 w-5 object-cover object-left dark:block" />
           </Link>
@@ -113,6 +113,9 @@ export function AppSidebar({
           <img src="/logo-light.png" alt="Applied Intuition" className="h-5 w-auto dark:hidden" />
           <img src="/logo-dark.png" alt="" aria-hidden="true" className="hidden h-5 w-auto dark:block" />
           <span className="truncate text-sm">Data Catalog</span>
+          <span className="shrink-0 self-end pb-0.5 font-mono text-[10px] font-normal text-muted-foreground">
+            v{__APP_VERSION__}
+          </span>
         </Link>
         {collapsible && (
           <button
