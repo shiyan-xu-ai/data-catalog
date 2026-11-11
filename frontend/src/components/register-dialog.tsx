@@ -76,8 +76,8 @@ export function RegisterDialog({ namespace, open, onOpenChange }: RegisterDialog
           <DialogTitle>Register table</DialogTitle>
           <DialogDescription>
             Register an existing Lance dataset in{" "}
-            <span className="font-mono text-foreground">{displayName(namespace)}</span>. Registration
-            records catalog metadata only; it never copies or modifies the data.
+            <span className="font-mono text-foreground">{displayName(namespace)}</span>. The catalog
+            records metadata only and never copies or modifies the data.
           </DialogDescription>
         </DialogHeader>
 

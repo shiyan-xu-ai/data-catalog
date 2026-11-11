@@ -5,6 +5,11 @@ export function formatCount(n: number | null | undefined): string {
   return n.toLocaleString("en-US");
 }
 
+/** `n` with a singular or plural noun, e.g. "1 deletion file", "4,519 data files". */
+export function formatCountOf(n: number, singular: string, plural = `${singular}s`): string {
+  return `${formatCount(n)} ${n === 1 ? singular : plural}`;
+}
+
 /** Short count for chart axes: `8.05M`, `990K`. */
 export function formatCompact(n: number | null | undefined): string {
   if (n == null) return DASH;

@@ -57,7 +57,7 @@ export function VersionsTab({
   return (
     <Section
       title="Version history"
-      description="Per-version figures come from each manifest summary"
+      help="Each version's figures come from its manifest summary."
       contentClassName="px-0 pb-0"
     >
       <Table>

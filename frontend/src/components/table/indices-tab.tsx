@@ -62,7 +62,7 @@ export function IndicesTab({ indices }: { indices: UseQueryResult<IndexContent[]
   return (
     <Section
       title="Indices"
-      description="Coverage is indexed vs unindexed rows"
+      help="Coverage is indexed rows out of indexed plus unindexed rows."
       contentClassName="px-0 pb-0"
     >
       <Table>

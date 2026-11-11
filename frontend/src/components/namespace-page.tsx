@@ -200,7 +200,8 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
       {!isRoot && (
         <Section
           title="Tables"
-          description="Catalog-recorded fields only; open a table for its Lance details."
+          description="Catalog-recorded fields only"
+          help="Open a table to see its Lance details."
           contentClassName="px-0 pb-0"
         >
           <ListStatus query={tables}>

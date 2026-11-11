@@ -171,7 +171,8 @@ export function PropertiesTab({
 
       <Section
         title="Lance table metadata"
-        description="Manifest table_metadata of the current version (Dataset::metadata)"
+        description="Manifest table_metadata, current version"
+        help="Read with Dataset::metadata."
       >
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={tableMetadataEntries(d.metadata)} empty="No Lance table metadata." />}
@@ -180,7 +181,8 @@ export function PropertiesTab({
 
       <Section
         title="Lance table configuration"
-        description="Manifest config of the current version (Dataset::config)"
+        description="Manifest config, current version"
+        help="Read with Dataset::config."
       >
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={configEntries(d.metadata)} empty="No Lance table configuration." />}

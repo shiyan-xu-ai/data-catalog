@@ -114,13 +114,12 @@ export function SmallFragmentShare({
           <span className="tabular-nums">{formatCount(COMPACTION_TARGET_ROWS)}</span> rows
         </p>
         <p className="text-xs text-muted-foreground">
-          Lance&apos;s default compaction target (CompactionOptions.target_rows_per_fragment); fragments below it are
-          compaction candidates.
+          Lance&apos;s default compaction target. Fragments below it are compaction candidates.
         </p>
         {targetOverride != null && (
           <p className="text-xs text-muted-foreground">
-            Table override: <span className="tabular-nums">{formatCount(targetOverride)}</span> rows. GetTableStats counts
-            against the fixed default.
+            This table overrides the target to <span className="tabular-nums">{formatCount(targetOverride)}</span> rows.
+            The count above uses the default.
           </p>
         )}
       </div>

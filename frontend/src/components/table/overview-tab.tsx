@@ -1,6 +1,6 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
-import { formatBytes, formatCost, formatCount, formatGigabytes, formatPercent, formatRate } from "@/lib/format";
+import { formatBytes, formatCost, formatCount, formatCountOf, formatGigabytes, formatPercent, formatRate } from "@/lib/format";
 import {
   COMPACTION_TARGET_ROWS,
   compactionTargetOverride,
@@ -110,7 +110,7 @@ export function OverviewTab({
           icon={Rows3}
           label="Rows"
           value={formatCount(s.rows)}
-          sub={s.fragments != null ? `${formatCount(s.fragments)} fragments` : undefined}
+          sub={s.fragments != null ? formatCountOf(s.fragments, "fragment") : undefined}
           help="Live rows in the current version (deleted rows excluded), from the manifest summary."
           loading={detail.isPending}
           failed={detail.error?.message}
@@ -119,8 +119,8 @@ export function OverviewTab({
           icon={Database}
           label="Current version data"
           value={formatBytes(s.dataBytes)}
-          sub={s.dataFiles != null ? `${formatCount(s.dataFiles)} data files` : undefined}
-          help="Size and count of the data files the current version's fragments reference, from the manifest summary. Excludes blob payload files, index files, and files kept only by older versions."
+          sub={s.dataFiles != null ? formatCountOf(s.dataFiles, "data file") : undefined}
+          help="Size and count of the data files the current version's fragments reference, from the manifest summary. Excludes blob files, index files, and files kept only by older versions."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -128,7 +128,7 @@ export function OverviewTab({
           icon={Trash2}
           label="Deleted rows"
           value={formatCount(s.deletedRows)}
-          sub={s.deletionFiles != null ? `${formatCount(s.deletionFiles)} deletion files` : undefined}
+          sub={s.deletionFiles != null ? formatCountOf(s.deletionFiles, "deletion file") : undefined}
           help="Rows marked deleted by deletion files in the current version. They still occupy data files until compaction."
           loading={detail.isPending}
           failed={detail.error?.message}
@@ -139,7 +139,7 @@ export function OverviewTab({
           // No indices is a measured zero; indices without reported sizes stay unknown.
           value={formatBytes(indices.data?.length === 0 ? 0 : indexBytes)}
           sub="current version"
-          help="Size of the current version's index files. Index files kept only by older versions are counted in Storage composition's Index files."
+          help="Size of the current version's index files. Index files kept only by older versions count toward Index files in Storage composition."
           loading={indices.isPending}
           failed={indices.error?.message}
         />
@@ -147,12 +147,12 @@ export function OverviewTab({
           icon={HardDrive}
           label="Total on storage"
           value={formatBytes(onStorage?.total_bytes)}
-          sub={onStorage ? `${formatCount(onStorage.total_objects)} objects` : undefined}
+          sub={onStorage ? formatCountOf(onStorage.total_objects, "object") : undefined}
           help={
             <>
-              Every object under the table location across all versions, measured by listing the location
-              {onStorage ? ` (${formatGigabytes(onStorage.total_bytes)})` : ""}. Includes blob payloads, indices,
-              deletion files, manifests, and transactions.
+              Size of every object under the table location, across all versions
+              {onStorage ? ` (${formatGigabytes(onStorage.total_bytes)})` : ""}. The catalog lists the table location to
+              measure it. Includes blob files, index files, deletion files, manifests, and transactions.
             </>
           }
           loading={storageLoading}
@@ -178,24 +178,24 @@ export function OverviewTab({
       <div className="grid gap-6 @4xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section
           title="Storage by column"
-          description="Current version, inline column data; excludes blob payloads"
+          description="Bytes on disk per column, current version"
           help={
             <>
-              Bytes on disk per top-level column in the current version&apos;s data files (Lance field-level data
-              statistics
+              Bytes on disk per top-level column in the current version&apos;s data files, from Lance field-level data
+              statistics.
               {stats.data
-                ? `, total ${formatBytes(stats.data.total_bytes)} vs ${formatBytes(s.dataBytes)} manifest data size including file metadata`
-                : ""}
-              ). Scalar/inline column data only: excludes blob payload files (data/*.blob), which hold most storage, and
-              index files. Blob columns such as log_scenario count only their per-row descriptors (pointers into .blob
-              files).
+                ? ` These statistics total ${formatBytes(stats.data.total_bytes)}. The manifest data size, ${formatBytes(s.dataBytes)}, also includes file metadata.`
+                : ""}{" "}
+              Counts scalar and inline column data only. Excludes blob files (data/*.blob), which hold most storage, and
+              index files. A blob column such as log_scenario counts only its per-row descriptors, which point into .blob
+              files.
             </>
           }
         >
           {columns.error ? (
             <ErrorState message={columns.error.message} />
           ) : !columns.data ? (
-            <ChartSkeleton height="h-64" caption="Measuring column sizes across every fragment; large tables take several seconds." />
+            <ChartSkeleton height="h-64" caption="Measuring column sizes across every fragment. Large tables take several seconds." />
           ) : columns.data.columns.length === 0 ? (
             <EmptyState icon={BarChart3} title="No column storage">The current version has no data files.</EmptyState>
           ) : (
@@ -207,7 +207,7 @@ export function OverviewTab({
           {storage.error ? (
             <ErrorState message={storage.error.message} />
           ) : !storage.data ? (
-            <ChartSkeleton caption="Listing every object under the table location; large tables take several seconds." />
+            <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
           ) : (
             <StorageComposition onStorage={storage.data.on_storage} />
           )}
@@ -216,19 +216,21 @@ export function OverviewTab({
 
       <Section
         title="Fragment distribution"
-        description="Rows per fragment in the current version (physical rows)"
+        description="Rows per fragment, current version"
         help={
           <>
-            From Lance GetTableStats. Rows per fragment are physical rows, including deleted rows. &apos;Small&apos;
-            uses Lance&apos;s default compaction target of {formatCount(COMPACTION_TARGET_ROWS)} rows (lance
-            CompactionOptions::default, overridable per table via lance.compaction.target_rows_per_fragment).
+            Lance GetTableStats reports these figures. Rows per fragment are physical rows and include deleted rows. A
+            fragment is small when it has fewer rows than Lance&apos;s default compaction target,{" "}
+            {formatCount(COMPACTION_TARGET_ROWS)} rows (target_rows_per_fragment in CompactionOptions::default). A table
+            can override the target with lance.compaction.target_rows_per_fragment. GetTableStats still counts small
+            fragments against the default.
           </>
         }
       >
         {stats.error ? (
           <ErrorState message={stats.error.message} />
         ) : !stats.data ? (
-          <ChartSkeleton height="h-28" caption="Reading fragment statistics; large tables take several seconds." />
+          <ChartSkeleton height="h-28" caption="Reading fragment statistics. Large tables take several seconds." />
         ) : stats.data.fragment_stats.num_fragments === 0 ? (
           <EmptyState icon={BarChart3} title="No fragments">The current version has no data fragments.</EmptyState>
         ) : (
@@ -245,7 +247,11 @@ export function OverviewTab({
         )}
       </Section>
 
-      <Section title="Trends" description="Rows and current-version data size at every version">
+      <Section
+        title="Trends"
+        description="Rows and data size at every version"
+        help="Data size counts the data files each version references, the same measure as Current version data."
+      >
         {versions.error ? (
           <ErrorState message={versions.error.message} />
         ) : versions.isPending ? (
@@ -315,7 +321,7 @@ function CategoryBreakdown({
             color={style(c.name).color}
             label={style(c.name).label}
             value={formatBytes(c.bytes)}
-            note={`${formatCount(c.objects)} ${c.objects === 1 ? "object" : "objects"} · ${formatPercent(total ? c.bytes / total : null)}${shareSuffix}`}
+            note={`${formatCountOf(c.objects, "object")} · ${formatPercent(total ? c.bytes / total : null)}${shareSuffix}`}
           />
         ))}
       </div>

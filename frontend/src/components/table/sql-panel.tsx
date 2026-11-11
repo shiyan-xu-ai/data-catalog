@@ -228,8 +228,8 @@ export function SqlPanel({
             ) : (
               <div className="space-y-2 p-4 text-xs text-muted-foreground">
                 <p>
-                  Run a query to see results. Only <span className="font-mono">SELECT</span> queries against this table
-                  run; results are capped at 1,000 rows.
+                  Run a query to see results. The server runs only <span className="font-mono">SELECT</span> queries
+                  against this table and returns at most 1,000 rows.
                 </p>
                 <p>
                   The version picker sets the version the table name reads. Reference another version as{" "}

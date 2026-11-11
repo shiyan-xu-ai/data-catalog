@@ -26,7 +26,7 @@ export function SchemaTab({ detail }: { detail: UseQueryResult<DescribeTableResp
     );
   }
   const schema = detail.data.schema;
-  if (!schema) return <EmptyState icon={ListTree} title="No schema">The describe response carried no schema.</EmptyState>;
+  if (!schema) return <EmptyState icon={ListTree} title="No schema">The describe response has no schema.</EmptyState>;
   return <SchemaView schema={schema} />;
 }
 
