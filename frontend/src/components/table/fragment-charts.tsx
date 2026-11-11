@@ -109,7 +109,8 @@ export function SmallFragmentShare({
       <div className="min-w-0 space-y-1.5">
         <p className="text-sm">
           <span className="font-semibold tabular-nums">{formatCount(small)}</span> of{" "}
-          <span className="tabular-nums">{formatCount(total)}</span> fragments have fewer than{" "}
+          <span className="tabular-nums">{formatCount(total)}</span> {total === 1 ? "fragment has" : "fragments have"}{" "}
+          fewer than{" "}
           <span className="tabular-nums">{formatCount(COMPACTION_TARGET_ROWS)}</span> rows
         </p>
         <p className="text-xs text-muted-foreground">

@@ -47,10 +47,10 @@ page can fill; the table page puts its SQL panel there.
     - *Storage by column:* current-version inline column bytes per top-level
       column (`GET /catalog/v1/table/{id}/column-storage`); blob payload files
       and index files are excluded, as its (?) help explains.
-    - *Storage composition:* every object under the location, as two donuts:
-      blob files vs everything else, then the non-blob files by category
-      (data, index, deletion, manifests, transactions, other) with shares of
-      the non-blob total.
+    - *Storage composition:* every object under the location. With blob files,
+      two donuts: blob files vs everything else, then the non-blob files by
+      category (data, index, deletion, manifests, transactions, other) with
+      shares of the non-blob total. Without blob files, one donut by category.
     - *Fragment distribution:* from the spec table stats
       (`POST /v1/table/{id}/stats`), horizontal bars of physical rows per
       fragment for min, p25, median, mean, p75, p99, and max, ordered by value

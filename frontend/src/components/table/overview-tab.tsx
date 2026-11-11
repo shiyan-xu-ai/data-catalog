@@ -203,10 +203,7 @@ export function OverviewTab({
           )}
         </Section>
 
-        <Section
-          title="Storage composition"
-          description="Every object under the table location: blob payloads vs everything else, then the non-blob files by category"
-        >
+        <Section title="Storage composition" description="Every object under the table location, by file category">
           {storage.error ? (
             <ErrorState message={storage.error.message} />
           ) : !storage.data ? (
@@ -282,75 +279,82 @@ const CATEGORIES: Record<string, { label: string; color: string }> = {
   manifest: { label: "Manifests", color: "hsl(var(--chart-2))" },
   transaction: { label: "Transactions", color: "hsl(var(--chart-6))" },
   other: { label: "Other", color: "hsl(var(--muted-foreground) / 0.5)" },
+  // Synthetic non-blob total for the blob split; neutral so it is not mistaken for a category.
+  others: { label: "Everything else", color: "hsl(var(--foreground) / 0.35)" },
 };
 const ORDER = Object.keys(CATEGORIES);
 
-// Neutral so "everything else" is not mistaken for any one category in the second donut.
-const OTHERS_COLOR = "hsl(var(--foreground) / 0.35)";
+type StorageCategory = TableStorageResponse["on_storage"]["categories"][number];
 
-/** Two donuts: blob payload files against everything else, then the non-blob remainder by
- *  category, since blob files usually dwarf every other category in the first. */
-function StorageComposition({ onStorage }: { onStorage: TableStorageResponse["on_storage"] }) {
-  const rank = (name: string) => (ORDER.includes(name) ? ORDER.indexOf(name) : ORDER.length);
+/** Donut plus legend for a set of categories; shares are against `total`. */
+function CategoryBreakdown({
+  title,
+  categories,
+  total,
+  caption,
+  shareSuffix = "",
+}: {
+  title: string;
+  categories: StorageCategory[];
+  total: number;
+  caption: string;
+  shareSuffix?: string;
+}) {
   const style = (name: string) => CATEGORIES[name] ?? { label: name, color: "hsl(var(--muted-foreground) / 0.5)" };
-  const categories = [...onStorage.categories].sort((a, b) => rank(a.name) - rank(b.name));
-  const blob = categories.find((c) => c.name === "blob") ?? { name: "blob", bytes: 0, objects: 0 };
-  const rest = categories.filter((c) => c.name !== "blob");
-  const restBytes = rest.reduce((s, c) => s + c.bytes, 0);
-  const restObjects = rest.reduce((s, c) => s + c.objects, 0);
-  const share = (bytes: number, total: number) => formatPercent(total ? bytes / total : null);
+  const slices: StorageSlice[] = categories
+    .filter((c) => c.bytes > 0)
+    .map((c) => ({ key: c.name, label: style(c.name).label, bytes: c.bytes, color: style(c.name).color }));
+  return (
+    <div className="space-y-4">
+      <p className="text-xs font-medium text-muted-foreground">{title}</p>
+      <StorageSplitChart slices={slices} caption={caption} className="h-44" />
+      <div className="space-y-2">
+        {categories.map((c) => (
+          <LegendItem
+            key={c.name}
+            color={style(c.name).color}
+            label={style(c.name).label}
+            value={formatBytes(c.bytes)}
+            note={`${formatCount(c.objects)} ${c.objects === 1 ? "object" : "objects"} · ${formatPercent(total ? c.bytes / total : null)}${shareSuffix}`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
 
+/** With blob files: blob vs everything else, then the non-blob remainder by category, since
+ *  blob payloads dwarf every other category. Without them: one donut by category. */
+function StorageComposition({ onStorage }: { onStorage: TableStorageResponse["on_storage"] }) {
   if (onStorage.total_bytes === 0) {
     return <EmptyState icon={HardDrive} title="Nothing on storage">No objects were found under the table location.</EmptyState>;
   }
+  const rank = (name: string) => (ORDER.includes(name) ? ORDER.indexOf(name) : ORDER.length);
+  const categories = [...onStorage.categories].sort((a, b) => rank(a.name) - rank(b.name));
+  const blob = categories.find((c) => c.name === "blob");
+  const rest = categories.filter((c) => c.name !== "blob");
 
-  const totalSlices: StorageSlice[] = [
-    { key: "blob", label: style("blob").label, bytes: blob.bytes, color: style("blob").color },
-    { key: "others", label: "Everything else", bytes: restBytes, color: OTHERS_COLOR },
-  ].filter((s) => s.bytes > 0);
-  const restSlices: StorageSlice[] = rest
-    .filter((c) => c.bytes > 0)
-    .map((c) => ({ key: c.name, label: style(c.name).label, bytes: c.bytes, color: style(c.name).color }));
+  if (!blob || blob.bytes === 0) {
+    return <CategoryBreakdown title="All objects" categories={rest} total={onStorage.total_bytes} caption="on storage" />;
+  }
 
+  const restBytes = rest.reduce((s, c) => s + c.bytes, 0);
+  const restObjects = rest.reduce((s, c) => s + c.objects, 0);
   return (
     <div className="grid gap-6 @lg:grid-cols-2">
-      <div className="space-y-4">
-        <p className="text-xs font-medium text-muted-foreground">All objects</p>
-        <StorageSplitChart slices={totalSlices} caption="on storage" className="h-44" />
-        <div className="space-y-2">
-          <LegendItem
-            color={style("blob").color}
-            label={style("blob").label}
-            value={formatBytes(blob.bytes)}
-            note={`${formatCount(blob.objects)} objects · ${share(blob.bytes, onStorage.total_bytes)}`}
-          />
-          <LegendItem
-            color={OTHERS_COLOR}
-            label="Everything else"
-            value={formatBytes(restBytes)}
-            note={`${formatCount(restObjects)} objects · ${share(restBytes, onStorage.total_bytes)}`}
-          />
-        </div>
-      </div>
-      <div className="space-y-4">
-        <p className="text-xs font-medium text-muted-foreground">Excluding blob files</p>
-        {restSlices.length === 0 ? (
-          <EmptyState icon={HardDrive} title="Only blob files">Every object under the location is a blob file.</EmptyState>
-        ) : (
-          <StorageSplitChart slices={restSlices} caption="non-blob" className="h-44" />
-        )}
-        <div className="space-y-2">
-          {rest.map((c) => (
-            <LegendItem
-              key={c.name}
-              color={style(c.name).color}
-              label={style(c.name).label}
-              value={formatBytes(c.bytes)}
-              note={`${formatCount(c.objects)} objects · ${share(c.bytes, restBytes)} of non-blob`}
-            />
-          ))}
-        </div>
-      </div>
+      <CategoryBreakdown
+        title="All objects"
+        categories={[blob, { name: "others", bytes: restBytes, objects: restObjects }]}
+        total={onStorage.total_bytes}
+        caption="on storage"
+      />
+      <CategoryBreakdown
+        title="Excluding blob files"
+        categories={rest}
+        total={restBytes}
+        caption="non-blob"
+        shareSuffix=" of non-blob"
+      />
     </div>
   );
 }
