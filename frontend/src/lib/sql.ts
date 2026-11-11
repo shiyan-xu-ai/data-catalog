@@ -18,35 +18,34 @@ export interface FormattedCell {
   title?: string;
 }
 
-const MAX_CELL_CHARS = 120;
 const MAX_TITLE_CHARS = 2000;
 
 function clip(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-/** Compact display for one result value. Values follow Arrow's JSON writer: nested types as
- *  JSON objects/arrays and binary as a hex string, recognized through the column type. */
+/** Display Arrow JSON values, keeping text intact for resizable columns. */
 export function formatCell(value: unknown, type: string): FormattedCell {
   if (value === null || value === undefined) return { text: "NULL", kind: "null" };
   if (/binary/i.test(type) && (typeof value === "string" || Array.isArray(value))) {
-    const bytes = typeof value === "string" ? Math.ceil(value.length / 2) : value.length;
-    const preview = typeof value === "string" ? value : JSON.stringify(value);
-    return { text: `<${bytes.toLocaleString("en-US")} bytes>`, kind: "binary", title: clip(preview, MAX_TITLE_CHARS) };
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    return { text, kind: "binary", title: clip(text, MAX_TITLE_CHARS) };
   }
   if (typeof value === "boolean") return { text: String(value), kind: "bool" };
   if (typeof value === "number" || typeof value === "bigint") return { text: String(value), kind: "number" };
-  if (typeof value === "string") {
-    return value.length > MAX_CELL_CHARS
-      ? { text: clip(value, MAX_CELL_CHARS), kind: "text", title: clip(value, MAX_TITLE_CHARS) }
-      : { text: value, kind: "text" };
-  }
-  const json = JSON.stringify(value);
-  return {
-    text: clip(json, MAX_CELL_CHARS),
-    kind: "nested",
-    title: json.length > MAX_CELL_CHARS ? clip(JSON.stringify(value, null, 2), MAX_TITLE_CHARS) : undefined,
+  if (typeof value === "string") return { text: value, kind: "text" };
+  return { text: JSON.stringify(value), kind: "nested" };
+}
+
+/** CSV contains the returned rows, including full binary and nested values. */
+export function resultsToCsv(columns: readonly { name: string }[], rows: readonly unknown[][]): string {
+  const escape = (value: unknown) => {
+    const text = value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
   };
+  return [columns.map((c) => escape(c.name)), ...rows.map((row) => columns.map((_, i) => escape(row[i])))]
+    .map((row) => row.join(","))
+    .join("\r\n") + "\r\n";
 }
 
 /** Short Arrow type for a column header: parameters of long types collapse to `(…)`. */

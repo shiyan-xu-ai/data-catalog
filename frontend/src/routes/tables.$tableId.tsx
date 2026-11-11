@@ -1,8 +1,18 @@
 import { Suspense, lazy, useMemo } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { BarChart3, Layers, ListTree, SlidersHorizontal, Table2, TableProperties, TerminalSquare } from "lucide-react";
+import {
+  BarChart3,
+  GitCommitVertical,
+  History,
+  ListTree,
+  SlidersHorizontal,
+  Table2,
+  TableProperties,
+  TerminalSquare,
+} from "lucide-react";
 import { ApiError } from "@/lib/api";
 import {
+  type PagedVersions,
   useColumnStorage,
   useTableCheap,
   useTableDetail,
@@ -14,7 +24,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { displayName, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
-import { ErrorCode, type TableVersion } from "@/lib/schemas";
+import { ErrorCode } from "@/lib/schemas";
 import { storageFormatVersion } from "@/lib/table-metadata";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,12 +37,13 @@ import { OverviewTab } from "@/components/table/overview-tab";
 import { PropertiesTab } from "@/components/table/properties-tab";
 import { SchemaTab } from "@/components/table/schema-tab";
 import { SqlDockBar } from "@/components/table/sql-dock-bar";
+import { TimelineTab } from "@/components/table/timeline-tab";
 import { VersionsTab } from "@/components/table/versions-tab";
 
 // The editor (CodeMirror) is the heaviest part of the page; load it after the tabs.
 const SqlPanel = lazy(() => import("@/components/table/sql-panel").then((m) => ({ default: m.SqlPanel })));
 
-const TABS = ["overview", "properties", "schema", "versions", "indices"] as const;
+const TABS = ["overview", "properties", "timeline", "versions", "schema", "indices"] as const;
 type Tab = (typeof TABS)[number];
 
 const DOCK_MIN_HEIGHT = 180;
@@ -62,7 +73,7 @@ function SqlDock({
 }: {
   segments: readonly string[];
   columns: readonly string[];
-  versions: readonly TableVersion[] | undefined;
+  versions: PagedVersions;
   latestVersion: number | null | undefined;
 }) {
   const [collapsed, setCollapsed] = useStoredState("sql-dock-collapsed", false);
@@ -87,44 +98,44 @@ function SqlDock({
     handle.addEventListener("pointerup", onUp);
   }
 
-  if (collapsed) {
-    return (
-      <SqlDockBar
-        expanded={false}
-        onToggle={() => setCollapsed(false)}
-        className="border-t bg-card"
-        left={
-          <>
-            <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <span className="text-sm font-semibold tracking-tight">SQL</span>
-            <Badge variant="outline">Read-only</Badge>
-            <span className="text-xs text-muted-foreground">Queries against this table</span>
-          </>
-        }
-      />
-    );
-  }
-
   return (
-    <div className="relative border-t bg-card" style={{ height }}>
-      <div
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label="Resize SQL panel"
-        title="Drag to resize"
-        onPointerDown={startResize}
-        className="absolute inset-x-0 -top-1.5 z-10 h-3 cursor-row-resize after:absolute after:top-1 after:left-1/2 after:h-1 after:w-12 after:-translate-x-1/2 after:rounded-full after:bg-border hover:after:bg-muted-foreground/50"
-      />
-      <Suspense fallback={<Skeleton className="h-full w-full rounded-none" />}>
-        <SqlPanel
-          segments={segments}
-          columns={columns}
-          versions={versions}
-          latestVersion={latestVersion}
-          onCollapse={() => setCollapsed(true)}
+    <>
+      {collapsed && (
+        <SqlDockBar
+          expanded={false}
+          onToggle={() => setCollapsed(false)}
+          className="border-t bg-card"
+          left={
+            <>
+              <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="text-sm font-semibold tracking-tight">SQL</span>
+              <Badge variant="outline">Read-only</Badge>
+              <span className="text-xs text-muted-foreground">Queries against this table</span>
+            </>
+          }
         />
-      </Suspense>
-    </div>
+      )}
+
+      <div hidden={collapsed} className="relative border-t bg-card" style={{ height }}>
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize SQL panel"
+          title="Drag to resize"
+          onPointerDown={startResize}
+          className="absolute inset-x-0 -top-1.5 z-10 h-3 cursor-row-resize after:absolute after:top-1 after:left-1/2 after:h-1 after:w-12 after:-translate-x-1/2 after:rounded-full after:bg-border hover:after:bg-muted-foreground/50"
+        />
+        <Suspense fallback={<Skeleton className="h-full w-full rounded-none" />}>
+          <SqlPanel
+            segments={segments}
+            columns={columns}
+            versions={versions}
+            latestVersion={latestVersion}
+            onCollapse={() => setCollapsed(true)}
+          />
+        </Suspense>
+      </div>
+    </>
   );
 }
 
@@ -138,7 +149,7 @@ function TablePage({ tableId }: { tableId: string }) {
   const versions = useTableVersions(segments);
   const indices = useTableIndices(segments);
   // Per-column storage, the storage listing, and table stats read every fragment or object;
-  // start them only once the rest of the page settled.
+  // start them only once the rest of the page (and the first version page) settled.
   const settled = !detail.isPending && !versions.isPending && !indices.isPending;
   const columns = useColumnStorage(segments, settled);
   const storage = useTableStorage(segments, settled);
@@ -158,13 +169,13 @@ function TablePage({ tableId }: { tableId: string }) {
   const tabIcon = {
     overview: BarChart3,
     properties: SlidersHorizontal,
+    timeline: GitCommitVertical,
+    versions: History,
     schema: TableProperties,
-    versions: Layers,
     indices: ListTree,
   };
   const counts: Partial<Record<Tab, number | undefined>> = {
     schema: detail.data?.schema?.fields.length,
-    versions: versions.data?.length,
     indices: indices.data?.length,
   };
 
@@ -213,7 +224,6 @@ function TablePage({ tableId }: { tableId: string }) {
           <TabsContent value="overview">
             <OverviewTab
               detail={detail}
-              versions={versions}
               indices={indices}
               columns={columns}
               storage={storage}
@@ -223,11 +233,14 @@ function TablePage({ tableId }: { tableId: string }) {
           <TabsContent value="properties">
             <PropertiesTab segments={segments} cheap={cheap} detail={detail} />
           </TabsContent>
-          <TabsContent value="schema">
-            <SchemaTab detail={detail} />
+          <TabsContent value="timeline">
+            <TimelineTab segments={segments} />
           </TabsContent>
           <TabsContent value="versions">
             <VersionsTab versions={versions} currentVersion={detail.data?.version} />
+          </TabsContent>
+          <TabsContent value="schema">
+            <SchemaTab detail={detail} />
           </TabsContent>
           <TabsContent value="indices">
             <IndicesTab indices={indices} />
@@ -239,7 +252,7 @@ function TablePage({ tableId }: { tableId: string }) {
         <SqlDock
           segments={segments}
           columns={columnNames}
-          versions={versions.data}
+          versions={versions}
           latestVersion={detail.data?.version}
         />
       </BottomDock>

@@ -6,6 +6,9 @@ import {
   formatCount,
   formatDateTime,
   formatGigabytes,
+  formatIsoDate,
+  formatIsoTime,
+  formatIsoTimestamp,
   formatPercent,
   formatRate,
   formatRelative,
@@ -99,5 +102,34 @@ describe("storage cost formatting", () => {
   });
   it("falls back to the raw code for a non-ISO currency", () => {
     expect(formatCost(1.5, "credits")).toBe("1.50 credits");
+  });
+});
+
+describe("ISO formatting", () => {
+  // 2026-11-10T21:02:37.123Z, a Tuesday evening UTC.
+  const d = new Date(Date.UTC(2026, 10, 10, 21, 2, 37, 123));
+
+  it("formats in UTC with a Z offset", () => {
+    expect(formatIsoDate(d, "utc")).toBe("2026-11-10");
+    expect(formatIsoTime(d, "utc")).toBe("21:02:37");
+    expect(formatIsoTimestamp(d, "utc")).toBe("2026-11-10T21:02:37.123Z");
+  });
+
+  it("formats local time with a fixed negative offset", () => {
+    // Etc/GMT+8 is UTC-08:00 year-round.
+    expect(formatIsoDate(d, "local", "Etc/GMT+8")).toBe("2026-11-10");
+    expect(formatIsoTime(d, "local", "Etc/GMT+8")).toBe("13:02:37");
+    expect(formatIsoTimestamp(d, "local", "Etc/GMT+8")).toBe("2026-11-10T13:02:37.123-08:00");
+  });
+
+  it("handles half-hour offsets and day rollover", () => {
+    expect(formatIsoDate(d, "local", "Asia/Kolkata")).toBe("2026-11-11");
+    expect(formatIsoTimestamp(d, "local", "Asia/Kolkata")).toBe("2026-11-11T02:32:37.123+05:30");
+  });
+
+  it("returns dash for null", () => {
+    expect(formatIsoDate(null, "utc")).toBe("—");
+    expect(formatIsoTime(null, "utc")).toBe("—");
+    expect(formatIsoTimestamp(null, "local")).toBe("—");
   });
 });

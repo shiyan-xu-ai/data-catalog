@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
   describeTable,
@@ -6,6 +7,7 @@ import {
   getColumnStorage,
   getTableStats,
   getTableStorage,
+  getTableTimeline,
   listAllTableIndices,
   listAllTables,
   listNamespaces,
@@ -14,6 +16,7 @@ import {
   listTableVersions,
   listTables,
 } from "./api";
+import type { TableVersion } from "./schemas";
 import { joinId, splitId } from "./ids";
 import { createLimiter } from "./limit";
 import { enumerateNamespaces } from "./search";
@@ -35,6 +38,7 @@ export const keys = {
   tableColumns: (id: string) => ["table", id, "columns"] as const,
   tableStorage: (id: string) => ["table", id, "storage"] as const,
   tableStats: (id: string) => ["table", id, "stats"] as const,
+  tableTimeline: (id: string) => ["table", id, "timeline"] as const,
 };
 
 const PAGE_SIZE = 100;
@@ -140,18 +144,37 @@ export function useTableDetail(segments: readonly string[]) {
   return useQuery({ queryKey: keys.tableDetail(joinId(segments)), queryFn: () => describeTable(segments) });
 }
 
-/** All versions, newest first, following `page_token` to the end. */
-export function useTableVersions(segments: readonly string[]) {
-  return useQuery({
+// Each version page reads one manifest per version, so pages stay small.
+const VERSION_PAGE_SIZE = 50;
+
+export interface PagedVersions {
+  /** Loaded versions, newest first. */
+  versions: TableVersion[];
+  error: Error | null;
+  isPending: boolean;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => void;
+}
+
+/** Versions newest first, one page per "Load earlier"; shared by the Versions tab and the SQL
+ *  version picker. */
+export function useTableVersions(segments: readonly string[]): PagedVersions {
+  const q = useInfiniteQuery({
     queryKey: keys.tableVersions(joinId(segments)),
-    queryFn: async () => {
-      const all = await followPages(
-        (token) => listTableVersions(segments, token, PAGE_SIZE),
-        (page) => page.versions,
-      );
-      return all.sort((a, b) => b.version - a.version);
-    },
+    queryFn: ({ pageParam }) => listTableVersions(segments, pageParam, VERSION_PAGE_SIZE),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.page_token || undefined,
   });
+  const versions = useMemo(() => q.data?.pages.flatMap((p) => p.versions) ?? [], [q.data]);
+  return {
+    versions,
+    error: q.error,
+    isPending: q.isPending,
+    hasNextPage: q.hasNextPage,
+    isFetchingNextPage: q.isFetchingNextPage,
+    fetchNextPage: () => void q.fetchNextPage(),
+  };
 }
 
 export function useTableIndices(segments: readonly string[]) {
@@ -190,5 +213,15 @@ export function useTableStats(segments: readonly string[], enabled: boolean) {
     queryKey: keys.tableStats(joinId(segments)),
     queryFn: () => getTableStats(segments),
     enabled,
+  });
+}
+
+/** Timeline events, newest first, one page per "Load earlier". */
+export function useTableTimeline(segments: readonly string[]) {
+  return useInfiniteQuery({
+    queryKey: keys.tableTimeline(joinId(segments)),
+    queryFn: ({ pageParam }) => getTableTimeline(segments, pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.page_token || undefined,
   });
 }

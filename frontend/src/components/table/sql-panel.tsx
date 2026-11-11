@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
+import { Download, Loader2, PanelLeftClose, PanelLeftOpen, Play, RotateCcw, Square, TerminalSquare } from "lucide-react";
 import { ApiError, runSql } from "@/lib/api";
+import type { PagedVersions } from "@/lib/catalog-queries";
 import { formatCount, parseTime } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
-import { ErrorCode, type SqlResponse, type TableVersion } from "@/lib/schemas";
-import { defaultQuery, formatCell, quoteIdent, shortTypeName, versionRef, type CellKind } from "@/lib/sql";
+import { ErrorCode, type SqlResponse } from "@/lib/schemas";
+import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef, type CellKind } from "@/lib/sql";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { SqlEditor } from "@/components/sql-editor";
 import { SqlDockBar } from "./sql-dock-bar";
+
+// Value of the picker's trailing "load earlier versions" option.
+const LOAD_MORE = "more";
 
 const cellClass: Record<CellKind, string> = {
   null: "italic text-muted-foreground/60",
@@ -35,18 +39,68 @@ function formatElapsed(ms: number): string {
 }
 
 function ResultGrid({ result }: { result: SqlResponse }) {
+  const [widths, setWidths] = useState<number[]>([]);
+  const widthAt = (index: number) => widths[index] ?? 220;
+
+  function resizeColumn(index: number, width: number) {
+    setWidths((current) => {
+      const next = [...current];
+      next[index] = Math.max(80, Math.min(10000, width));
+      return next;
+    });
+  }
+
+  function startColumnResize(event: React.PointerEvent<HTMLDivElement>, index: number) {
+    event.preventDefault();
+    const handle = event.currentTarget;
+    const startX = event.clientX;
+    const startWidth = widthAt(index);
+    handle.setPointerCapture(event.pointerId);
+    const onMove = (e: PointerEvent) => resizeColumn(index, startWidth + e.clientX - startX);
+    const onEnd = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onEnd);
+      handle.removeEventListener("pointercancel", onEnd);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onEnd);
+    handle.addEventListener("pointercancel", onEnd);
+  }
+
   if (result.columns.length === 0) {
     return <p className="p-4 text-xs text-muted-foreground">The query returned no columns.</p>;
   }
   return (
-    <table className="w-max min-w-full border-separate border-spacing-0 font-mono text-xs">
+    <table className="table-fixed border-separate border-spacing-0 font-mono text-xs" style={{ width: 48 + result.columns.reduce((sum, _, i) => sum + widthAt(i), 0) }}>
+      <colgroup>
+        <col style={{ width: 48 }} />
+        {result.columns.map((_, i) => <col key={i} style={{ width: widthAt(i) }} />)}
+      </colgroup>
       <thead className="sticky top-0 z-10">
         <tr>
           <th className="border-b bg-muted px-2 py-1.5 text-right font-normal text-muted-foreground">#</th>
           {result.columns.map((c, i) => (
-            <th key={i} className="border-b border-l bg-muted px-2 py-1.5 text-left align-bottom" title={`${c.name}: ${c.type}`}>
-              <div className="font-sans text-xs font-semibold text-foreground">{c.name}</div>
-              <div className="text-[10px] font-normal text-muted-foreground">{shortTypeName(c.type)}</div>
+            <th key={i} className="relative overflow-hidden border-b border-l bg-muted px-2 py-1.5 text-left align-bottom" title={`${c.name}: ${c.type}`}>
+              <div className="truncate font-sans text-xs font-semibold text-foreground">{c.name}</div>
+              <div className="truncate text-[10px] font-normal text-muted-foreground">{shortTypeName(c.type)}</div>
+              <div
+                role="separator"
+                aria-label={`Resize column ${c.name}`}
+                aria-orientation="vertical"
+                aria-valuenow={widthAt(i)}
+                aria-valuemin={80}
+                aria-valuemax={10000}
+                aria-valuetext={`${widthAt(i)} pixels`}
+                tabIndex={0}
+                onPointerDown={(e) => startColumnResize(e, i)}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                    e.preventDefault();
+                    resizeColumn(i, widthAt(i) + (e.key === "ArrowLeft" ? -20 : 20));
+                  }
+                }}
+                className="absolute inset-y-0 right-0 w-2 cursor-col-resize touch-none hover:bg-primary/20 focus-visible:bg-primary/20"
+              />
             </th>
           ))}
         </tr>
@@ -60,8 +114,8 @@ function ResultGrid({ result }: { result: SqlResponse }) {
               return (
                 <td
                   key={i}
-                  title={cell.title}
-                  className={cn("max-w-[28rem] truncate border-b border-l px-2 py-1 whitespace-nowrap", cellClass[cell.kind])}
+                  title={cell.title ?? cell.text}
+                  className={cn("truncate border-b border-l px-2 py-1 whitespace-nowrap", cellClass[cell.kind])}
                 >
                   {cell.text}
                 </td>
@@ -87,8 +141,8 @@ export function SqlPanel({
   segments: readonly string[];
   /** Top-level column names, for editor completion. */
   columns: readonly string[];
-  /** All versions, newest first (the page's versions query); undefined while loading. */
-  versions: readonly TableVersion[] | undefined;
+  /** The page's paged versions query, newest first. */
+  versions: PagedVersions;
   latestVersion: number | null | undefined;
   onCollapse: () => void;
 }) {
@@ -102,10 +156,13 @@ export function SqlPanel({
   const [error, setError] = useState<Error | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(0);
+  const [editorCollapsed, setEditorCollapsed] = useState(false);
+  const [editorSize, setEditorSize] = useState(40);
+  const panes = useRef<HTMLDivElement>(null);
   const controller = useRef<AbortController | null>(null);
   const running = startedAt != null;
   const schema = useMemo(() => ({ [tableName]: columns }), [tableName, columns]);
-  const latest = latestVersion ?? versions?.[0]?.version;
+  const latest = latestVersion ?? versions.versions[0]?.version;
   const exampleRef = versionRef(tableName, Math.max(1, (latest ?? 2) - 1));
   const versionHint = `The version picker sets which version ${quoteIdent(tableName)} reads. Reference any other version in SQL as ${exampleRef}, e.g. to compare versions.`;
 
@@ -148,6 +205,38 @@ export function SqlPanel({
     setStartedAt(null);
   }
 
+  function startPaneResize(event: React.PointerEvent<HTMLDivElement>, vertical: boolean) {
+    event.preventDefault();
+    const handle = event.currentTarget;
+    const bounds = panes.current?.getBoundingClientRect();
+    if (!bounds) return;
+    handle.setPointerCapture(event.pointerId);
+    const onMove = (e: PointerEvent) => {
+      const percent = vertical
+        ? ((e.clientY - bounds.top) / bounds.height) * 100
+        : ((e.clientX - bounds.left) / bounds.width) * 100;
+      setEditorSize(Math.max(15, Math.min(80, percent)));
+    };
+    const onEnd = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onEnd);
+      handle.removeEventListener("pointercancel", onEnd);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onEnd);
+    handle.addEventListener("pointercancel", onEnd);
+  }
+
+  function downloadCsv() {
+    if (!result) return;
+    const url = URL.createObjectURL(new Blob([resultsToCsv(result.columns, result.rows)], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${tableName.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_") || "results"}.csv`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col text-card-foreground">
       <SqlDockBar
@@ -159,6 +248,17 @@ export function SqlPanel({
             <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
             <h2 className="text-sm font-semibold tracking-tight">SQL</h2>
             <Badge variant="outline">Read-only</Badge>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7"
+              aria-expanded={!editorCollapsed}
+              aria-label={editorCollapsed ? "Expand SQL editor" : "Collapse SQL editor"}
+              onClick={() => setEditorCollapsed(!editorCollapsed)}
+            >
+              {editorCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+              {editorCollapsed ? "Show editor" : "Hide editor"}
+            </Button>
             <div className="ml-2 flex items-center gap-2">
               {running ? (
                 <Button size="sm" variant="outline" className="h-7" onClick={cancel}>
@@ -191,30 +291,63 @@ export function SqlPanel({
             <select
               aria-label="Table version to query"
               value={version ?? ""}
-              onChange={(e) => setVersion(e.target.value === "" ? null : Number(e.target.value))}
+              onChange={(e) => {
+                // The trailing option loads another page; the selection stays as it was.
+                if (e.target.value === LOAD_MORE) versions.fetchNextPage();
+                else setVersion(e.target.value === "" ? null : Number(e.target.value));
+              }}
               className="h-7 min-w-0 max-w-64 truncate rounded-md border border-input bg-background px-2 text-xs shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
             >
               <option value="">{latest != null ? `Latest (v${latest})` : "Latest"}</option>
-              {versions?.map((v) => (
+              {versions.versions.map((v) => (
                 <option key={v.version} value={v.version}>
                   v{v.version}
                   {v.timestamp_millis != null ? ` · ${formatDateTime(parseTime(v.timestamp_millis))}` : ""}
                 </option>
               ))}
+              {versions.hasNextPage && (
+                <option value={LOAD_MORE} disabled={versions.isFetchingNextPage}>
+                  {versions.isFetchingNextPage ? "Loading earlier versions…" : "Load earlier versions…"}
+                </option>
+              )}
             </select>
             <HelpTooltip label="About table versions in SQL">{versionHint}</HelpTooltip>
           </>
         }
       />
 
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <SqlEditor
-          value={query}
-          onChange={setQuery}
-          onRun={run}
-          schema={schema}
-          className="h-32 shrink-0 border-b md:h-auto md:w-2/5 md:min-w-80 md:border-r md:border-b-0"
-        />
+      <div ref={panes} className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <div
+          hidden={editorCollapsed}
+          className="h-[var(--editor-size)] min-h-0 min-w-0 shrink-0 md:h-auto md:w-[var(--editor-size)]"
+          style={{ "--editor-size": `${editorSize}%` } as React.CSSProperties}
+        >
+          <SqlEditor value={query} onChange={setQuery} onRun={run} schema={schema} className="h-full w-full" />
+        </div>
+        {!editorCollapsed && ([true, false] as const).map((vertical) => (
+          <div
+            aria-valuemin={15}
+            aria-valuemax={80}
+            key={String(vertical)}
+            role="separator"
+            aria-label="Resize SQL editor"
+            aria-orientation={vertical ? "horizontal" : "vertical"}
+            aria-valuenow={Math.round(editorSize)}
+            tabIndex={0}
+            onPointerDown={(e) => startPaneResize(e, vertical)}
+            onKeyDown={(e) => {
+              const step = vertical ? { ArrowUp: -5, ArrowDown: 5 } : { ArrowLeft: -5, ArrowRight: 5 };
+              const delta = step[e.key as keyof typeof step];
+              if (delta != null) {
+                e.preventDefault();
+                setEditorSize((size) => Math.max(15, Math.min(80, size + delta)));
+              }
+            }}
+            className={vertical
+              ? "h-2 shrink-0 cursor-row-resize touch-none border-y hover:bg-muted focus-visible:bg-muted md:hidden"
+              : "hidden w-2 shrink-0 cursor-col-resize touch-none border-x hover:bg-muted focus-visible:bg-muted md:block"}
+          />
+        ))}
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className={cn("min-h-0 flex-1 overflow-auto", running && "opacity-60")}>
@@ -247,6 +380,9 @@ export function SqlPanel({
               </span>
               {result.version != null && <span>v{result.version}</span>}
               <span>{formatElapsed(result.elapsed_ms)}</span>
+              <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={downloadCsv} disabled={running}>
+                <Download /> Download CSV
+              </Button>
               {result.truncated && (
                 <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
                   Truncated: showing the first {formatCount(result.rows.length)} rows

@@ -89,6 +89,61 @@ export function formatDateTime(date: Date | null, zone: TimeZonePref): string {
   });
 }
 
+interface ZonedParts {
+  date: string;
+  time: string;
+  millis: string;
+  offset: string;
+}
+
+const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+
+/** Wall-clock parts of `date` in the preferred zone. `localZone` overrides the browser's zone
+ *  for `local` (tests pin it). */
+function zonedParts(date: Date, zone: TimeZonePref, localZone?: string): ZonedParts {
+  const timeZone = zone === "utc" ? "UTC" : localZone;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === type)?.value);
+  const [y, mo, d, h, mi, s] = [get("year"), get("month"), get("day"), get("hour"), get("minute"), get("second")];
+  const ms = date.getUTCMilliseconds();
+  // The zone's offset is how far its wall clock runs ahead of UTC at this instant.
+  const offsetMin = Math.round((Date.UTC(y, mo - 1, d, h, mi, s, ms) - date.getTime()) / 60_000);
+  const abs = Math.abs(offsetMin);
+  return {
+    date: `${pad(y, 4)}-${pad(mo)}-${pad(d)}`,
+    time: `${pad(h)}:${pad(mi)}:${pad(s)}`,
+    millis: pad(ms, 3),
+    offset: offsetMin === 0 ? "Z" : `${offsetMin < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`,
+  };
+}
+
+/** `2026-11-10` in the preferred zone. */
+export function formatIsoDate(date: Date | null, zone: TimeZonePref, localZone?: string): string {
+  return date ? zonedParts(date, zone, localZone).date : DASH;
+}
+
+/** `21:02:37` (24-hour) in the preferred zone. */
+export function formatIsoTime(date: Date | null, zone: TimeZonePref, localZone?: string): string {
+  return date ? zonedParts(date, zone, localZone).time : DASH;
+}
+
+/** Full ISO 8601 with milliseconds and offset in the preferred zone:
+ *  `2026-11-10T21:02:37.123Z`, `2026-11-10T13:02:37.123-08:00`. */
+export function formatIsoTimestamp(date: Date | null, zone: TimeZonePref, localZone?: string): string {
+  if (!date) return DASH;
+  const p = zonedParts(date, zone, localZone);
+  return `${p.date}T${p.time}.${p.millis}${p.offset}`;
+}
+
 /** Decimal gigabytes, the unit storage is priced in: `19,069 GB`, `0.99 GB`. */
 export function formatGigabytes(bytes: number | null | undefined): string {
   if (bytes == null) return DASH;

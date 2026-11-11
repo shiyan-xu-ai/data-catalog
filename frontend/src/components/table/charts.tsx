@@ -116,7 +116,8 @@ export function GrowthChart({ points }: { points: VersionPoint[] }) {
   const dots = points.length <= 60;
   const formatDateTime = useDateTimeFormatter();
   return (
-    <ChartContainer config={growthConfig} className="aspect-auto h-64 w-full">
+    // Sticky above the version table, so it scales with the viewport and leaves room for rows.
+    <ChartContainer config={growthConfig} className="aspect-auto h-[clamp(80px,15vh,160px)] w-full">
       <LineChart data={points} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
         <CartesianGrid vertical={false} />
         <XAxis

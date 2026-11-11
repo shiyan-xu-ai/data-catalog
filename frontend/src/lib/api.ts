@@ -17,6 +17,8 @@ import {
   sqlResponseSchema,
   tableStatsResponseSchema,
   tableStorageResponseSchema,
+  timelineResponseSchema,
+  type TimelineResponse,
   type ColumnStorageResponse,
   type CreateNamespaceResponse,
   type DescribeNamespaceResponse,
@@ -193,15 +195,15 @@ export function describeTable(table: readonly string[]): Promise<DescribeTableRe
   );
 }
 
+/** One page of versions, newest first; `pageToken` is the last version of the previous page. */
 export function listTableVersions(
   table: readonly string[],
-  pageToken?: string | null,
-  limit?: number,
+  pageToken: string | null,
+  limit: number,
 ): Promise<ListTableVersionsResponse> {
-  return request("POST", `/v1/table/${idPathSegment(table)}/version/list`, listTableVersionsResponseSchema, {
-    ...(pageToken ? { page_token: pageToken } : {}),
-    ...(limit !== undefined ? { limit } : {}),
-  });
+  const q = new URLSearchParams({ descending: "true", limit: String(limit) });
+  if (pageToken) q.set("page_token", pageToken);
+  return request("POST", `/v1/table/${idPathSegment(table)}/version/list?${q}`, listTableVersionsResponseSchema, {});
 }
 
 /** Every index on the current version, following `page_token` to the end. */
@@ -241,6 +243,20 @@ export function getTableStorage(table: readonly string[]): Promise<TableStorageR
  *  data bytes. Reads every fragment's metadata, so it is slow on large tables. */
 export function getTableStats(table: readonly string[]): Promise<TableStatsResponse> {
   return request("POST", `/v1/table/${idPathSegment(table)}/stats`, tableStatsResponseSchema, {});
+}
+
+/** Catalog route: one page of the table timeline, newest first; `pageToken` is the last
+ *  version of the previous page. */
+export function getTableTimeline(
+  table: readonly string[],
+  pageToken?: string | null,
+  limit?: number,
+): Promise<TimelineResponse> {
+  return request(
+    "GET",
+    `/catalog/v1/table/${idPathSegment(table)}/timeline${pageQuery(pageToken, limit)}`,
+    timelineResponseSchema,
+  );
 }
 
 export function registerTable(

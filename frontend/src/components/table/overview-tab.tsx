@@ -7,7 +7,6 @@ import {
   parseManifestSummary,
   topColumns,
   totalIndexBytes,
-  versionSeries,
 } from "@/lib/table-metadata";
 import type {
   ColumnStorageResponse,
@@ -15,14 +14,13 @@ import type {
   IndexContent,
   TableStatsResponse,
   TableStorageResponse,
-  TableVersion,
 } from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
-import { ColumnStorageChart, GrowthChart, LegendItem, StorageSplitChart, type StorageSlice } from "./charts";
+import { ColumnStorageChart, LegendItem, StorageSplitChart, type StorageSlice } from "./charts";
 import { FragmentDistributionChart, SmallFragmentShare } from "./fragment-charts";
 
 const TOP_COLUMNS = 12;
@@ -81,14 +79,12 @@ function ChartSkeleton({ caption, height = "h-52" }: { caption?: string; height?
 
 export function OverviewTab({
   detail,
-  versions,
   indices,
   columns,
   storage,
   stats,
 }: {
   detail: UseQueryResult<DescribeTableResponse>;
-  versions: UseQueryResult<TableVersion[]>;
   indices: UseQueryResult<IndexContent[]>;
   columns: UseQueryResult<ColumnStorageResponse>;
   storage: UseQueryResult<TableStorageResponse>;
@@ -96,7 +92,6 @@ export function OverviewTab({
 }) {
   const s = parseManifestSummary(detail.data?.metadata);
   const indexBytes = indices.data ? totalIndexBytes(indices.data) : null;
-  const series = versions.data ? versionSeries(versions.data) : [];
   // The storage listing is enabled lazily, so "not loaded yet" covers both idle and fetching.
   const storageLoading = !storage.data && !storage.error;
   const pricing = storage.data?.pricing;
@@ -244,32 +239,6 @@ export function OverviewTab({
               />
             </div>
           </div>
-        )}
-      </Section>
-
-      <Section
-        title="Trends"
-        description="Rows and data size at every version"
-        help="Data size counts the data files each version references, the same measure as Current version data."
-      >
-        {versions.error ? (
-          <ErrorState message={versions.error.message} />
-        ) : versions.isPending ? (
-          <ChartSkeleton height="h-64" />
-        ) : series.every((p) => p.rows == null && p.bytes == null) ? (
-          <EmptyState icon={BarChart3} title="No version history">No version reports rows or size.</EmptyState>
-        ) : (
-          <>
-            <GrowthChart points={series} />
-            <div className="mt-3 flex flex-wrap justify-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <span className="h-0.5 w-4 rounded bg-[hsl(var(--chart-1))]" /> Rows (left axis)
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="h-0 w-4 border-t-2 border-dashed border-[hsl(var(--chart-2))]" /> Data size (right axis)
-              </span>
-            </div>
-          </>
         )}
       </Section>
     </div>

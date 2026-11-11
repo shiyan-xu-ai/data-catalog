@@ -239,3 +239,25 @@ export const tableStatsResponseSchema = z.object({
   }),
 });
 export type TableStatsResponse = z.infer<typeof tableStatsResponseSchema>;
+
+/** Catalog `GET /catalog/v1/table/{id}/timeline`: one event per retained version, newest
+ *  first. `operation` is the Lance transaction operation name; `details` depends on it. */
+export const timelineEventSchema = z.object({
+  version: z.number(),
+  timestamp_millis: z.number().nullable(),
+  operation: z.string(),
+  summary: z.record(z.string(), z.string()),
+  writer: z.object({ library: z.string(), version: z.string() }).nullable(),
+  transaction: z
+    .object({ uuid: z.string(), read_version: z.number(), properties: z.record(z.string(), z.string()) })
+    .nullable(),
+  tags: z.array(z.string()),
+  details: z.record(z.string(), z.unknown()),
+});
+export type TimelineEvent = z.infer<typeof timelineEventSchema>;
+
+export const timelineResponseSchema = z.object({
+  events: z.array(timelineEventSchema),
+  page_token: z.string().nullish(),
+});
+export type TimelineResponse = z.infer<typeof timelineResponseSchema>;
