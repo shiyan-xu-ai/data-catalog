@@ -11,6 +11,7 @@ Auth Proxy).
 - Docker (the container is built with `--local`).
 - AWS credentials with `list` + `get` on every bucket holding datasets you will
   register. The catalog only reads datasets; it never writes or deletes them.
+- `curl` and `jq` for the smoke test and the table move script.
 
 ## 1. Pick an environment
 
@@ -68,10 +69,11 @@ TOKEN=$(apps-platform auth token)
 auth() { curl -s -H "Authorization: Bearer $TOKEN" "$@"; }
 
 auth "$URL/readyz" -o /dev/null -w '%{http_code}\n'               # 200
-auth -X POST "$URL/v1/namespace/prod/create" -H 'content-type: application/json' -d '{}'
-auth -X POST "$URL/v1/table/prod\$users/register" -H 'content-type: application/json' \
+auth -X POST "$URL/v1/namespace/automotive/create" -H 'content-type: application/json' -d '{"mode":"ExistOk"}'
+auth -X POST "$URL/v1/namespace/automotive\$smoke/create" -H 'content-type: application/json' -d '{}'
+auth -X POST "$URL/v1/table/automotive\$smoke\$users/register" -H 'content-type: application/json' \
   -d '{"location":"s3://bucket/path/users.lance","properties":{"owner":"you@applied.co"}}'
-auth -X POST "$URL/v1/table/prod\$users/describe?load_detailed_metadata=true" \
+auth -X POST "$URL/v1/table/automotive\$smoke\$users/describe?load_detailed_metadata=true" \
   -H 'content-type: application/json' -d '{}' | python3 -m json.tool
 ```
 
@@ -79,6 +81,31 @@ Open `$URL/` for the UI; tail logs with `apps-platform app tail`.
 
 Data from the previous S3-only catalog (`_catalog/` registry and registration
 JSON) is neither read nor deleted; re-register the datasets you need.
+
+## Namespace layout and moving tables
+
+Datasets live under `<vertical>/<domain>/<table>`. `CATALOG_VERTICALS` in
+`project.toml` lists the verticals allowed as top-level namespaces; creating any
+other top-level namespace returns 400. Existing top-level namespaces stay
+readable until they are emptied and dropped.
+
+[`scripts/move-tables.sh`](../scripts/move-tables.sh) moves registered tables
+without touching their data. It keeps the location, owner, description, and
+client properties, and drops old namespaces once they are empty.
+Re-registration resets `catalog.registered_at`, and the old paths stop
+resolving, so update any client that uses them. Moving the original
+storage-derived registrations into the vertical layout:
+
+```sh
+cat > /tmp/vertical-moves.txt <<'EOF'
+scenario_dataset_export/1stage_scenario_dataset_v2/2026-11-07_06-46-14 automotive/scenarios/1stage_scenario_dataset_v2
+world_foundation_model/datasets/silver/metadata/abc_130k robotics/episodes/abc_130k
+vlm/corpus/video_embeddings automotive/vlm/video_embeddings
+EOF
+export CATALOG_URL=$URL CATALOG_TOKEN=$(apps-platform auth token)
+scripts/move-tables.sh /tmp/vertical-moves.txt           # dry run: prints the calls
+scripts/move-tables.sh /tmp/vertical-moves.txt --apply   # safe to rerun
+```
 
 ## Networking note (static egress IP)
 
