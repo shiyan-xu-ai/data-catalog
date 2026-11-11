@@ -49,7 +49,11 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => return Err(e).context("connect to database and run migrations"),
         }
     };
-    let namespace = Arc::new(PostgresNamespace::new(pool, storage_options));
+    let namespace = Arc::new(
+        PostgresNamespace::new(pool, storage_options)
+            .with_top_level_allowlist(cfg.verticals)
+            .context("CATALOG_VERTICALS")?,
+    );
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await

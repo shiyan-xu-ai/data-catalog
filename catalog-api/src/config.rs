@@ -19,6 +19,8 @@ pub struct AppConfig {
     /// Directory holding the built frontend (`CATALOG_WEBUI_DIR`, default `frontend/dist`).
     /// Served at `/` when it contains an `index.html`.
     pub webui_dir: String,
+    /// Allowed top-level namespace names (`CATALOG_VERTICALS`, comma-separated); empty allows any.
+    pub verticals: Vec<String>,
     /// Settings of the `/catalog/v1` routes.
     pub catalog: CatalogConfig,
 }
@@ -138,6 +140,7 @@ impl AppConfig {
                 .ok()
                 .filter(|s| !s.is_empty()),
             webui_dir: env_or("CATALOG_WEBUI_DIR", "frontend/dist"),
+            verticals: parse_list(&std::env::var("CATALOG_VERTICALS").unwrap_or_default()),
             catalog: CatalogConfig::from_env()?,
         })
     }
@@ -145,6 +148,15 @@ impl AppConfig {
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+/// Comma-separated names, trimmed, with empty entries dropped.
+fn parse_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// A positive integer from `name`, or `default` when unset.
@@ -156,5 +168,20 @@ fn positive_env<T: FromStr + PartialOrd + Default>(name: &str, default: T) -> Re
             .filter(|n| *n > T::default())
             .with_context(|| format!("{name} must be a positive integer, got {raw:?}")),
         Err(_) => Ok(default),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_list;
+
+    #[test]
+    fn parse_list_trims_and_drops_empty_entries() {
+        assert!(parse_list("").is_empty());
+        assert!(parse_list(" , ").is_empty());
+        assert_eq!(
+            parse_list(" automotive, ,mining "),
+            ["automotive", "mining"]
+        );
     }
 }

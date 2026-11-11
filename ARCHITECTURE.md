@@ -72,6 +72,10 @@ storage route therefore lists object metadata under the registered location,
 groups it by category, and prices the total at
 `CATALOG_STORAGE_PRICE_PER_GB_MONTH`.
 
+- **Create namespace** at the top level accepts only the business verticals in
+  `CATALOG_VERTICALS` when it is set, so the tree reads
+  `<vertical>/<domain>/<table>`. Deeper levels are unrestricted, and existing
+  top-level namespaces outside the list stay readable and droppable.
 - **Register** opens the location as a Lance dataset before inserting, so an
   unreadable URI never becomes a table.
 - **Describe** reads Postgres only, unless `load_detailed_metadata` is set; then

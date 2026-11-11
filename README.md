@@ -42,6 +42,7 @@ The catalog never writes to registered datasets. Other spec operations, includin
 | `PORT` | unset | Cloud Run port; overrides `CATALOG_BIND_ADDR`. |
 | `CATALOG_BIND_ADDR` | `0.0.0.0:8080` | Bind address when `PORT` is unset. |
 | `CATALOG_WEBUI_DIR` | `frontend/dist` | Built UI directory; if absent, only the API is served. |
+| `CATALOG_VERTICALS` | unset | Comma-separated business verticals allowed as top-level namespaces (deployed: `automotive,trucking,mining,robotics`). Creating any other top-level namespace returns 400; existing ones stay readable. Unset allows any. |
 | `CATALOG_SECRET_PREFIX` | `K_SERVICE` | Secret Manager prefix for AWS credentials on Cloud Run. |
 | `CATALOG_STORAGE_PRICE_PER_GB_MONTH` | `0.0133875` | Storage price per decimal GB-month used for cost estimates (OCI Active tier, contracted rate). |
 | `CATALOG_STORAGE_PRICE_TIER` | `OCI Object Storage Active (contracted)` | Label shown next to the cost estimate. |

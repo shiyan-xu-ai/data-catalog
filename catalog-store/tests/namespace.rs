@@ -4,6 +4,7 @@ mod support;
 
 use std::collections::HashMap;
 
+use catalog_store::PostgresNamespace;
 use lance::Dataset;
 use lance_namespace::models::{
     CreateNamespaceRequest, DeregisterTableRequest, DescribeNamespaceRequest,
@@ -726,4 +727,115 @@ async fn table_details() {
         .await
         .unwrap_err();
     assert_eq!(code(err), TABLE_NOT_FOUND);
+}
+
+#[tokio::test]
+async fn top_level_allowlist() {
+    let Some(pool) = support::pool("store_allowlist").await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let embeddings = support::write_dataset(dir.path(), "embeddings.lance").await;
+    let verticals = ["automotive", "trucking", "mining", "robotics"].map(String::from);
+
+    // A namespace created before the allowlist applied.
+    let unrestricted = PostgresNamespace::new(pool.clone(), HashMap::new());
+    unrestricted
+        .create_namespace(create(&["vlm"]))
+        .await
+        .unwrap();
+    unrestricted
+        .create_namespace(create(&["vlm", "corpus"]))
+        .await
+        .unwrap();
+    unrestricted
+        .register_table(register(&["vlm", "corpus", "embeddings"], &embeddings))
+        .await
+        .unwrap();
+
+    let ns = PostgresNamespace::new(pool, HashMap::new())
+        .with_top_level_allowlist(verticals.to_vec())
+        .unwrap();
+
+    // AE1: only allowlisted top-level names can be created; the error names the allowlist.
+    ns.create_namespace(create(&["automotive"])).await.unwrap();
+    let err = ns
+        .create_namespace(create(&["world_foundation_model"]))
+        .await
+        .unwrap_err();
+    let message = err.to_string();
+    assert_eq!(code(err), INVALID_INPUT);
+    assert!(
+        message.contains("automotive, trucking, mining, robotics"),
+        "{message}"
+    );
+    // Every create mode is a creation request, including on an existing legacy name.
+    for mode in ["ExistOk", "Overwrite"] {
+        let err = ns
+            .create_namespace(CreateNamespaceRequest {
+                id: id(&["vlm"]),
+                mode: Some(mode.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(code(err), INVALID_INPUT, "{mode}");
+    }
+
+    // AE2: names below a vertical are unrestricted.
+    ns.create_namespace(create(&["automotive", "scenarios"]))
+        .await
+        .unwrap();
+    ns.create_namespace(create(&["automotive", "scenarios", "v2"]))
+        .await
+        .unwrap();
+    ns.register_table(register(
+        &["automotive", "scenarios", "embeddings"],
+        &embeddings,
+    ))
+    .await
+    .unwrap();
+
+    // AE4: legacy top-level namespaces stay readable and droppable once empty.
+    let names = ns
+        .list_namespaces(list_ns(&[], None, None))
+        .await
+        .unwrap()
+        .namespaces;
+    assert_eq!(names, ["automotive", "vlm"]);
+    ns.describe_namespace(DescribeNamespaceRequest {
+        id: id(&["vlm"]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let legacy = ns
+        .describe_table(DescribeTableRequest {
+            id: id(&["vlm", "corpus", "embeddings"]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(legacy.location.as_deref(), Some(embeddings.as_str()));
+    ns.deregister_table(DeregisterTableRequest {
+        id: id(&["vlm", "corpus", "embeddings"]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    for path in [&["vlm", "corpus"][..], &["vlm"]] {
+        ns.drop_namespace(DropNamespaceRequest {
+            id: id(path),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    // Allowlist entries must be valid namespace names.
+    let pool = support::pool("store_allowlist_invalid").await.unwrap();
+    let err = PostgresNamespace::new(pool, HashMap::new())
+        .with_top_level_allowlist(vec!["bad$name".into()])
+        .unwrap_err();
+    assert_eq!(code(err), INVALID_INPUT);
 }

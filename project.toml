@@ -24,6 +24,9 @@ use_static_egress_ip = false
 # Non-secret runtime config. Region applies to S3 URIs the catalog opens.
 AWS_DEFAULT_REGION = "us-east-1"
 RUST_LOG = "info"
+# Business verticals allowed as top-level namespaces; datasets live under
+# <vertical>/<domain>/<table>.
+CATALOG_VERTICALS = "automotive,trucking,mining,robotics"
 
 [metadata]
 owner = "shiyan.xu@applied.co"

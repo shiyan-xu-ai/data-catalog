@@ -136,6 +136,8 @@ pub struct PostgresNamespace {
     pool: PgPool,
     storage_options: HashMap<String, String>,
     session: Arc<Session>,
+    /// Names allowed for new top-level namespaces; empty allows any.
+    top_level_allowlist: Vec<String>,
 }
 
 impl std::fmt::Debug for PostgresNamespace {
@@ -151,7 +153,17 @@ impl PostgresNamespace {
             pool,
             storage_options,
             session: Arc::new(Session::default()),
+            top_level_allowlist: Vec::new(),
         }
+    }
+
+    /// Restricts creating top-level namespaces to `names`; an empty list allows any. Existing
+    /// top-level namespaces outside the list stay readable and droppable. Errors with
+    /// `InvalidInput` when a name is not a valid namespace name.
+    pub fn with_top_level_allowlist(mut self, names: Vec<String>) -> Result<Self> {
+        validate_names(&names)?;
+        self.top_level_allowlist = names;
+        Ok(self)
     }
 
     /// True when the database answers a trivial query.
@@ -397,6 +409,14 @@ impl LanceNamespace for PostgresNamespace {
             .into());
         }
         validate_names(&path)?;
+        if let [name] = path.as_slice() {
+            if !self.top_level_allowlist.is_empty() && !self.top_level_allowlist.contains(name) {
+                return Err(invalid_input(format!(
+                    "top-level namespace {name:?} is not allowed; allowed: {}",
+                    self.top_level_allowlist.join(", ")
+                )));
+            }
+        }
         let properties = Json(request.properties.unwrap_or_default());
 
         let mut tx = self.pool.begin().await.map_err(db_error)?;

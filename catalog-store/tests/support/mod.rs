@@ -14,6 +14,12 @@ use lance_namespace::{Error, NamespaceError};
 /// Returns `None`, after printing a skip notice, when `CATALOG_TEST_DATABASE_URL` is unset,
 /// unless `CATALOG_REQUIRE_DB_TESTS=1` makes that a failure.
 pub async fn namespace(test: &str) -> Option<Arc<PostgresNamespace>> {
+    let pool = pool(test).await?;
+    Some(Arc::new(PostgresNamespace::new(pool, HashMap::new())))
+}
+
+/// A migrated pool on a freshly recreated schema named after the test; `None` as in [`namespace`].
+pub async fn pool(test: &str) -> Option<sqlx::PgPool> {
     let Ok(url) = std::env::var("CATALOG_TEST_DATABASE_URL") else {
         assert!(
             std::env::var("CATALOG_REQUIRE_DB_TESTS").as_deref() != Ok("1"),
@@ -29,10 +35,11 @@ pub async fn namespace(test: &str) -> Option<Arc<PostgresNamespace>> {
         .await
         .expect("drop test schema");
     admin.close().await;
-    let pool = catalog_store::connect(&url, Some(&schema))
-        .await
-        .expect("connect test schema");
-    Some(Arc::new(PostgresNamespace::new(pool, HashMap::new())))
+    Some(
+        catalog_store::connect(&url, Some(&schema))
+            .await
+            .expect("connect test schema"),
+    )
 }
 
 /// Writes a three-row Lance dataset (`id: int32`, `name: utf8`) and returns its URI.
