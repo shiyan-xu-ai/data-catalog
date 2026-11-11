@@ -87,6 +87,7 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
     Router::new()
         .route("/table/:id/column-storage", get(column_storage))
         .route("/table/:id/storage", get(table_storage))
+        .route("/table/:id/timeline", get(table_timeline))
         .route("/table/:id/sql", post(run_sql))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
@@ -367,6 +368,34 @@ async fn column_storage(
                 bytes_on_disk: c.bytes_on_disk,
             })
             .collect(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct TimelineQuery {
+    page_token: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TimelineResponse {
+    events: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_token: Option<String>,
+}
+
+async fn table_timeline(
+    State(catalog): State<Catalog>,
+    Path(id): Path<String>,
+    Query(q): Query<TimelineQuery>,
+) -> ApiResult<Json<TimelineResponse>> {
+    let timeline = catalog
+        .namespace
+        .timeline(&parse_id(&id), q.page_token.as_deref(), q.limit)
+        .await?;
+    Ok(Json(TimelineResponse {
+        events: timeline.events,
+        page_token: timeline.page_token,
     }))
 }
 

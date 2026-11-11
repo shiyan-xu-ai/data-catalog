@@ -644,6 +644,68 @@ async fn table_details() {
     assert_eq!(tagged_meta["config.lance.auto_cleanup.interval"], "20");
     assert_eq!(tagged_meta["table_metadata.producer"], "export");
 
+    // Timeline: one event per version, newest first, from manifests and transactions.
+    let history = support::write_dataset(dir.path(), "history.lance").await;
+    support::append_row(&history).await;
+    support::add_scalar_index(&history).await;
+    let mut dataset = lance::Dataset::open(&history).await.unwrap();
+    dataset.delete("id = 2").await.unwrap();
+    dataset
+        .update_metadata([("producer", "export")])
+        .await
+        .unwrap();
+    dataset.tags().create("release", 3).await.unwrap();
+    ns.register_table(register(&["prod", "history"], &history))
+        .await
+        .unwrap();
+    let history_id = id(&["prod", "history"]).unwrap();
+    let page1 = ns.timeline(&history_id, None, Some(3)).await.unwrap();
+    let page2 = ns
+        .timeline(&history_id, page1.page_token.as_deref(), Some(3))
+        .await
+        .unwrap();
+    assert_eq!(page1.page_token.as_deref(), Some("3"));
+    assert_eq!(page2.page_token, None);
+    let events: Vec<_> = page1.events.iter().chain(&page2.events).collect();
+    let field = |key: &str| -> Vec<_> { events.iter().map(|e| e[key].clone()).collect() };
+    assert_eq!(
+        field("version"),
+        [5, 4, 3, 2, 1].map(serde_json::Value::from)
+    );
+    assert_eq!(
+        field("operation"),
+        [
+            "UpdateConfig",
+            "Delete",
+            "CreateIndex",
+            "Append",
+            "Overwrite"
+        ]
+        .map(serde_json::Value::from)
+    );
+    let [update_config, delete, create_index, append, overwrite] = events[..] else {
+        unreachable!()
+    };
+    assert_eq!(
+        update_config["details"]["table_metadata"]["set"]["producer"],
+        "export"
+    );
+    assert_eq!(delete["details"]["predicate"], "id = 2");
+    assert_eq!(delete["summary"]["total_deletion_file_rows"], "1");
+    let added = &create_index["details"]["added"][0];
+    assert_eq!(
+        (&added["name"], &added["columns"][0]),
+        (&"id_idx".into(), &"id".into())
+    );
+    assert_eq!(create_index["tags"], serde_json::json!(["release"]));
+    assert_eq!(append["details"]["rows_added"], 1);
+    assert_eq!(append["summary"]["total_rows"], "4");
+    assert_eq!(overwrite["details"]["fields"], 2);
+    assert_eq!(overwrite["writer"]["library"], "lance");
+    assert!(overwrite["timestamp_millis"].is_i64() && overwrite["transaction"]["uuid"].is_string());
+    let err = ns.timeline(&history_id, Some("x"), None).await.unwrap_err();
+    assert_eq!(code(err), INVALID_INPUT);
+
     // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found.
     std::fs::remove_dir_all(&metrics).unwrap();
     let cheap = ns.describe_table(describe(false)).await.unwrap();
@@ -658,5 +720,10 @@ async fn table_details() {
         .unwrap_err();
     assert_eq!(code(err), TABLE_NOT_FOUND);
     let err = ns.column_storage(&table().unwrap()).await.unwrap_err();
+    assert_eq!(code(err), TABLE_NOT_FOUND);
+    let err = ns
+        .timeline(&table().unwrap(), None, None)
+        .await
+        .unwrap_err();
     assert_eq!(code(err), TABLE_NOT_FOUND);
 }

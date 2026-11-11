@@ -2,6 +2,7 @@
 
 mod namespace;
 mod sql;
+mod timeline;
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -13,6 +14,7 @@ pub use namespace::{
     STORAGE_CATEGORIES,
 };
 pub use sql::{SqlColumn, SqlLimits, SqlResult};
+pub use timeline::Timeline;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 

@@ -268,6 +268,22 @@ async fn rest_catalog_routes() {
         stats["total_bytes"].as_i64().unwrap()
     );
 
+    // Timeline pages newest first; the token is the last version returned.
+    let (status, page1) = get(&app, "/catalog/v1/table/prod%24users/timeline?limit=1").await;
+    assert_eq!(status, StatusCode::OK, "{page1}");
+    assert_eq!(page1["events"][0]["version"], 2);
+    assert_eq!(page1["events"][0]["operation"], "CreateIndex");
+    assert_eq!(page1["events"][0]["details"]["added"][0]["name"], "id_idx");
+    assert_eq!(page1["page_token"], "2");
+    let (status, page2) = get(
+        &app,
+        "/catalog/v1/table/prod%24users/timeline?limit=1&page_token=2",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page2["events"][0]["operation"], "Overwrite");
+    assert!(page2.get("page_token").is_none());
+
     // On-storage footprint: categories partition the listing, priced per decimal GB-month.
     let (status, footprint) = get(&app, "/catalog/v1/table/prod%24users/storage").await;
     assert_eq!(status, StatusCode::OK, "{footprint}");
@@ -441,6 +457,7 @@ async fn rest_catalog_routes() {
         get(&app, "/catalog/v1/table/prod%24gone/column-storage").await,
     );
     error(StatusCode::NOT_FOUND, 4)(get(&app, "/catalog/v1/table/prod%24gone/storage").await);
+    error(StatusCode::NOT_FOUND, 4)(get(&app, "/catalog/v1/table/prod%24gone/timeline").await);
     error(StatusCode::NOT_FOUND, 4)(
         post(
             &app,

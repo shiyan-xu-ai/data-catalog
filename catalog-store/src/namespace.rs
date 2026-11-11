@@ -46,7 +46,7 @@ const TABLE_COLUMNS: &str = r#"location, properties, owner, description,
 /// Fragments below the compaction target row count, as upstream `get_table_stats` counts them.
 const SMALL_FRAGMENT_ROWS: u64 = 1024 * 1024;
 /// Object-store reads (manifests, fragment footers) issued concurrently per request.
-const READ_CONCURRENCY: usize = 16;
+pub(crate) const READ_CONCURRENCY: usize = 16;
 
 type Properties = HashMap<String, String>;
 
