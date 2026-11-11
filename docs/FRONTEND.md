@@ -33,9 +33,10 @@ page can fill; the table page puts its SQL panel there.
   properties, drop an empty namespace, and register an existing Lance dataset by
   URI with an optional owner, description, and extra properties.
 - **Table page.** A header with the table name and the storage format and
-  current version badges (the namespace path is in the breadcrumb), five tabs
-  (the active tab is in the `?tab=` query; Schema, Versions, and Indices show
-  their counts), and a SQL panel docked at the bottom. The UI offers no
+  current version badges (the namespace path is in the breadcrumb), six tabs
+  (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
+  in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
+  docked at the bottom. The UI offers no
   deregistration; the API still does.
   - **Overview:** six tiles: rows (with fragment count), current-version data
     (the manifest's data-file size and count), deleted rows, current index size,
@@ -60,7 +61,6 @@ page can fill; the table page puts its SQL panel there.
       compaction target; fragments below it are compaction candidates). A
       table's `lance.compaction.target_rows_per_fragment` override is shown
       but not used, since the stats count against the fixed default.
-    - *Trends:* rows and current-version data size over every version.
 
     Column storage, the storage listing, and table stats are slow, so they are
     requested only after the rest of the page loaded; each shows its own
@@ -69,29 +69,58 @@ page can fill; the table page puts its SQL panel there.
     location, registered and updated times, tags, branches), then client
     properties, Lance table metadata (`table_metadata`), and Lance table
     configuration (`config`).
+  - **Timeline:** every retained version as a compact commit row, newest
+    first, from `GET /catalog/v1/table/{id}/timeline`, 50 at a time with "Load
+    earlier". Rows sit on a vertical rail under sticky `YYYY-MM-DD` day
+    headers and show a color-coded operation marker and label (Compaction for
+    `Rewrite`, Index built for `CreateIndex`, and so on), the version, its
+    tags, one essential summary (row change, index name, first changed key,
+    fragments before → after), and the commit time as `HH:mm:ss`; dates and
+    times follow the timezone preference. A jump in version numbers shows a
+    dashed row for the versions cleanup removed. Operation chips with counts
+    over the loaded entries filter the list. Clicking a row (or Enter/Space)
+    opens a detail pane beside the list (an overlay on narrow screens; Esc or
+    the close button closes it, arrow keys move the selection) with the full
+    ISO 8601 commit timestamp, operation, version and read version, tags, the
+    row, data size, fragment, and deleted-row change against the next older
+    loaded version ("—" for the oldest loaded one), all operation details
+    (delete predicate, built indices, set and removed keys with values,
+    compaction counts), the manifest totals at that version, the writer, and
+    the transaction id and properties.
+  - **Versions:** versions load newest first, 50 at a time
+    (`POST /v1/table/{id}/version/list?descending=true`), with "Load earlier"
+    for the next page; nothing reads every manifest up front. A Trends chart of
+    rows and current-version data size covers exactly the loaded versions (its
+    caption names the range, e.g. `v240–v289 (50 loaded)`) and stays pinned at
+    the top while the version table scrolls under it, with the table header
+    pinned just below. The table lists the loaded versions with timestamp,
+    rows and row change against the next older loaded version ("—" for the
+    oldest loaded one), data size, data files, and deletions.
   - **Schema:** an expandable field tree with compact types (full type on
     hover), nullability, and field metadata, a raw JSON view, and schema-level
     metadata.
-  - **Versions:** every version, newest first, paged 20 at a time, with
-    timestamp, rows and row change, data size, data files, and deletions.
   - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
 
   The **SQL panel** (labeled read-only) runs one query at a time against this
-  table (`POST /catalog/v1/table/{id}/sql`). A version picker, listing every
-  version newest first, sets which version the table name reads (latest by
+  table (`POST /catalog/v1/table/{id}/sql`). A version picker, listing the
+  loaded versions newest first (its last option loads earlier ones; it shares
+  the Versions tab's pages), sets which version the table name reads (latest by
   default); any other version is addressable in SQL as `"<table>@v<N>"`, for
   example to compare versions. The panel opens with
   `SELECT * FROM "<table>" LIMIT 20`, runs on the Run button or Ctrl/Cmd+Enter,
-  and shows column names and types, compact nested and binary values, row
-  count, the queried version, elapsed time, a truncation notice past the
+  and shows column names and types, nested values as JSON, binary values as hex,
+  row count, the queried version, elapsed time, a truncation notice past the
   server's row cap, and the server's error message. Cancel stops waiting; the
   server's time limit ends the query. The dock spans the content width with
-  the editor on the left (about 40%) and scrollable results on the right
-  (stacked on narrow screens). Dragging its top edge resizes it. Clicking any
-  empty part of its header bar, or the toggle button pinned at the bar's right
-  end, collapses it to that bar or expands it again; controls in the bar (Run,
-  Reset, the version picker, help) keep their own behavior. Height and
-  collapsed state persist. The tabs stay usable while a query runs.
+  a collapsible editor on the left and scrollable results on the right (stacked
+  on narrow screens). Drag the divider to resize the editor, or a column header
+  edge to resize that column. Download CSV exports the returned rows, including
+  full values; truncated results do not include rows beyond the server's cap.
+  Dragging the dock's top edge resizes it. Clicking any empty part of its header
+  bar, or the toggle button at the right end, collapses or expands it; the
+  controls in the bar keep their own behavior. Height and collapsed state
+  persist. Query results remain until the table page is closed
+  or the user navigates away. The tabs stay usable while a query runs.
 
 Catalog-recorded facts come from the cheap describe, and Lance-derived sections
 from the detailed describe and the version, index, tag, and branch routes. Each

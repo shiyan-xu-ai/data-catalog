@@ -1,0 +1,91 @@
+categories:
+  identity:
+    - name: name
+      description: Item name.
+      detail_level: brief
+    - name: kind
+      description: spec / format / catalog / engine / approach.
+      detail_level: brief
+    - name: version_checked
+      description: Version or commit and date the facts were checked against.
+      detail_level: brief
+  table_stats:
+    - name: table_level_stats
+      description: Which table-level stats are available (rows, bytes, files/fragments, deletions, indices, versions).
+      detail_level: moderate
+    - name: metric_semantics
+      description: Exact meaning of each metric (e.g. total_bytes data-only vs data+index+overlay; physical vs live rows; deletions counted).
+      detail_level: detailed
+  column_stats:
+    - name: column_level_stats
+      description: Which column stats are available (min/max, null count, NDV, avg/max length, histograms, per-column bytes).
+      detail_level: moderate
+    - name: precision_and_exactness
+      description: Exact, conservative bound, estimate (HLL), or unknown.
+      detail_level: moderate
+    - name: coverage
+      description: Share of live fragments or columns covered; whether partial coverage is flagged.
+      detail_level: moderate
+    - name: type_support
+      description: Nested types, NaN and null semantics, ordering, truncated bounds.
+      detail_level: moderate
+    - name: stats_granularity
+      description: Zone, file, fragment, index segment, partition, table, or version.
+      detail_level: brief
+  api:
+    - name: api_surface
+      description: Operation or endpoint names and request/response models.
+      detail_level: detailed
+    - name: impl_coverage
+      description: Per implementation (dir, REST adapter, Gravitino, Hive2/3, Glue, Polaris, Unity, Iceberg), whether GetTableStats, DescribeTableIndexStats and load_detailed_metadata work.
+      detail_level: detailed
+    - name: spec_vs_impl_drift
+      description: Gaps between spec text, response model, LanceDB, and the reference impl.
+      detail_level: moderate
+    - name: snapshot_addressability
+      description: Whether stats can be requested for a version, branch, or tag.
+      detail_level: brief
+    - name: consumer_api_mapping
+      description: Which engine API reads the stats (Spark Statistics.columnStats, Trino TableStatistics, DuckDB BaseStatistics, Flink CatalogColumnStatistics, DataFusion Statistics) and what is filled.
+      detail_level: moderate
+  collection_and_storage:
+    - name: collection_mechanism
+      description: Push (writer/engine on commit), pull (catalog ANALYZE/compute), or pass-through from Lance on read.
+      detail_level: moderate
+    - name: storage_location
+      description: Catalog DB, sidecar files (Puffin), Lance manifest/config, index files, data file buffers.
+      detail_level: moderate
+    - name: catalog_schema_fidelity
+      description: Whether the catalog holds the real columns (placeholder schemas rule out native column stats).
+      detail_level: brief
+    - name: catalog_writability
+      description: Whether catalog properties or stats can be updated after create.
+      detail_level: brief
+    - name: concurrency_model
+      description: How stats writes commit (same commit as data, separate config update, catalog OCC).
+      detail_level: moderate
+  freshness:
+    - name: freshness
+      description: Binding of stats to a version or snapshot.
+      detail_level: moderate
+    - name: invalidation_rule
+      description: What makes stats stale (commits, overlays, schema changes) and the guard used (computedAtVersion, schemaHash, segment dataset_version).
+      detail_level: moderate
+  operations:
+    - name: lance_support_status
+      description: Native, via adapter, or none.
+      detail_level: brief
+    - name: compat_impact
+      description: Feature flags or reader/writer breakage (FLAG_ZONE_WRITE_SEEDS, ZoneMap index_version).
+      detail_level: brief
+    - name: cost_profile
+      description: I/O per path (manifest only, index open, full data scan).
+      detail_level: moderate
+    - name: maturity_and_status
+      description: Issue/PR numbers, open or merged state, and dates.
+      detail_level: brief
+    - name: sources
+      description: Links backing each claim.
+      detail_level: brief
+
+uncertain: []

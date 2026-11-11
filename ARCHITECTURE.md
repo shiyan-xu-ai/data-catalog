@@ -49,11 +49,14 @@ so `catalog-api` owns an axum router that follows the adapter's conventions:
 
 Supported operations: namespace list / describe / create / drop / exists; table
 list / list-all / register / describe / exists / deregister; read-only table
-stats, version list / describe, index list / stats, tag list, branch list. Three
+stats, version list / describe, index list / stats, tag list, branch list. Four
 catalog routes sit outside `/v1` because no spec model carries their data:
 `GET /catalog/v1/table/:id/column-storage` (bytes per top-level column of the
 current version), `GET /catalog/v1/table/:id/storage` (storage footprint and
-cost estimate), and `POST /catalog/v1/table/:id/sql` (read-only SQL).
+cost estimate), `POST /catalog/v1/table/:id/sql` (read-only SQL), and
+`GET /catalog/v1/table/:id/timeline` (per-version operation history from each
+version's Lance transaction and manifest, read page by page). Cleanup is not
+committed as a version, so the UI shows it only as a gap in version numbers.
 
 The SQL route builds a fresh DataFusion session per query and exposes only this
 table: the plain table name reads the requested version (default latest), and

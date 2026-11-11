@@ -1,0 +1,77 @@
+topic: Table and column statistics for Lance tables across the Lance Namespace spec, Lance REST Catalog, and catalogs (Gravitino, HMS, Polaris, Glue, Unity)
+checked_on: 2026-11-10
+time_range: since 2025-01-01
+
+items:
+  - name: Lance Namespace spec
+    kind: spec
+    summary: GetTableStats (total_bytes, num_rows, num_indices, fragment_stats; branch but no version), DescribeTable.stats (num_fragments, num_deleted_rows), DescribeTableIndexStats (versioned). Spec text promises column statistics; the response model has none.
+  - name: Lance REST Catalog
+    kind: spec
+    summary: OpenAPI binding; POST /v1/table/{id}/stats and /index/{name}/stats. Works only if the backend namespace implements the operations.
+  - name: Directory Namespace (reference Rust impl)
+    kind: catalog
+    summary: Only real GetTableStats implementation found; data-only total_bytes via calculate_data_stats; puts manifest summary in DescribeTable.metadata but never fills typed stats; ListTableVersions metadata is None.
+  - name: Lance Rust REST adapter and client
+    kind: catalog
+    summary: Generic REST server over any LanceNamespace backend; stats routes pass through to the backend.
+  - name: Lance format internals
+    kind: format
+    summary: Manifest summary (rows, files, sizes, deletions); calculate_data_stats per-field bytes; v2 files carry no general per-page column stats.
+  - name: Dataset statistics handle and ZoneMap index
+    kind: format
+    summary: Dataset::statistics().column_value_range (present in lance 14.0.2) gives conservative min/max from ZoneMap segments; zone_statistics gives per-zone min/max/null/nan counts; returns None on incomplete coverage, overlays, or NaNs. ZoneMap index v1 (2026-10).
+  - name: Zone write seeds
+    kind: format
+    summary: Per-column zone stats collected at write time (merged 2026-10-21); adds reader feature flag FLAG_ZONE_WRITE_SEEDS.
+  - name: Lance column-statistics roadmap
+    kind: format
+    summary: lance #8461 (open) typed multi-column stats API backed by ZoneMap indices and seeds with coverage/precision flags; earlier fragment-stats stack closed 2026-10-15.
+  - name: Data overlays and clustering metadata
+    kind: format
+    summary: Overlays make index-derived stats unknown; clustering PR adds DataFragment.metadata / IndexMetadata.metadata maps that could hold per-fragment stats.
+  - name: Lance + DataFusion
+    kind: engine
+    summary: LanceScanExec reports exact num_rows and estimated total_byte_size; column statistics unknown; LanceTableProvider does not override statistics().
+  - name: Lance engine connectors
+    kind: engine
+    summary: lance-spark reports numRows/sizeInBytes only (proposals #121, #510, #629 for column stats and ANALYZE are open); Trino rowCount only; DuckDB exact cardinality; Flink unknown; Ray none.
+  - name: LanceDB Table.stats
+    kind: engine
+    summary: Origin of GetTableStats; has drifted (num_deleted_rows, total_bytes = data + index + overlay).
+  - name: Apache Gravitino
+    kind: catalog
+    summary: Statistics framework (>=1.0) stores table stats in Gravitino and partition stats in pluggable storage (JDBC, Lance); Gravitino Lance REST service has no stats route; optimizer stats collection is Iceberg-only.
+  - name: Hive Metastore (lance-namespace Hive 2/3)
+    kind: catalog
+    summary: Registers EXTERNAL table with empty sd.cols; no GetTableStats; rejects load_detailed_metadata; no HMS table/column stats written.
+  - name: Apache Polaris generic tables
+    kind: catalog
+    summary: list/create/load/drop only; properties immutable after create; no stats.
+  - name: AWS Glue
+    kind: catalog
+    summary: Column statistics tasks exist but Lance is not a supported format; Lance tables have no columns in Glue.
+  - name: Unity Catalog OSS
+    kind: catalog
+    summary: No LANCE data source format, placeholder column, no update or statistics API.
+  - name: Lance Iceberg-REST namespace impl
+    kind: catalog
+    summary: Registers Lance tables in an Iceberg REST catalog with a dummy schema and table_type=lance; Iceberg statistics cannot describe them.
+  - name: Iceberg REST statistics (reference model)
+    kind: spec
+    summary: StatisticsFile, PartitionStatisticsFile, SetStatisticsUpdate, Puffin theta-sketch NDV blobs.
+  - name: Partitioned Namespace __manifest table
+    kind: spec
+    summary: Directory Catalog V2 partition table allows extra columns; could hold per-table or per-partition stats.
+  - name: Adjacent spec operations
+    kind: spec
+    summary: CountTableRows (predicate, version), Explain/AnalyzeTableQueryPlan, UpdateFieldMetadata, UpdateTableSchemaMetadata, DescribeTable.properties as possible stats carriers.
+  - name: DIY extraction path
+    kind: approach
+    summary: Compute column stats with DataFusion/Lance scans (min/max, null counts, approx_distinct) or from ZoneMap indices; store version-tagged results in the catalog.
+
+execution:
+  batch_size: 4
+  items_per_agent: 3
+  output_dir: ./results
+  note: Deep research not requested; this outline records preliminary research only.
