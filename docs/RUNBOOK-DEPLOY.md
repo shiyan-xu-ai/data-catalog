@@ -75,6 +75,9 @@ auth -X POST "$URL/v1/table/automotive\$smoke\$users/register" -H 'content-type:
   -d '{"location":"s3://bucket/path/users.lance","properties":{"owner":"you@applied.co"}}'
 auth -X POST "$URL/v1/table/automotive\$smoke\$users/describe?load_detailed_metadata=true" \
   -H 'content-type: application/json' -d '{}' | python3 -m json.tool
+# Clean up so the smoke table does not appear under the vertical.
+auth -X POST "$URL/v1/table/automotive\$smoke\$users/deregister" -H 'content-type: application/json' -d '{}'
+auth -X POST "$URL/v1/namespace/automotive\$smoke/drop" -H 'content-type: application/json' -d '{}'
 ```
 
 Open `$URL/` for the UI; tail logs with `apps-platform app tail`.

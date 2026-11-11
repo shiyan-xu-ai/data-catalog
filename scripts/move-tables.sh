@@ -131,5 +131,7 @@ $apply || echo "dry run: no changes; rerun with --apply to perform these calls"
 while read -r old new extra || [[ -n ${old:-} ]]; do
     [[ -z ${old:-} || $old == \#* ]] && continue
     [[ -n ${new:-} && -z ${extra:-} ]] || { echo "bad mapping line: $old $new $extra" >&2; exit 2; }
+    # Moving a table onto itself would deregister its only registration.
+    [[ $old != "$new" ]] || { echo "bad mapping line: $old maps to itself" >&2; exit 2; }
     move "$old" "$new"
 done <"$mapping"
