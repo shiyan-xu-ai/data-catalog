@@ -4,11 +4,12 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+/** `value` may be a function so large values are only built when copied. */
+export function CopyButton({ value, label = "Copy" }: { value: string | (() => string); label?: string }) {
   const [copied, setCopied] = useState(false);
   async function copy() {
     try {
-      await navigator.clipboard.writeText(value);
+      await navigator.clipboard.writeText(typeof value === "function" ? value() : value);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {

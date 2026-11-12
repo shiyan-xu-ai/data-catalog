@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { BarChart3, Layers } from "lucide-react";
 import { useTableBranches, useTableTags, type PagedVersions } from "@/lib/catalog-queries";
-import { formatBytes, formatCount, formatRelative, parseTime } from "@/lib/format";
-import { useDateTimeFormatter } from "@/lib/preferences";
+import { formatBytes, formatCount, formatIsoTimestamp, formatRelative, parseTime } from "@/lib/format";
+import { useDateTimeFormatter, useTimeZonePref } from "@/lib/preferences";
 import { parseManifestSummary, versionSeries, versionStatus } from "@/lib/table-metadata";
 import type { TableVersion } from "@/lib/schemas";
 import { cn } from "@/lib/utils";
@@ -11,9 +11,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
+import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
 import { GrowthChart } from "./charts";
+import { Fact, Mono, PaneSection, SummaryTotals, VersionPane, type PaneView } from "./version-pane";
 
 function Delta({ value }: { value: number | null }) {
   if (value == null || value === 0) return <span className="text-muted-foreground/60">—</span>;
@@ -122,27 +124,42 @@ function RefsTiles({ segments }: { segments: readonly string[] }) {
 // Sticky just under the Trends chart; the 1px overlap hides sub-pixel seams at fractional zoom.
 const HEAD = "sticky top-[calc(var(--trends-h)-1px)] z-10 h-10 bg-muted px-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground shadow-[inset_0_-1px_0_hsl(var(--border))]";
 
-/** Loaded versions, newest first, with "Load earlier" for the next page. */
-function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; servedVersion: number | null | undefined }) {
+/** Loaded versions, newest first, with "Load earlier" for the next page. Selecting a row opens
+ *  its pane. */
+function VersionHistory({
+  versions,
+  servedVersion,
+  active,
+  onSelect,
+  rowRefs,
+}: {
+  versions: PagedVersions;
+  servedVersion: number | null | undefined;
+  active: number | null;
+  onSelect: (version: number) => void;
+  rowRefs: Map<number, HTMLTableRowElement>;
+}) {
   const formatDateTime = useDateTimeFormatter();
   const all = versions.versions;
+  const full = active == null;
   return (
     <Section
       title="Version history"
       description={versions.hasNextPage ? `${formatCount(all.length)} loaded` : undefined}
       help="Current marks the served version; newer versions need a catalog refresh."
     >
-      {/* A plain table (no scroll wrapper) so its header can stick below the Trends chart. */}
+      {/* A plain table (no scroll wrapper) so its header can stick below the Trends chart. While a
+          pane is open beside it, only the leading columns fit. */}
       <table className="w-full text-sm">
         <thead>
           <tr>
             <th className={cn(HEAD, "pl-4")}>Version</th>
             <th className={HEAD}>Created</th>
             <th className={cn(HEAD, "text-right")}>Rows</th>
-            <th className={cn(HEAD, "text-right")}>Δ Rows</th>
-            <th className={cn(HEAD, "text-right")}>Data size</th>
-            <th className={cn(HEAD, "text-right")}>Data files</th>
-            <th className={cn(HEAD, "pr-4 text-right")}>Deletions</th>
+            {full && <th className={cn(HEAD, "text-right")}>Δ Rows</th>}
+            <th className={cn(HEAD, "text-right", !full && "pr-4")}>Data size</th>
+            {full && <th className={cn(HEAD, "text-right")}>Data files</th>}
+            {full && <th className={cn(HEAD, "pr-4 text-right")}>Deletions</th>}
           </tr>
         </thead>
         <tbody className="tabular-nums [&_td]:p-2 [&_td]:align-middle [&_td]:whitespace-nowrap [&_tr]:border-b [&_tr:last-child]:border-0">
@@ -155,7 +172,26 @@ function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; 
             const date = parseTime(v.timestamp_millis);
             const status = versionStatus(v.version, servedVersion);
             return (
-              <tr key={v.version} className="transition-colors hover:bg-muted/50">
+              <tr
+                key={v.version}
+                ref={(el) => {
+                  if (el) rowRefs.set(v.version, el);
+                  else rowRefs.delete(v.version);
+                }}
+                tabIndex={0}
+                aria-selected={v.version === active}
+                onClick={() => onSelect(v.version)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelect(v.version);
+                  }
+                }}
+                className={cn(
+                  "cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                  v.version === active ? "bg-accent" : "hover:bg-muted/50",
+                )}
+              >
                 <td className="pl-4">
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-medium">v{v.version}</span>
@@ -168,21 +204,25 @@ function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; 
                   <div className="text-xs text-muted-foreground">{formatDateTime(date)}</div>
                 </td>
                 <td className="text-right">{formatCount(s.rows)}</td>
-                <td className="text-right">
-                  <Delta value={delta} />
-                </td>
-                <td className="text-right">{formatBytes(s.dataBytes)}</td>
-                <td className="text-right">{formatCount(s.dataFiles)}</td>
-                <td className="pr-4 text-right">
-                  {s.deletionFiles ? (
-                    <>
-                      {formatCount(s.deletedRows)} rows
-                      <div className="text-xs text-muted-foreground">{formatCount(s.deletionFiles)} files</div>
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground/60">{s.deletionFiles === 0 ? "none" : "—"}</span>
-                  )}
-                </td>
+                {full && (
+                  <td className="text-right">
+                    <Delta value={delta} />
+                  </td>
+                )}
+                <td className={cn("text-right", !full && "pr-4")}>{formatBytes(s.dataBytes)}</td>
+                {full && <td className="text-right">{formatCount(s.dataFiles)}</td>}
+                {full && (
+                  <td className="pr-4 text-right">
+                    {s.deletionFiles ? (
+                      <>
+                        {formatCount(s.deletedRows)} rows
+                        <div className="text-xs text-muted-foreground">{formatCount(s.deletionFiles)} files</div>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground/60">{s.deletionFiles === 0 ? "none" : "—"}</span>
+                    )}
+                  </td>
+                )}
               </tr>
             );
           })}
@@ -204,8 +244,79 @@ function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; 
   );
 }
 
+/** A version's commit time, manifest file, and totals, or its decoded files. */
+function VersionDetailPane({
+  segments,
+  version: v,
+  servedVersion,
+  view,
+  onView,
+  onClose,
+  top,
+}: {
+  segments: readonly string[];
+  version: TableVersion;
+  servedVersion: number | null | undefined;
+  view: PaneView;
+  onView: (view: PaneView) => void;
+  onClose: () => void;
+  top: number;
+}) {
+  const zone = useTimeZonePref();
+  const date = parseTime(v.timestamp_millis);
+  const status = versionStatus(v.version, servedVersion);
+  return (
+    <VersionPane
+      label={`Version ${v.version} details`}
+      segments={segments}
+      version={v.version}
+      view={view}
+      onView={onView}
+      onClose={onClose}
+      top={top}
+      header={
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono font-medium">v{v.version}</span>
+            {status === "served" && <Badge variant="secondary">current</Badge>}
+            {status === "newer" && <Badge variant="outline">newer than served</Badge>}
+          </div>
+          <div className="text-xs text-muted-foreground">{formatRelative(date)}</div>
+        </>
+      }
+    >
+      <PaneSection title="Commit">
+        <Fact label="Time">
+          <span className="font-mono text-xs tabular-nums">{formatIsoTimestamp(date, zone)}</span>
+        </Fact>
+      </PaneSection>
+      <PaneSection title="Manifest file">
+        {v.manifest_path && (
+          <Fact label="Path">
+            <span className="flex items-start gap-1">
+              <code className="min-w-0 rounded bg-muted px-1 py-0.5 font-mono text-xs break-all">{v.manifest_path}</code>
+              <CopyButton value={v.manifest_path} label="Copy path" />
+            </span>
+          </Fact>
+        )}
+        <Fact label="Size">
+          <span className="tabular-nums">{formatBytes(v.manifest_size)}</span>
+        </Fact>
+        {v.e_tag && (
+          <Fact label="E-tag">
+            <Mono>{v.e_tag}</Mono>
+          </Fact>
+        )}
+      </PaneSection>
+      <PaneSection title="Totals at this version">
+        <SummaryTotals summary={v.metadata ?? {}} />
+      </PaneSection>
+    </VersionPane>
+  );
+}
+
 /** Trends over the loaded versions (sticky while the table scrolls), then tags and branches, then
- *  the version table. */
+ *  the version table with the selected version's pane beside it. */
 export function VersionsTab({
   segments,
   versions,
@@ -217,7 +328,13 @@ export function VersionsTab({
 }) {
   const trends = useRef<HTMLDivElement>(null);
   const [trendsHeight, setTrendsHeight] = useState(0);
-  const ready = !versions.isPending && versions.versions.length > 0;
+  const [active, setActive] = useState<number | null>(null);
+  const [view, setView] = useState<PaneView>("details");
+  const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
+  const all = versions.versions;
+  const index = all.findIndex((v) => v.version === active);
+  const current = index >= 0 ? all[index] : null;
+  const ready = !versions.isPending && all.length > 0;
   // The table header sticks just below the sticky chart, whose height follows the viewport.
   useEffect(() => {
     const el = trends.current;
@@ -226,6 +343,32 @@ export function VersionsTab({
     observer.observe(el);
     return () => observer.disconnect();
   }, [ready]);
+
+  // While the pane is open: Esc closes it, arrows move the selection. Typing elsewhere (the
+  // SQL editor, inputs) is left alone.
+  useEffect(() => {
+    if (!current) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || t.closest("input, textarea, select, [role=dialog]"))) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setActive(null);
+        rowRefs.current.get(current.version)?.focus();
+        return;
+      }
+      const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+      const next = all[index + step];
+      if (!step || !next) return;
+      e.preventDefault();
+      setActive(next.version);
+      const el = rowRefs.current.get(next.version);
+      el?.focus({ preventScroll: true });
+      el?.scrollIntoView({ block: "nearest" });
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [current, index, all]);
 
   if (versions.isPending) {
     return (
@@ -239,17 +382,43 @@ export function VersionsTab({
       </div>
     );
   }
-  if (versions.versions.length === 0) {
+  if (all.length === 0) {
     if (versions.error) return <ErrorState message={`Versions unavailable: ${versions.error.message}`} />;
     return <EmptyState icon={Layers} title="No versions">The table reports no versions.</EmptyState>;
   }
+  const close = () => {
+    if (current) rowRefs.current.get(current.version)?.focus();
+    setActive(null);
+  };
   return (
     <div className="@container" style={{ "--trends-h": `${trendsHeight}px` } as React.CSSProperties}>
       <div ref={trends} className="sticky top-0 z-20 -mx-1 bg-background px-1 pt-1 pb-4">
-        <TrendsSection loaded={versions.versions} />
+        <TrendsSection loaded={all} />
       </div>
       <RefsTiles segments={segments} />
-      <VersionHistory versions={versions} servedVersion={servedVersion} />
+      <div className="flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <VersionHistory
+            versions={versions}
+            servedVersion={servedVersion}
+            active={current?.version ?? null}
+            onSelect={setActive}
+            rowRefs={rowRefs.current}
+          />
+        </div>
+        {current && (
+          <VersionDetailPane
+            key={current.version}
+            segments={segments}
+            version={current}
+            servedVersion={servedVersion}
+            view={view}
+            onView={setView}
+            onClose={close}
+            top={trendsHeight}
+          />
+        )}
+      </div>
     </div>
   );
 }

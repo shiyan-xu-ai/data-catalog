@@ -16,7 +16,6 @@ import {
   Scissors,
   TableProperties,
   Trash2,
-  X,
 } from "lucide-react";
 import { useTableTimeline } from "@/lib/catalog-queries";
 import { formatBytes, formatCount, formatCountOf, formatIsoTime, formatIsoTimestamp, type TimeZonePref } from "@/lib/format";
@@ -43,6 +42,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { CopyButton } from "@/components/copy-button";
+import { Fact, Mono, PaneSection, SummaryTotals, VersionPane, type PaneView } from "./version-pane";
 
 const ICON: Record<string, LucideIcon> = {
   Append: FilePlus2,
@@ -134,20 +134,6 @@ function Deltas({ delta }: { delta: SummaryDelta | null }) {
     return <span className="text-xs text-muted-foreground">No data change</span>;
   }
   return <div className="flex flex-wrap gap-1.5">{chips}</div>;
-}
-
-/** One `label: value` fact in the details list. */
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
-      <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
-      <span className="min-w-0">{children}</span>
-    </div>
-  );
-}
-
-function Mono({ children }: { children: React.ReactNode }) {
-  return <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs wrap-break-word">{children}</code>;
 }
 
 function NameList({ names }: { names: string[] }) {
@@ -336,59 +322,43 @@ function Details({ op, d }: { op: string; d: Record<string, unknown> }) {
   return <div className="space-y-1.5">{facts}</div>;
 }
 
-/** One labeled section of the detail pane. */
-function PaneSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="space-y-1.5 border-t px-4 py-3">
-      <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{title}</h4>
-      {children}
-    </section>
-  );
-}
-
-const SUMMARY_FIELDS: [key: string, label: string, bytes?: boolean][] = [
-  ["total_rows", "Rows"],
-  ["total_files_size", "Data size", true],
-  ["total_fragments", "Fragments"],
-  ["total_data_files", "Data files"],
-  ["total_deletion_files", "Deletion files"],
-  ["total_deletion_file_rows", "Deleted rows"],
-];
-
 interface Entry {
   event: TimelineEvent;
   delta: SummaryDelta | null;
 }
 
-/** Everything recorded for one version. Sticky beside the list on wide screens, an overlay
- *  on narrow ones. */
-function DetailPane({ entry, zone, onClose }: { entry: Entry; zone: TimeZonePref; onClose: () => void }) {
+/** Everything recorded for one version, or the files it was read from. */
+function DetailPane({
+  segments,
+  entry,
+  zone,
+  view,
+  onView,
+  onClose,
+}: {
+  segments: readonly string[];
+  entry: Entry;
+  zone: TimeZonePref;
+  view: PaneView;
+  onView: (view: PaneView) => void;
+  onClose: () => void;
+}) {
   const { event, delta } = entry;
-  const ref = useRef<HTMLElement>(null);
-  const [maxHeight, setMaxHeight] = useState<number>();
-  // Fit the sticky pane to the page's scroll area, which shrinks as the SQL dock grows.
-  useEffect(() => {
-    const main = ref.current?.closest("main");
-    if (!main) return;
-    const observer = new ResizeObserver(() => setMaxHeight(main.clientHeight - 32));
-    observer.observe(main);
-    return () => observer.disconnect();
-  }, []);
   const Icon = ICON[event.operation] ?? CircleDot;
   const style = FAMILY_STYLE[operationFamily(event.operation)];
   const date = event.timestamp_millis == null ? null : new Date(event.timestamp_millis);
   const props = Object.entries(event.transaction?.properties ?? {});
 
   return (
-    <>
-      <div aria-hidden className="fixed inset-0 z-40 bg-black/30 xl:hidden" onClick={onClose} />
-      <aside
-        ref={ref}
-        aria-label={`Version ${event.version} details`}
-        style={{ "--pane-max": maxHeight ? `${maxHeight}px` : "100%" } as React.CSSProperties}
-        className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[420px] flex-col overflow-hidden border-l bg-background shadow-xl xl:sticky xl:top-4 xl:z-10 xl:max-h-(--pane-max) xl:w-[420px] xl:shrink-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm"
-      >
-        <div className="flex items-start gap-3 px-4 py-3">
+    <VersionPane
+      label={`Version ${event.version} details`}
+      segments={segments}
+      version={event.version}
+      view={view}
+      onView={onView}
+      onClose={onClose}
+      header={
+        <div className="flex items-start gap-3">
           <span className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-full border", style.node)}>
             <Icon className="h-4 w-4" />
           </span>
@@ -401,11 +371,10 @@ function DetailPane({ entry, zone, onClose }: { entry: Entry; zone: TimeZonePref
             </div>
             <div className="font-mono text-xs text-muted-foreground">{event.operation}</div>
           </div>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} aria-label="Close details">
-            <X />
-          </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+      }
+    >
+      <>
           <PaneSection title="Commit">
             <Fact label="Time">
               <span className="font-mono text-xs tabular-nums">{date ? formatIsoTimestamp(date, zone) : "Unknown"}</span>
@@ -437,18 +406,7 @@ function DetailPane({ entry, zone, onClose }: { entry: Entry; zone: TimeZonePref
             <Details op={event.operation} d={event.details} />
           </PaneSection>
           <PaneSection title="Totals at this version">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-              {SUMMARY_FIELDS.map(([key, label, bytes]) => {
-                const raw = event.summary[key];
-                const n = raw == null || raw === "" ? null : Number(raw);
-                return (
-                  <div key={key} className="min-w-0">
-                    <dt className="text-xs text-muted-foreground">{label}</dt>
-                    <dd className="text-sm tabular-nums">{bytes ? formatBytes(n) : formatCount(n)}</dd>
-                  </div>
-                );
-              })}
-            </dl>
+            <SummaryTotals summary={event.summary} />
           </PaneSection>
           <PaneSection title="Writer and transaction">
             <Fact label="Writer">
@@ -482,9 +440,8 @@ function DetailPane({ entry, zone, onClose }: { entry: Entry; zone: TimeZonePref
               </Fact>
             )}
           </PaneSection>
-        </div>
-      </aside>
-    </>
+      </>
+    </VersionPane>
   );
 }
 
@@ -631,6 +588,7 @@ export function TimelineTab({ segments }: { segments: readonly string[] }) {
   const zone = useTimeZonePref();
   const [filter, setFilter] = useState<ReadonlySet<string>>(new Set());
   const [active, setActive] = useState<number | null>(null);
+  const [view, setView] = useState<PaneView>("details");
   const rowRefs = useRef(new Map<number, HTMLLIElement>());
   const events = useMemo(() => timeline.data?.pages.flatMap((p) => p.events) ?? [], [timeline.data]);
   const counts = useMemo(() => operationCounts(events), [events]);
@@ -776,7 +734,17 @@ export function TimelineTab({ segments }: { segments: readonly string[] }) {
           </div>
         )}
       </div>
-      {current && <DetailPane key={current.event.version} entry={current} zone={zone} onClose={close} />}
+      {current && (
+        <DetailPane
+          key={current.event.version}
+          segments={segments}
+          entry={current}
+          zone={zone}
+          view={view}
+          onView={setView}
+          onClose={close}
+        />
+      )}
     </div>
   );
 }

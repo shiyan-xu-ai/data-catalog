@@ -8,6 +8,7 @@ import {
   getTableStats,
   getTableStorage,
   getTableTimeline,
+  getVersionFiles,
   listAllTableIndices,
   listAllTables,
   listNamespaces,
@@ -39,6 +40,7 @@ export const keys = {
   tableStorage: (id: string) => ["table", id, "storage"] as const,
   tableStats: (id: string) => ["table", id, "stats"] as const,
   tableTimeline: (id: string) => ["table", id, "timeline"] as const,
+  versionFiles: (id: string, version: number) => ["table", id, "version", version, "files"] as const,
 };
 
 const PAGE_SIZE = 100;
@@ -223,5 +225,14 @@ export function useTableTimeline(segments: readonly string[]) {
     queryFn: ({ pageParam }) => getTableTimeline(segments, pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.page_token || undefined,
+  });
+}
+
+/** The decoded files of one version. A version's files never change, so they never go stale. */
+export function useVersionFiles(segments: readonly string[], version: number) {
+  return useQuery({
+    queryKey: keys.versionFiles(joinId(segments), version),
+    queryFn: () => getVersionFiles(segments, version),
+    staleTime: Infinity,
   });
 }

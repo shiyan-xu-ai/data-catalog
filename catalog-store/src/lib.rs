@@ -2,6 +2,7 @@
 
 mod cache;
 mod namespace;
+mod source;
 mod sql;
 mod timeline;
 

@@ -15,7 +15,9 @@ import {
   tableStatsResponseSchema,
   tableStorageResponseSchema,
   timelineResponseSchema,
+  versionFilesResponseSchema,
   type TimelineResponse,
+  type VersionFilesResponse,
   type ColumnStorageResponse,
   type DescribeNamespaceResponse,
   type DescribeTableResponse,
@@ -237,6 +239,15 @@ export function getTableTimeline(
     "GET",
     `/catalog/v1/table/${idPathSegment(table)}/timeline${pageQuery(pageToken, limit)}`,
     timelineResponseSchema,
+  );
+}
+
+/** Catalog route: the files that record `version`, decoded. */
+export function getVersionFiles(table: readonly string[], version: number): Promise<VersionFilesResponse> {
+  return request(
+    "GET",
+    `/catalog/v1/table/${idPathSegment(table)}/version/${version}/files`,
+    versionFilesResponseSchema,
   );
 }
 

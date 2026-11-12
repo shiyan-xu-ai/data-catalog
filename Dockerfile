@@ -40,7 +40,8 @@ WORKDIR /build
 # Workspace manifests first (layer-cache friendly). rust-toolchain.toml pins the
 # channel, so rustup provisions the matching toolchain in-image.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
-COPY catalog-store/Cargo.toml ./catalog-store/
+COPY catalog-store/Cargo.toml catalog-store/build.rs ./catalog-store/
+COPY catalog-store/protos ./catalog-store/protos
 COPY catalog-api/Cargo.toml ./catalog-api/
 
 # Stub sources so cargo can resolve + fetch + build deps without the real code.

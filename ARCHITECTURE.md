@@ -57,8 +57,11 @@ operation: `GET /catalog/v1/table/:id/column-storage` (bytes per top-level
 column of the served version), `GET /catalog/v1/table/:id/storage` (storage
 footprint and cost estimate), `POST /catalog/v1/table/:id/refresh` (advance the
 served version to the newest commit), `POST /catalog/v1/table/:id/sql`
-(read-only SQL), and `GET /catalog/v1/table/:id/timeline` (per-version operation
-history from each version's Lance transaction and manifest, read page by page).
+(read-only SQL), `GET /catalog/v1/table/:id/timeline` (per-version operation
+history from each version's Lance transaction and manifest, read page by page),
+and `GET /catalog/v1/table/:id/version/:version/files` (one version's manifest
+and transaction files decoded with protos vendored from `lance-table` in
+`catalog-store/protos/`).
 Cleanup is not committed as a version, so the UI shows it only as a gap in
 version numbers.
 

@@ -88,6 +88,7 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
         .route("/table/:id/column-storage", get(column_storage))
         .route("/table/:id/storage", get(table_storage))
         .route("/table/:id/timeline", get(table_timeline))
+        .route("/table/:id/version/:version/files", get(version_files))
         .route("/table/:id/refresh", post(refresh_table))
         .route("/table/:id/sql", post(run_sql))
         .fallback(unsupported)
@@ -415,6 +416,23 @@ async fn table_timeline(
         events: timeline.events,
         page_token: timeline.page_token,
     }))
+}
+
+#[derive(Serialize)]
+struct VersionFilesResponse {
+    version: u64,
+    files: Vec<serde_json::Value>,
+}
+
+async fn version_files(
+    State(catalog): State<Catalog>,
+    Path((id, version)): Path<(String, u64)>,
+) -> ApiResult<Json<VersionFilesResponse>> {
+    let files = catalog
+        .namespace
+        .version_files(&parse_id(&id), version)
+        .await?;
+    Ok(Json(VersionFilesResponse { version, files }))
 }
 
 #[derive(Serialize)]

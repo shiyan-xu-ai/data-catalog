@@ -81,7 +81,11 @@ page can fill; the table page puts its SQL panel there.
     loaded version ("—" for the oldest loaded one), all operation details
     (delete predicate, built indices, set and removed keys with values,
     compaction counts), the manifest totals at that version, the writer, and
-    the transaction id and properties.
+    the transaction id and properties. The pane's Source files view (wider)
+    shows the files the entry was read from
+    (`GET /catalog/v1/table/{id}/version/{version}/files`): the manifest file
+    and, from older writers, the transaction file, each section as a
+    collapsible JSON tree with a copy button.
   - **Versions:** versions load newest first, 50 at a time
     (`POST /v1/table/{id}/version/list?descending=true`), with "Load earlier"
     for the next page; nothing reads every manifest up front. A Trends chart of
@@ -93,7 +97,10 @@ page can fill; the table page puts its SQL panel there.
     rows and row change against the next older loaded version ("—" for the
     oldest loaded one), data size, data files, and deletions. The served
     version carries a "current" badge; versions committed after it carry
-    "newer than served" until a catalog refresh.
+    "newer than served" until a catalog refresh. Clicking a row opens the same
+    kind of pane, below the sticky Trends chart: commit time, the manifest
+    file's path, size, and e-tag, and the totals, with the same Source files
+    view.
   - **Schema:** an expandable field tree with compact types (full type on
     hover), nullability, and field metadata, a raw JSON view, and schema-level
     metadata.

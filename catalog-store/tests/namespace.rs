@@ -708,6 +708,25 @@ async fn table_details() {
     let err = ns.timeline(&history_id, Some("x"), None).await.unwrap_err();
     assert_eq!(code(err), INVALID_INPUT);
 
+    // Version files: the manifest file with the sections it carries, decoded field by field.
+    let files = ns.version_files(&history_id, 5).await.unwrap();
+    let manifest_file = &files[0];
+    let path = manifest_file["path"].as_str().unwrap();
+    assert!(path.starts_with("_versions/") && path.ends_with(".manifest"));
+    let sections = manifest_file["sections"].as_array().unwrap();
+    let section = |name: &str| sections.iter().find(|s| s["name"] == name).unwrap();
+    assert_eq!(section("Manifest")["content"]["version"], 5);
+    assert_eq!(
+        section("Index section")["content"]["indices"][0]["name"],
+        "id_idx"
+    );
+    assert_eq!(section("Transaction")["content"]["read_version"], 4);
+    // Every field is known to the vendored protos, so they match the pinned Lance writer.
+    let text = serde_json::to_string(&files).unwrap();
+    assert!(!text.contains("$unknown_fields"), "{text}");
+    let err = ns.version_files(&history_id, 99).await.unwrap_err();
+    assert_eq!(code(err), TABLE_VERSION_NOT_FOUND);
+
     // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found on an
     // instance that has not cached the served version (a warm instance never re-checks storage).
     std::fs::remove_dir_all(&metrics).unwrap();
