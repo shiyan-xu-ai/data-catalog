@@ -67,12 +67,12 @@ function SqlDock({
   segments,
   columns,
   versions,
-  servedVersion,
+  currentVersion,
 }: {
   segments: readonly string[];
   columns: readonly string[];
   versions: PagedVersions;
-  servedVersion: number | null | undefined;
+  currentVersion: number | null | undefined;
 }) {
   const [collapsed, setCollapsed] = useStoredState("sql-dock-collapsed", false);
   const [height, setHeight] = useStoredState("sql-dock-height", DOCK_DEFAULT_HEIGHT);
@@ -128,7 +128,7 @@ function SqlDock({
             segments={segments}
             columns={columns}
             versions={versions}
-            servedVersion={servedVersion}
+            currentVersion={currentVersion}
             onCollapse={() => setCollapsed(true)}
           />
         </Suspense>
@@ -226,7 +226,7 @@ function TablePage({ tableId }: { tableId: string }) {
             <TimelineTab segments={segments} />
           </TabsContent>
           <TabsContent value="versions">
-            <VersionsTab segments={segments} versions={versions} servedVersion={detail.data?.version} />
+            <VersionsTab segments={segments} versions={versions} currentVersion={detail.data?.version} />
           </TabsContent>
           <TabsContent value="schema">
             <SchemaTab segments={segments} detail={detail} />
@@ -242,7 +242,7 @@ function TablePage({ tableId }: { tableId: string }) {
           segments={segments}
           columns={columnNames}
           versions={versions}
-          servedVersion={detail.data?.version}
+          currentVersion={detail.data?.version}
         />
       </BottomDock>
     </>

@@ -106,12 +106,12 @@ describe("versionSeries", () => {
 });
 
 describe("versionStatus", () => {
-  it("places a version relative to the served version", () => {
-    expect(versionStatus(10, 10)).toBe("served");
+  it("places a version relative to the current version", () => {
+    expect(versionStatus(10, 10)).toBe("current");
     expect(versionStatus(11, 10)).toBe("newer");
     expect(versionStatus(9, 10)).toBe("older");
   });
-  it("marks nothing while the served version is unknown", () => {
+  it("marks nothing while the current version is unknown", () => {
     expect(versionStatus(11, null)).toBeNull();
     expect(versionStatus(11, undefined)).toBeNull();
   });

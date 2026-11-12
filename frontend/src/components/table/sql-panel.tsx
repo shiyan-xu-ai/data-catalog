@@ -130,14 +130,14 @@ function ResultGrid({ result }: { result: SqlResponse }) {
 }
 
 /** Read-only SQL against one table. A version picker sets which version the plain table name
- *  reads (the served version by default); other versions are addressable as `"<name>@v<N>"`.
+ *  reads (the current version by default); other versions are addressable as `"<name>@v<N>"`.
  *  The query runs on the server; Cancel stops waiting for it (the server's own time limit ends
  *  it). */
 export function SqlPanel({
   segments,
   columns,
   versions,
-  servedVersion,
+  currentVersion,
   onCollapse,
 }: {
   segments: readonly string[];
@@ -145,14 +145,14 @@ export function SqlPanel({
   columns: readonly string[];
   /** The page's paged versions query, newest first. */
   versions: PagedVersions;
-  servedVersion: number | null | undefined;
+  currentVersion: number | null | undefined;
   onCollapse: () => void;
 }) {
   const tableName = segments[segments.length - 1];
   const initial = defaultQuery(tableName);
   const formatDateTime = useDateTimeFormatter();
   const [query, setQuery] = useState(initial);
-  // null reads the served version (the request omits `version`).
+  // null reads the current version (the request omits `version`).
   const [version, setVersion] = useState<number | null>(null);
   const [result, setResult] = useState<SqlResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -164,7 +164,7 @@ export function SqlPanel({
   const controller = useRef<AbortController | null>(null);
   const running = startedAt != null;
   const schema = useMemo(() => ({ [tableName]: columns }), [tableName, columns]);
-  const exampleRef = versionRef(tableName, Math.max(1, (servedVersion ?? 2) - 1));
+  const exampleRef = versionRef(tableName, Math.max(1, (currentVersion ?? 2) - 1));
   const versionHint = `The picker sets which version ${quoteIdent(tableName)} reads. Query other versions as ${exampleRef}.`;
 
   // Tick a live elapsed counter while a query is in flight.
@@ -299,11 +299,11 @@ export function SqlPanel({
               }}
               className="h-7 min-w-0 max-w-64 truncate rounded-md border border-input bg-background px-2 text-xs shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <option value="">{servedVersion != null ? `Served (v${servedVersion})` : "Served"}</option>
+              <option value="">{currentVersion != null ? `Current (v${currentVersion})` : "Current"}</option>
               {versions.versions.map((v) => (
                 <option key={v.version} value={v.version}>
                   v{v.version}
-                  {versionStatus(v.version, servedVersion) === "newer" ? " (newer than served)" : ""}
+                  {versionStatus(v.version, currentVersion) === "newer" ? " (newer than current)" : ""}
                   {v.timestamp_millis != null ? ` · ${formatDateTime(parseTime(v.timestamp_millis))}` : ""}
                 </option>
               ))}

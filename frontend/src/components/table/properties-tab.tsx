@@ -41,13 +41,13 @@ export function PropertiesTab({
         )}
       </Section>
 
-      <Section title="Lance table metadata" help="Manifest table_metadata of the served version.">
+      <Section title="Lance table metadata" help="Manifest table_metadata of the current version.">
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={tableMetadataEntries(d.metadata)} empty="No Lance table metadata." />}
         </LanceBody>
       </Section>
 
-      <Section title="Lance table configuration" help="Manifest config of the served version.">
+      <Section title="Lance table configuration" help="Manifest config of the current version.">
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={configEntries(d.metadata)} empty="No Lance table configuration." />}
         </LanceBody>

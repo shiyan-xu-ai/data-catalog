@@ -128,13 +128,13 @@ const HEAD = "sticky top-[calc(var(--trends-h)-1px)] z-10 h-10 bg-muted px-2 tex
  *  its pane. */
 function VersionHistory({
   versions,
-  servedVersion,
+  currentVersion,
   active,
   onSelect,
   rowRefs,
 }: {
   versions: PagedVersions;
-  servedVersion: number | null | undefined;
+  currentVersion: number | null | undefined;
   active: number | null;
   onSelect: (version: number) => void;
   rowRefs: Map<number, HTMLTableRowElement>;
@@ -146,7 +146,7 @@ function VersionHistory({
     <Section
       title="Version history"
       description={versions.hasNextPage ? `${formatCount(all.length)} loaded` : undefined}
-      help="Current marks the served version; newer versions need a catalog refresh."
+      help="The Current badge marks this version; newer versions need a catalog refresh."
     >
       {/* A plain table (no scroll wrapper) so its header can stick below the Trends chart. While a
           pane is open beside it, only the leading columns fit. */}
@@ -170,7 +170,7 @@ function VersionHistory({
             const prevRows = prev ? parseManifestSummary(prev.metadata).rows : null;
             const delta = s.rows != null && prevRows != null ? s.rows - prevRows : null;
             const date = parseTime(v.timestamp_millis);
-            const status = versionStatus(v.version, servedVersion);
+            const status = versionStatus(v.version, currentVersion);
             return (
               <tr
                 key={v.version}
@@ -195,8 +195,8 @@ function VersionHistory({
                 <td className="pl-4">
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-medium">v{v.version}</span>
-                    {status === "served" && <Badge variant="secondary">current</Badge>}
-                    {status === "newer" && <Badge variant="outline">newer than served</Badge>}
+                    {status === "current" && <Badge variant="secondary">current</Badge>}
+                    {status === "newer" && <Badge variant="outline">newer than current</Badge>}
                   </div>
                 </td>
                 <td>
@@ -249,11 +249,11 @@ function VersionHistory({
 export function VersionsTab({
   segments,
   versions,
-  servedVersion,
+  currentVersion,
 }: {
   segments: readonly string[];
   versions: PagedVersions;
-  servedVersion: number | null | undefined;
+  currentVersion: number | null | undefined;
 }) {
   const trends = useRef<HTMLDivElement>(null);
   const [trendsHeight, setTrendsHeight] = useState(0);
@@ -329,7 +329,7 @@ export function VersionsTab({
         <div className="min-w-0 flex-1">
           <VersionHistory
             versions={versions}
-            servedVersion={servedVersion}
+            currentVersion={currentVersion}
             active={current?.version ?? null}
             onSelect={setActive}
             rowRefs={rowRefs.current}

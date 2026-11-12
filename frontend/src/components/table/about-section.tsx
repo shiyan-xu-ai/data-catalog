@@ -34,8 +34,8 @@ function Pending({ error, children }: { error: Error | null; children: React.Rea
 }
 
 /** The newest committed version (first of the newest-first list) and, when it differs, the
- *  version the catalog serves. */
-function LatestVersion({ versions, served }: { versions: PagedVersions; served: number | null | undefined }) {
+ *  version the catalog considers current. */
+function LatestVersion({ versions, current }: { versions: PagedVersions; current: number | null | undefined }) {
   const latest = versions.versions[0];
   if (!latest) return <Pending error={versions.error}>{versions.isPending ? null : <Unset />}</Pending>;
   return (
@@ -43,7 +43,7 @@ function LatestVersion({ versions, served }: { versions: PagedVersions; served: 
       <div className="font-mono">v{latest.version}</div>
       <div className="text-xs text-muted-foreground">
         {formatRelative(parseTime(latest.timestamp_millis))}
-        {served != null && served !== latest.version && ` · serving v${served}`}
+        {current != null && current !== latest.version && ` · current v${current}`}
       </div>
     </>
   );
@@ -98,14 +98,14 @@ function AboutBody({
         </Pending>
       </Field>
       <Field label="Latest version">
-        <LatestVersion versions={versions} served={detail.data?.version} />
+        <LatestVersion versions={versions} current={detail.data?.version} />
       </Field>
     </dl>
   );
 }
 
 /** Untitled card of catalog-recorded facts from the cheap describe (description, location,
- *  owner, registration and update times), the Lance file format of the served version, and the
+ *  owner, registration and update times), the Lance file format of the current version, and the
  *  newest committed version. Place it inside an `@container`. */
 export function AboutSection({
   cheap,

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 This repo is a Lance REST catalog service: Postgres stores namespaces, table
-registrations, and each table's served version; Lance manifests stay authoritative
+registrations, and each table's current version; Lance manifests stay authoritative
 for each version's contents. Written in
 Rust (axum, sqlx, the `lance` and `lance-namespace` crates), deployed as a single
 container on Apps Platform (Cloud Run).

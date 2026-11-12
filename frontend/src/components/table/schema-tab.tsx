@@ -281,7 +281,7 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                         <span className="inline-flex items-center gap-1">
                           Size on disk
                           <HelpTooltip label="About size on disk">
-                            Served version&apos;s data files, scaled to the largest column. Nested fields count toward
+                            Current version&apos;s data files, scaled to the largest column. Nested fields count toward
                             their column; blob payloads and index files are excluded.
                           </HelpTooltip>
                         </span>

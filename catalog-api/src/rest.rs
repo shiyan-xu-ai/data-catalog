@@ -376,7 +376,7 @@ async fn column_storage(
 #[derive(Serialize)]
 struct RefreshResponse {
     previous_version: Option<u64>,
-    served_version: u64,
+    current_version: u64,
 }
 
 async fn refresh_table(
@@ -386,7 +386,7 @@ async fn refresh_table(
     let refresh = catalog.namespace.refresh_table(&parse_id(&id)).await?;
     Ok(Json(RefreshResponse {
         previous_version: refresh.previous_version,
-        served_version: refresh.served_version,
+        current_version: refresh.current_version,
     }))
 }
 

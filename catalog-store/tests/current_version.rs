@@ -1,4 +1,4 @@
-//! Served-version semantics and the per-version cache, against real Postgres and local datasets.
+//! Current-version semantics and the per-version cache, against real Postgres and local datasets.
 
 mod support;
 
@@ -38,7 +38,7 @@ fn detailed(parts: &[&str]) -> DescribeTableRequest {
     }
 }
 
-async fn served(ns: &PostgresNamespace, parts: &[&str]) -> i64 {
+async fn current(ns: &PostgresNamespace, parts: &[&str]) -> i64 {
     ns.describe_table(detailed(parts))
         .await
         .unwrap()
@@ -107,8 +107,8 @@ async fn delete_version(uri: &str, version: u64) {
 }
 
 #[tokio::test]
-async fn served_version_lifecycle() {
-    let Some(pool) = support::pool("store_served").await else {
+async fn current_version_lifecycle() {
+    let Some(pool) = support::pool("store_current").await else {
         return;
     };
     let ns = PostgresNamespace::new(pool.clone(), HashMap::new());
@@ -124,12 +124,12 @@ async fn served_version_lifecycle() {
     ns.register_table(register(&table, &uri, false))
         .await
         .unwrap();
-    assert_eq!(served(&ns, &table).await, 1);
+    assert_eq!(current(&ns, &table).await, 1);
 
     // A commit after registration is listed and readable by number, but unversioned reads
-    // keep answering for the served version.
+    // keep answering for the current version.
     support::append_row(&uri).await;
-    assert_eq!(served(&ns, &table).await, 1);
+    assert_eq!(current(&ns, &table).await, 1);
     let versions = ns
         .list_table_versions(ListTableVersionsRequest {
             id: id(&table),
@@ -181,27 +181,30 @@ async fn served_version_lifecycle() {
 
     // Refresh advances every instance; a second refresh with no commits changes nothing.
     let other = PostgresNamespace::new(pool.clone(), HashMap::new());
-    assert_eq!(served(&other, &table).await, 1);
+    assert_eq!(current(&other, &table).await, 1);
     let refresh = ns.refresh_table(&id(&table).unwrap()).await.unwrap();
     assert_eq!(
-        (refresh.previous_version, refresh.served_version),
+        (refresh.previous_version, refresh.current_version),
         (Some(1), 2)
     );
-    assert_eq!(served(&ns, &table).await, 2);
-    assert_eq!(served(&other, &table).await, 2);
+    assert_eq!(current(&ns, &table).await, 2);
+    assert_eq!(current(&other, &table).await, 2);
     assert_eq!(
         sql(&other, &table, "SELECT count(*) FROM t").await,
         (2, 4.into())
     );
     let again = ns.refresh_table(&id(&table).unwrap()).await.unwrap();
-    assert_eq!((again.previous_version, again.served_version), (Some(2), 2));
+    assert_eq!(
+        (again.previous_version, again.current_version),
+        (Some(2), 2)
+    );
     let err = ns
         .refresh_table(&id(&["prod", "missing"]).unwrap())
         .await
         .unwrap_err();
     assert_eq!(code(err), TABLE_NOT_FOUND);
 
-    // A version that never existed is not found and leaves the served version alone.
+    // A version that never existed is not found and leaves the current version alone.
     let err = ns
         .describe_table(DescribeTableRequest {
             version: Some(9),
@@ -210,10 +213,10 @@ async fn served_version_lifecycle() {
         .await
         .unwrap_err();
     assert_eq!(code(err), TABLE_VERSION_NOT_FOUND);
-    assert_eq!(served(&ns, &table).await, 2);
+    assert_eq!(current(&ns, &table).await, 2);
 
-    // A row from before served versions existed resolves to the newest version on first read.
-    sqlx::query("UPDATE tables SET served_version = NULL, served_e_tag = NULL")
+    // A row from before current versions existed resolves to the newest version on first read.
+    sqlx::query("UPDATE tables SET current_version = NULL, current_e_tag = NULL")
         .execute(&pool)
         .await
         .unwrap();
@@ -222,9 +225,9 @@ async fn served_version_lifecycle() {
         PostgresNamespace::new(pool.clone(), HashMap::new()),
         PostgresNamespace::new(pool.clone(), HashMap::new()),
     );
-    let (first, second) = tokio::join!(served(&a, &table), served(&b, &table));
+    let (first, second) = tokio::join!(current(&a, &table), current(&b, &table));
     assert_eq!((first, second), (3, 3));
-    let recorded: Option<i64> = sqlx::query_scalar("SELECT served_version FROM tables")
+    let recorded: Option<i64> = sqlx::query_scalar("SELECT current_version FROM tables")
         .fetch_one(&pool)
         .await
         .unwrap();
@@ -285,13 +288,13 @@ async fn warm_reads_skip_object_storage() {
         .await
         .unwrap();
     for _ in 0..2 {
-        assert_eq!(served(&tiny, &table).await, 1);
+        assert_eq!(current(&tiny, &table).await, 1);
         assert!(tiny.column_storage(&table_id).await.unwrap().columns[0].bytes_on_disk > 0);
     }
 }
 
 #[tokio::test]
-async fn served_version_advances_when_cleaned_up() {
+async fn current_version_advances_when_cleaned_up() {
     let Some(pool) = support::pool("store_cleanup").await else {
         return;
     };
@@ -322,7 +325,7 @@ async fn served_version_advances_when_cleaned_up() {
         (2, 10.into())
     );
 
-    // A cold instance meets the missing manifest on open. A read pinned to the served version
+    // A cold instance meets the missing manifest on open. A read pinned to the current version
     // is not found and moves nothing; an unversioned read advances.
     overwrite(&uri).await;
     delete_version(&uri, 2).await;
@@ -335,11 +338,11 @@ async fn served_version_advances_when_cleaned_up() {
         .await
         .unwrap_err();
     assert_eq!(code(err), TABLE_VERSION_NOT_FOUND);
-    assert_eq!(served(&cold, &table).await, 3);
-    assert_eq!(served(&ns, &table).await, 3);
+    assert_eq!(current(&cold, &table).await, 3);
+    assert_eq!(current(&ns, &table).await, 3);
 
     // A dataset recreated at the same location restarts at version 1 with a new e-tag; an
-    // instance without it cached advances to the new incarnation instead of serving it as v3.
+    // instance without it cached advances to the new incarnation instead of marking it current as v3.
     std::fs::remove_dir_all(&uri).unwrap();
     let recreated = support::write_dataset(dir.path(), "t.lance").await;
     support::append_row(&recreated).await;

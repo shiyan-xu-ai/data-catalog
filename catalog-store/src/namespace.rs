@@ -45,7 +45,7 @@ const REGISTERED_AT: &str = "catalog.registered_at";
 const UPDATED_AT: &str = "catalog.updated_at";
 
 /// `tables` columns read into [`TableRow`], with times rendered as RFC 3339 UTC.
-const TABLE_COLUMNS: &str = r#"location, properties, owner, description, served_version, served_e_tag,
+const TABLE_COLUMNS: &str = r#"location, properties, owner, description, current_version, current_e_tag,
     to_char(registered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS registered_at,
     to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at"#;
 
@@ -109,9 +109,9 @@ pub struct StorageFootprint {
 /// Outcome of [`PostgresNamespace::refresh_table`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refresh {
-    /// The served version before the refresh; `None` when none was recorded yet.
+    /// The current version before the refresh; `None` when none was recorded yet.
     pub previous_version: Option<u64>,
-    pub served_version: u64,
+    pub current_version: u64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -120,8 +120,8 @@ struct TableRow {
     properties: Json<Properties>,
     owner: Option<String>,
     description: Option<String>,
-    served_version: Option<i64>,
-    served_e_tag: Option<String>,
+    current_version: Option<i64>,
+    current_e_tag: Option<String>,
     registered_at: String,
     updated_at: String,
 }
@@ -242,7 +242,7 @@ impl TableRow {
 
 /// A [`LanceNamespace`] whose namespaces and table registrations live in Postgres.
 ///
-/// Postgres stores identity, location, properties, registration times, and the served version:
+/// Postgres stores identity, location, properties, registration times, and the current version:
 /// the version every read that names no version answers for. Lance manifests stay
 /// authoritative for each version's contents. Values derived from one version are cached in the
 /// Lance session under its budget. `storage_options` are used to open datasets server-side and
@@ -309,7 +309,7 @@ impl PostgresNamespace {
         self.open_dataset(location, Some(latest.version_id())).await
     }
 
-    /// Per top-level column bytes on disk of the served version; nested fields roll up into
+    /// Per top-level column bytes on disk of the current version; nested fields roll up into
     /// their top-level column. Reads every data file's metadata once per version and instance.
     pub async fn column_storage(&self, id: &[String]) -> Result<ColumnStorage> {
         self.read_table(id, None, |table| async move {
@@ -345,7 +345,7 @@ impl PostgresNamespace {
     }
 
     /// Lists every object under the registered location (metadata only, never writes) once per
-    /// served version and instance, bucketed by path relative to that location. The prefix
+    /// current version and instance, bucketed by path relative to that location. The prefix
     /// match is per path segment, so sibling directories such as `<table>.lance_tags/` are
     /// excluded.
     pub async fn storage_footprint(&self, id: &[String]) -> Result<StorageFootprint> {
@@ -387,14 +387,14 @@ impl PostgresNamespace {
         .await
     }
 
-    /// Advances the served version to the newest version at the registered location and
-    /// returns the previous and new served versions.
+    /// Advances the current version to the newest version at the registered location and
+    /// returns the previous and new current versions.
     pub async fn refresh_table(&self, id: &[String]) -> Result<Refresh> {
         let row = self.table_row(id).await?;
         let latest = self.open_latest(&row.location).await?;
         let (namespace, name) = split_table_id(id)?;
         let updated = sqlx::query(
-            "UPDATE tables SET served_version = $4, served_e_tag = $5
+            "UPDATE tables SET current_version = $4, current_e_tag = $5
              WHERE namespace_path = $1 AND name = $2 AND location = $3",
         )
         .bind(namespace)
@@ -409,8 +409,8 @@ impl PostgresNamespace {
             return Err(concurrent_registration(id));
         }
         Ok(Refresh {
-            previous_version: row.served_version.map(|v| v as u64),
-            served_version: latest.dataset.version_id(),
+            previous_version: row.current_version.map(|v| v as u64),
+            current_version: latest.dataset.version_id(),
         })
     }
 
@@ -427,8 +427,8 @@ impl PostgresNamespace {
         .ok_or_else(|| table_not_found(id))
     }
 
-    /// Opens the table at `version`, or at its served version when unset. Unlike
-    /// [`Self::read_table`], a read that fails afterwards does not advance the served version.
+    /// Opens the table at `version`, or at its current version when unset. Unlike
+    /// [`Self::read_table`], a read that fails afterwards does not advance the current version.
     pub(crate) async fn open_table(
         &self,
         id: &[String],
@@ -438,8 +438,8 @@ impl PostgresNamespace {
         Ok(self.open_row(id, &row, version).await?.0)
     }
 
-    /// The table at `version`, or at its served version when unset; also whether this is an
-    /// unversioned read of the served version, the only kind that may advance it.
+    /// The table at `version`, or at its current version when unset; also whether this is an
+    /// unversioned read of the current version, the only kind that may advance it.
     async fn open_row(
         &self,
         id: &[String],
@@ -447,14 +447,14 @@ impl PostgresNamespace {
         version: Option<u64>,
     ) -> Result<(OpenTable, bool)> {
         let Some(version) = version else {
-            return Ok((self.open_served(id, row).await?, true));
+            return Ok((self.open_current(id, row).await?, true));
         };
-        if row.served_version != Some(version as i64) {
+        if row.current_version != Some(version as i64) {
             return Ok((self.open_version(&row.location, version).await?, false));
         }
-        // A pinned read of the served version still uses the cache, but never advances.
+        // A pinned read of the current version still uses the cache, but never advances.
         let table = self
-            .open_cached(&row.location, version, row.served_e_tag.as_deref())
+            .open_cached(&row.location, version, row.current_e_tag.as_deref())
             .await
             .map_err(lance_error(format!(
                 "cannot open Lance dataset at {}",
@@ -463,9 +463,9 @@ impl PostgresNamespace {
         Ok((table, false))
     }
 
-    /// Runs `read` on the table at `version`, or at its served version when unset.
+    /// Runs `read` on the table at `version`, or at its current version when unset.
     ///
-    /// A served version whose files are gone (cleanup removes old manifests and the data files
+    /// A current version whose files are gone (cleanup removes old manifests and the data files
     /// only they reference) advances to the newest version, and `read` runs once more there.
     pub(crate) async fn read_table<T, F, Fut>(
         &self,
@@ -492,11 +492,11 @@ impl PostgresNamespace {
         F: Fn(OpenTable) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let (table, served) = self.open_row(id, row, version).await?;
+        let (table, current) = self.open_row(id, row, version).await?;
         let opened_version = table.dataset.version_id();
         match read(table).await {
             Err(e)
-                if served
+                if current
                     && is_version_missing(&e)
                     && self.version_gone(row, opened_version).await =>
             {
@@ -507,14 +507,14 @@ impl PostgresNamespace {
         }
     }
 
-    /// The served version, from this instance's cache when present. A missing or unrecorded
-    /// served version advances to the newest one.
-    async fn open_served(&self, id: &[String], row: &TableRow) -> Result<OpenTable> {
-        let Some(version) = row.served_version.map(|v| v as u64) else {
+    /// The current version, from this instance's cache when present. A missing or unrecorded
+    /// current version advances to the newest one.
+    async fn open_current(&self, id: &[String], row: &TableRow) -> Result<OpenTable> {
+        let Some(version) = row.current_version.map(|v| v as u64) else {
             return self.advance(id, row).await;
         };
         match self
-            .open_cached(&row.location, version, row.served_e_tag.as_deref())
+            .open_cached(&row.location, version, row.current_e_tag.as_deref())
             .await
         {
             Ok(table) => Ok(table),
@@ -526,24 +526,24 @@ impl PostgresNamespace {
         }
     }
 
-    /// Records the newest version as served, unless another request already moved the served
+    /// Records the newest version as current, unless another request already moved the current
     /// version past what `row` holds; then serves what that request recorded.
     async fn advance(&self, id: &[String], row: &TableRow) -> Result<OpenTable> {
         let latest = self.open_latest(&row.location).await?;
         let (namespace, name) = split_table_id(id)?;
         let updated = sqlx::query(
-            "UPDATE tables SET served_version = $4, served_e_tag = $5
+            "UPDATE tables SET current_version = $4, current_e_tag = $5
              WHERE namespace_path = $1 AND name = $2 AND location = $3
-               AND served_version IS NOT DISTINCT FROM $6
-               AND served_e_tag IS NOT DISTINCT FROM $7",
+               AND current_version IS NOT DISTINCT FROM $6
+               AND current_e_tag IS NOT DISTINCT FROM $7",
         )
         .bind(namespace)
         .bind(name)
         .bind(&row.location)
         .bind(latest.dataset.version_id() as i64)
         .bind(latest.e_tag())
-        .bind(row.served_version)
-        .bind(&row.served_e_tag)
+        .bind(row.current_version)
+        .bind(&row.current_e_tag)
         .execute(&self.pool)
         .await
         .map_err(db_error)?;
@@ -551,9 +551,9 @@ impl PostgresNamespace {
             return Ok(latest);
         }
         let current = self.table_row(id).await?;
-        match current.served_version.map(|v| v as u64) {
+        match current.current_version.map(|v| v as u64) {
             Some(version) => self
-                .open_cached(&current.location, version, current.served_e_tag.as_deref())
+                .open_cached(&current.location, version, current.current_e_tag.as_deref())
                 .await
                 .map_err(lance_error(format!(
                     "cannot open Lance dataset at {}",
@@ -1001,8 +1001,8 @@ impl LanceNamespace for PostgresNamespace {
                 request.location
             ))
         })?;
-        let served_version = dataset.version_id() as i64;
-        let served_e_tag = dataset.manifest_location().e_tag.clone();
+        let current_version = dataset.version_id() as i64;
+        let current_e_tag = dataset.manifest_location().e_tag.clone();
 
         let client_properties = request.properties.unwrap_or_default();
         if let Some(key) = client_properties
@@ -1019,16 +1019,16 @@ impl LanceNamespace for PostgresNamespace {
         // Overwrite advances updated_at and keeps registered_at.
         let sql = if overwrite {
             "INSERT INTO tables (namespace_path, name, location, properties, owner, description,
-                                 served_version, served_e_tag)
+                                 current_version, current_e_tag)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (namespace_path, name)
              DO UPDATE SET location = EXCLUDED.location, properties = EXCLUDED.properties,
                  owner = EXCLUDED.owner, description = EXCLUDED.description,
-                 served_version = EXCLUDED.served_version, served_e_tag = EXCLUDED.served_e_tag,
+                 current_version = EXCLUDED.current_version, current_e_tag = EXCLUDED.current_e_tag,
                  updated_at = now()"
         } else {
             "INSERT INTO tables (namespace_path, name, location, properties, owner, description,
-                                 served_version, served_e_tag)
+                                 current_version, current_e_tag)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
         };
         sqlx::query(sql)
@@ -1038,8 +1038,8 @@ impl LanceNamespace for PostgresNamespace {
             .bind(Json(&properties))
             .bind(owner)
             .bind(description)
-            .bind(served_version)
-            .bind(served_e_tag)
+            .bind(current_version)
+            .bind(current_e_tag)
             .execute(&self.pool)
             .await
             .map_err(|e| {
@@ -1097,7 +1097,7 @@ impl LanceNamespace for PostgresNamespace {
         })
     }
 
-    /// Mirrors upstream `DirectoryNamespace::get_table_stats` for the served version: total
+    /// Mirrors upstream `DirectoryNamespace::get_table_stats` for the current version: total
     /// bytes from field-level data statistics, fragment lengths from per-fragment physical rows.
     /// Both are computed once per version and instance.
     async fn get_table_stats(
@@ -1148,7 +1148,7 @@ impl LanceNamespace for PostgresNamespace {
     }
 
     /// Start-after pagination by version number in the requested order; the token is the last
-    /// version of the page. Lists every retained version, newer than served ones included; only
+    /// version of the page. Lists every retained version, newer than current ones included; only
     /// the page's manifests are read.
     async fn list_table_versions(
         &self,
@@ -1211,7 +1211,7 @@ impl LanceNamespace for PostgresNamespace {
         .await
     }
 
-    /// Describes `version`, or the served version when it is unset.
+    /// Describes `version`, or the current version when it is unset.
     async fn describe_table_version(
         &self,
         request: DescribeTableVersionRequest,
@@ -1587,7 +1587,7 @@ pub(crate) fn internal(message: String) -> Error {
 }
 
 /// Maps a Lance error from reading one version; a missing file is TableVersionNotFound, which
-/// [`PostgresNamespace::read_table`] takes as a sign the served version may be gone.
+/// [`PostgresNamespace::read_table`] takes as a sign the current version may be gone.
 pub(crate) fn lance_error(context: String) -> impl FnOnce(lance::Error) -> Error {
     move |e| {
         let message = format!("{context}: {e}");

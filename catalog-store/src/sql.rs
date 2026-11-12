@@ -1,4 +1,4 @@
-//! Read-only DataFusion SQL over one registered table, at its served or a chosen version.
+//! Read-only DataFusion SQL over one registered table, at its current or a chosen version.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -55,7 +55,7 @@ pub struct SqlResult {
 
 impl PostgresNamespace {
     /// Runs one read-only query against the table. Its leaf name resolves to `version` (the
-    /// served version when unset); `"<leaf>@v<N>"` resolves to version N, opened on demand.
+    /// current version when unset); `"<leaf>@v<N>"` resolves to version N, opened on demand.
     ///
     /// DDL, DML (including `COPY`), and other statements are rejected at planning; spilling is
     /// disabled so nothing touches the local disk; blob columns read as their descriptors, so

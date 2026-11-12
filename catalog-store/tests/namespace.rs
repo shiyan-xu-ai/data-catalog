@@ -728,7 +728,7 @@ async fn table_details() {
     assert_eq!(code(err), TABLE_VERSION_NOT_FOUND);
 
     // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found on an
-    // instance that has not cached the served version (a warm instance never re-checks storage).
+    // instance that has not cached the current version (a warm instance never re-checks storage).
     std::fs::remove_dir_all(&metrics).unwrap();
     let cold = PostgresNamespace::new(pool, HashMap::new());
     let cheap = cold.describe_table(describe(false)).await.unwrap();

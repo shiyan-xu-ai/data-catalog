@@ -37,11 +37,11 @@ page can fill; the table page puts its SQL panel there.
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
   docked at the bottom. The UI offers no deregistration.
   - **Overview:** first a full-width, untitled About card (description, owner,
-    copyable location, registered and updated times, the served version's
+    copyable location, registered and updated times, the current version's
     Lance file format, and the latest committed version with its age, noting
-    the served version when it is older), then six tiles: rows
-    (with fragment count), served-version data
-    (the manifest's data-file size and count), deleted rows, served-version
+    the current version when it is older), then six tiles: rows
+    (with fragment count), current-version data
+    (the manifest's data-file size and count), deleted rows, current-version
     index size, total bytes on storage, and the estimated monthly storage cost
     (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption and
     a one-line (?) tooltip. Sections, each with a one-line (?) tooltip instead
@@ -93,9 +93,9 @@ page can fill; the table page puts its SQL panel there.
     Branches (name, parent branch and version, manifest size) tiles. The table
     lists the loaded versions with timestamp,
     rows and row change against the next older loaded version ("—" for the
-    oldest loaded one), data size, data files, and deletions. The served
+    oldest loaded one), data size, data files, and deletions. The current
     version carries a "current" badge; versions committed after it carry
-    "newer than served" until a catalog refresh. Clicking a row opens the
+    "newer than current" until a catalog refresh. Clicking a row opens the
     Timeline's pane (the same component, below the sticky Trends chart), with
     the version's timeline event fetched as a one-event page
     (`?page_token=<version + 1>&limit=1`) and the change measured against the
@@ -105,7 +105,7 @@ page can fill; the table page puts its SQL panel there.
     field table: an expandable field tree with compact types (full type on
     hover), nullability, size on disk, and a count of field metadata entries,
     plus a raw JSON view. Size on disk is a bar per top-level column scaled to
-    the largest column, with the size written inside it, from the served
+    the largest column, with the size written inside it, from the current
     version's bytes per column (`GET /catalog/v1/table/{id}/column-storage`,
     blob payloads and index files excluded); it loads on its own when the tab
     opens. Clicking a row (or Enter/Space; Esc closes, arrows move) opens a
@@ -119,7 +119,7 @@ page can fill; the table page puts its SQL panel there.
   table (`POST /catalog/v1/table/{id}/sql`). A version picker, listing the
   loaded versions newest first (its last option loads earlier ones; it shares
   the Versions tab's pages), sets which version the table name reads (the
-  served version by default, labeled "Served (vN)"; newer versions are marked);
+  current version by default, labeled "Current (vN)"; newer versions are marked);
   any other version is addressable in SQL as `"<table>@v<N>"`, for
   example to compare versions. The panel opens with
   `SELECT * FROM "<table>" LIMIT 20`, runs on the Run button or Ctrl/Cmd+Enter,

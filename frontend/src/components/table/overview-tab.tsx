@@ -97,7 +97,7 @@ export function OverviewTab({
           label="Rows"
           value={formatCount(s.rows)}
           sub={s.fragments != null ? formatCountOf(s.fragments, "fragment") : undefined}
-          help="Live rows in the served version."
+          help="Live rows in the current version."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -106,7 +106,7 @@ export function OverviewTab({
           label="Current version data"
           value={formatBytes(s.dataBytes)}
           sub={s.dataFiles != null ? formatCountOf(s.dataFiles, "data file") : undefined}
-          help="Data files the served version references. Excludes blob and index files."
+          help="Data files the current version references. Excludes blob and index files."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -124,7 +124,7 @@ export function OverviewTab({
           label="Index size"
           // No indices is a measured zero; indices without reported sizes stay unknown.
           value={formatBytes(indices.data?.length === 0 ? 0 : indexBytes)}
-          sub="served version"
+          sub="current version"
           help="Excludes index files kept only by older versions."
           loading={indices.isPending}
           failed={indices.error?.message}
@@ -165,7 +165,7 @@ export function OverviewTab({
 
       <Section
         title="Fragment distribution"
-        help={`Rows per fragment in the served version, deleted rows included. Fragments under ${formatCount(COMPACTION_TARGET_ROWS)} rows are compaction candidates.`}
+        help={`Rows per fragment in the current version, deleted rows included. Fragments under ${formatCount(COMPACTION_TARGET_ROWS)} rows are compaction candidates.`}
       >
         {stats.error ? (
           <ErrorState message={stats.error.message} />

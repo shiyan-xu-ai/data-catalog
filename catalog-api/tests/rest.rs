@@ -388,7 +388,7 @@ async fn rest_catalog_routes() {
     assert!(!copied.exists());
 
     // Time travel: version 3 appends a row. Until a refresh, the plain name keeps reading the
-    // served version; `version` and `"<leaf>@v<N>"` pin any version inside a query.
+    // current version; `version` and `"<leaf>@v<N>"` pin any version inside a query.
     support::append_row(&users).await;
     let count = |body: Value| async {
         let (status, body) = post(&app, "/catalog/v1/table/prod%24users/sql", body).await;
@@ -411,7 +411,7 @@ async fn rest_catalog_routes() {
         post(&app, "/catalog/v1/table/prod%24users/refresh", json!({})).await,
         (
             StatusCode::OK,
-            json!({"previous_version": 2, "served_version": 3})
+            json!({"previous_version": 2, "current_version": 3})
         )
     );
     error(StatusCode::NOT_FOUND, 4)(
