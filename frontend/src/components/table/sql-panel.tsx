@@ -70,16 +70,20 @@ function VideoClip({ name, source }: { name: string; source: VideoSource }) {
     staleTime: 10 * 60_000,
   });
   const url = source.presign ? signed.data?.url : source.url;
+  const downloadUrl = source.presign ? signed.data?.download_url : source.url;
   return (
     <section className="space-y-1.5 border-t px-4 py-3">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate font-mono text-xs font-medium" title={source.url}>
           {name}
         </span>
-        {url && (
-          <a href={url} target="_blank" rel="noreferrer" className="ml-auto shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
-            Open
-          </a>
+        {downloadUrl && (
+          <Button asChild size="sm" variant="outline" className="ml-auto h-7 shrink-0">
+            <a href={downloadUrl} download>
+              <Download />
+              Download
+            </a>
+          </Button>
         )}
       </div>
       {source.presign && signed.error ? (
@@ -89,7 +93,7 @@ function VideoClip({ name, source }: { name: string; source: VideoSource }) {
       ) : source.rawHevc ? (
         <HevcPlayer key={url} url={url} />
       ) : failed ? (
-        <p className="text-xs text-muted-foreground">This browser cannot play this file. Open it to download.</p>
+        <p className="text-xs text-muted-foreground">This browser cannot play this file. Download it to watch.</p>
       ) : (
         <video controls preload="metadata" src={url} onError={() => setFailed(true)} className="aspect-video w-full rounded bg-black" />
       )}

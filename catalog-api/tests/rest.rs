@@ -589,6 +589,13 @@ async fn media_presign_signs_allowed_s3_uris() {
         "{url}"
     );
     assert_eq!(body["expires_in_secs"], 3600);
+    let download = body["download_url"].as_str().unwrap();
+    assert!(
+        download.contains(
+            "response-content-disposition=attachment%3B%20filename%3D%22pack_00000.h265%22"
+        ) && download.contains("X-Amz-Signature="),
+        "{download}"
+    );
 
     error(StatusCode::FORBIDDEN, 15)(presign("s3://media/other/a.h265").await);
     error(StatusCode::FORBIDDEN, 15)(presign("s3://media/clips/../other/a.h265").await);

@@ -1,10 +1,23 @@
 /** Parsing of raw H.265 (HEVC) Annex-B byte streams: start-code delimited NAL units, grouped into
  *  access units (one picture each) for WebCodecs, plus the codec string from the SPS. */
 
-/** One picture's NAL units in Annex-B form; `key` when it holds an IRAP (random access) slice. */
+/** One picture's NAL units in Annex-B form. */
 export interface AccessUnit {
   data: Uint8Array;
+  /** Holds an IRAP (random access) slice, so decoding can start here. */
   key: boolean;
+  /** Holds a RASL slice, which references pictures before the preceding IRAP. */
+  rasl: boolean;
+  /** Holds an SPS, so a reset decoder needs no earlier parameter sets. */
+  hasSps: boolean;
+  /** Stream offset of the unit's first start code. */
+  offset: number;
+}
+
+/** A NAL unit without its start code, and the stream offset of that start code. */
+export interface NalUnit {
+  data: Uint8Array;
+  offset: number;
 }
 
 export const NAL_SPS = 33;
@@ -33,25 +46,40 @@ function startCodes(data: Uint8Array): [number, number][] {
   return found;
 }
 
-/** Splits a byte stream arriving in arbitrary chunks into NAL units (without start codes). The
- *  last unit stays buffered until the next start code or `flush`. */
+/** Splits a byte stream arriving in arbitrary chunks into NAL units. The last unit stays buffered
+ *  until the next start code or `flush`. The constructor takes the stream offset of the first
+ *  chunk; bytes before the first start code are skipped, so reading may begin mid-stream. */
 export class AnnexBSplitter {
   private pending: Uint8Array = new Uint8Array(0);
 
-  push(chunk: Uint8Array): Uint8Array[] {
+  /** Stream offset of `pending[0]`. */
+  constructor(private base = 0) {}
+
+  push(chunk: Uint8Array): NalUnit[] {
     const data = concat(this.pending, chunk);
     const codes = startCodes(data);
-    const nals: Uint8Array[] = [];
-    for (let i = 0; i + 1 < codes.length; i++) nals.push(data.subarray(codes[i][1], codes[i + 1][0]));
-    this.pending = codes.length > 0 ? data.subarray(codes[codes.length - 1][0]) : data;
+    const nals: NalUnit[] = [];
+    for (let i = 0; i + 1 < codes.length; i++) {
+      nals.push({ data: data.subarray(codes[i][1], codes[i + 1][0]), offset: this.base + codes[i][0] });
+    }
+    if (codes.length > 0) {
+      const last = codes[codes.length - 1][0];
+      this.pending = data.subarray(last);
+      this.base += last;
+    } else {
+      this.pending = data;
+    }
     return nals;
   }
 
-  flush(): Uint8Array[] {
+  flush(): NalUnit[] {
     const codes = startCodes(this.pending);
-    const last = codes.length > 0 ? this.pending.subarray(codes[codes.length - 1][1]) : null;
+    const last = codes.length > 0 ? codes[codes.length - 1] : null;
+    const data = last ? this.pending.subarray(last[1]) : null;
+    const offset = this.base + (last?.[0] ?? 0);
+    this.base += this.pending.length;
     this.pending = new Uint8Array(0);
-    return last && last.length > 0 ? [last] : [];
+    return data && data.length > 0 ? [{ data, offset }] : [];
   }
 }
 
@@ -63,21 +91,25 @@ function startsAccessUnit(type: number): boolean {
 
 /** Groups NAL units in decoding order into access units. */
 export class AccessUnitAssembler {
-  private nals: Uint8Array[] = [];
+  private nals: NalUnit[] = [];
   private hasSlice = false;
   private key = false;
+  private rasl = false;
+  private hasSps = false;
 
   /** Adds `nal`; returns the access unit it completes, if any. */
-  push(nal: Uint8Array): AccessUnit | null {
-    const type = nalType(nal);
+  push(nal: NalUnit): AccessUnit | null {
+    const type = nalType(nal.data);
     const slice = type < 32;
     // A slice with first_slice_segment_in_pic_flag set begins a new picture.
-    const opens = slice ? (nal[2] & 0x80) !== 0 : startsAccessUnit(type);
+    const opens = slice ? (nal.data[2] & 0x80) !== 0 : startsAccessUnit(type);
     const done = this.hasSlice && opens ? this.take() : null;
     this.nals.push(nal);
+    if (type === NAL_SPS) this.hasSps = true;
     if (slice) {
       this.hasSlice = true;
       if (type >= 16 && type <= 21) this.key = true;
+      if (type === 8 || type === 9) this.rasl = true;
     }
     return done;
   }
@@ -88,20 +120,32 @@ export class AccessUnitAssembler {
   }
 
   private take(): AccessUnit {
-    const size = this.nals.reduce((sum, nal) => sum + 4 + nal.length, 0);
-    const data = new Uint8Array(size);
-    let at = 0;
-    for (const nal of this.nals) {
-      data.set([0, 0, 0, 1], at);
-      data.set(nal, at + 4);
-      at += 4 + nal.length;
-    }
-    const unit = { data, key: this.key };
+    const unit = {
+      data: annexB(this.nals.map((n) => n.data)),
+      key: this.key,
+      rasl: this.rasl,
+      hasSps: this.hasSps,
+      offset: this.nals[0].offset,
+    };
     this.nals = [];
     this.hasSlice = false;
     this.key = false;
+    this.rasl = false;
+    this.hasSps = false;
     return unit;
   }
+}
+
+/** NAL units joined with 4-byte start codes. */
+export function annexB(nals: readonly Uint8Array[]): Uint8Array {
+  const data = new Uint8Array(nals.reduce((sum, nal) => sum + 4 + nal.length, 0));
+  let at = 0;
+  for (const nal of nals) {
+    data.set([0, 0, 0, 1], at);
+    data.set(nal, at + 4);
+    at += 4 + nal.length;
+  }
+  return data;
 }
 
 /** Removes emulation-prevention bytes (`00 00 03` -> `00 00`). */

@@ -141,7 +141,8 @@ Routes carry `$`-joined ids; names display dotted.
   with a copy button; a new run clears the selection. When some value in the
   row is an http(s) or `s3://` URL ending in a video extension (`.mp4`,
   `.m4v`, `.mov`, `.webm`, `.h265`, `.hevc`; a query string is allowed), the
-  pane adds a Playback tab with a player per such column and an Open link.
+  pane adds a Playback tab with a player per such column and a Download button
+  (for `s3://` objects, a presigned URL served as an attachment).
   `s3://` objects play from a presigned https URL
   (`GET /catalog/v1/media/presign?uri=`), so the browser reads them from object
   storage directly; the bucket's CORS rules must allow the UI's origin and the
@@ -150,7 +151,12 @@ Routes carry `$`-joined ids; names display dotted.
   pictures, decoded with WebCodecs (where the browser and hardware support
   H.265; otherwise the pane says so and stops reading), and drawn on a canvas
   at a chosen frame rate, since raw streams carry no timing; reading pauses
-  while 30 frames are buffered. The
+  while 30 frames are buffered. Its controls: play/pause (also a click on the
+  video, Space, or K), a seek bar showing the read range, elapsed and
+  estimated total time, the frame rate, and full screen (F); arrow keys skip
+  5 seconds. A seek jumps to that byte fraction of the file and resumes at the
+  next random access picture, so times are estimates from the average picture
+  size read so far. The
   editor loads when the tab first opens and then stays mounted, so the query and
   results survive switching tabs until the user leaves the table page; the other
   tabs stay usable while a query runs.

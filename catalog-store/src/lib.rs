@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
+pub use media::MediaUrls;
 pub use namespace::{
     ColumnBytes, ColumnStorage, Distribution, FragmentMeasures, PostgresNamespace, Refresh,
     DEFAULT_CACHE_BUDGET_BYTES,

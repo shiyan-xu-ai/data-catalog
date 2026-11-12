@@ -118,6 +118,8 @@ struct MediaQuery {
 #[derive(Serialize)]
 struct PresignResponse {
     url: String,
+    /// Saves the object instead of displaying it (`Content-Disposition: attachment`).
+    download_url: String,
     expires_in_secs: u64,
 }
 
@@ -143,12 +145,13 @@ async fn presign_media(
             .into(),
         ));
     }
-    let url = catalog
+    let urls = catalog
         .namespace
         .presign_media(&q.uri, catalog.media_url_ttl)
         .await?;
     Ok(Json(PresignResponse {
-        url,
+        url: urls.url,
+        download_url: urls.download_url,
         expires_in_secs: catalog.media_url_ttl.as_secs(),
     }))
 }

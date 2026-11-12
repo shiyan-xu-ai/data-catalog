@@ -297,6 +297,7 @@ export const versionFilesResponseSchema = z.object({
 });
 export type VersionFilesResponse = z.infer<typeof versionFilesResponseSchema>;
 
-/** Catalog `GET /catalog/v1/media/presign?uri=`: a presigned https URL for a media object. */
-export const mediaPresignResponseSchema = z.object({ url: z.string(), expires_in_secs: z.number() });
+/** Catalog `GET /catalog/v1/media/presign?uri=`: presigned https URLs for a media object, to read
+ *  it (`url`) or save it (`download_url`). */
+export const mediaPresignResponseSchema = z.object({ url: z.string(), download_url: z.string(), expires_in_secs: z.number() });
 export type MediaPresignResponse = z.infer<typeof mediaPresignResponseSchema>;
