@@ -1,10 +1,9 @@
 import { useEffect, useRef } from "react";
 import { Link } from "@tanstack/react-router";
-import { ChevronRight, Folder, FolderOpen, Loader2 } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, Loader2, Table2 } from "lucide-react";
 import { useChildNamespaces, useNamespaceTables, type PagedNames } from "@/lib/catalog-queries";
 import { ID_DELIMITER } from "@/lib/ids";
 import { cn } from "@/lib/utils";
-import { LanceIcon } from "@/components/lance-icon";
 
 interface TreeState {
   expanded: ReadonlySet<string>;
@@ -42,7 +41,7 @@ function TableLeaf({ segments, depth, state }: { segments: string[]; depth: numb
       style={leafIndent(depth)}
       title={segments[segments.length - 1]}
     >
-      <LanceIcon className="h-3.5 w-3.5 shrink-0" />
+      <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="truncate font-mono text-xs">{segments[segments.length - 1]}</span>
     </Link>
   );

@@ -15,8 +15,7 @@ an icon rail (search, namespaces, theme, timezone); a click anywhere on the rail
 expands it, except on the theme and timezone buttons. The collapsed state, theme,
 and timezone persist in `localStorage`, and every absolute timestamp renders in
 the chosen timezone. The top bar shows a breadcrumb. Page content scrolls on its
-own. Tables (all Lance datasets) carry the Lance logo as their icon in the tree,
-search results, namespace lists, and the table page header.
+own.
 
 - **Namespace tree.** Expands lazily, one list request per opened namespace,
   with tables as leaves. The current namespace or table is highlighted and its
@@ -36,7 +35,7 @@ Routes carry `$`-joined ids; names display dotted.
   registered and updated times. Each row fills from a cheap describe (Postgres
   only) once it scrolls into view, at most six at a time, so listing never opens
   a dataset.
-- **Table page.** The table name (namespace path in the breadcrumb) and seven
+- **Table page.** The Lance logo and the table name (namespace path in the breadcrumb) and seven
   tabs in a tab bar pinned to the top while content scrolls (Overview,
   Properties, Timeline, Versions, Schema, Indices, SQL; the active tab is in
   `?tab=`; Schema and Indices show their counts).

@@ -20,7 +20,6 @@ import { ErrorState } from "@/components/error-state";
 import { PropertiesList } from "@/components/properties-list";
 import { Section } from "@/components/section";
 import { Timestamp } from "@/components/timestamp";
-import { LanceIcon } from "@/components/lance-icon";
 
 function ListStatus({ query, children }: { query: PagedNames; children: React.ReactNode }) {
   if (query.error) return <ErrorState message={query.error.message} />;
@@ -65,7 +64,7 @@ function TableListRow({ segments }: { segments: string[] }) {
           params={{ tableId: joinId(segments) }}
           className="flex items-center gap-2 font-mono text-[13px] font-medium hover:underline"
         >
-          <LanceIcon className="h-3.5 w-3.5 shrink-0" />
+          <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="truncate">{segments[segments.length - 1]}</span>
         </Link>
       </TableCell>
