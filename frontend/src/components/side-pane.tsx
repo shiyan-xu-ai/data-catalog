@@ -25,6 +25,37 @@ export function PaneSection({ title, children }: { title: string; children: Reac
   );
 }
 
+/** The segmented view switch under a side pane's header. */
+export function PaneTabs<V extends string>({
+  views,
+  value,
+  onChange,
+}: {
+  views: readonly (readonly [V, string])[];
+  value: V;
+  onChange: (view: V) => void;
+}) {
+  return (
+    <div role="tablist" aria-label="View" className="flex gap-1 px-4 pb-3">
+      {views.map(([v, name]) => (
+        <button
+          key={v}
+          type="button"
+          role="tab"
+          aria-selected={value === v}
+          onClick={() => onChange(v)}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-xs transition-colors",
+            value === v ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:bg-accent/60",
+          )}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Props spread on a selectable row of a list with a side pane. */
 export interface PaneRowProps {
   ref: (el: HTMLElement | null) => void;

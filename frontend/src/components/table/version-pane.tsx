@@ -33,7 +33,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
 import { JsonTree } from "@/components/json-tree";
-import { Fact, Mono, PaneSection, SidePane } from "@/components/side-pane";
+import { Fact, Mono, PaneSection, PaneTabs, SidePane } from "@/components/side-pane";
 
 export type PaneView = "details" | "source";
 
@@ -119,10 +119,10 @@ function VersionSource({ segments, version }: { segments: readonly string[]; ver
   );
 }
 
-const VIEWS: [PaneView, string][] = [
+const VIEWS = [
   ["details", "Details"],
   ["source", "Source files"],
-];
+] as const;
 
 export const ICON: Record<string, LucideIcon> = {
   Append: FilePlus2,
@@ -557,25 +557,7 @@ export function VersionDetailPane({
       onClose={onClose}
       top={top}
       bodyKey={version}
-      toolbar={
-        <div role="tablist" aria-label="View" className="flex gap-1 px-4 pb-3">
-          {VIEWS.map(([v, name]) => (
-            <button
-              key={v}
-              type="button"
-              role="tab"
-              aria-selected={view === v}
-              onClick={() => onView(v)}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-xs transition-colors",
-                view === v ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:bg-accent/60",
-              )}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      }
+      toolbar={<PaneTabs views={VIEWS} value={view} onChange={onView} />}
     >
       {view === "details" ? (
         <EventBody shown={shown} fetched={fetched} delta={delta} />

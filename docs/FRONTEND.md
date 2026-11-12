@@ -138,7 +138,12 @@ Routes carry `$`-joined ids; names display dotted.
   past the server's cap. Clicking a result row (or Enter/Space; Esc closes,
   arrows move) opens a row pane beside the results like the schema field pane:
   every column's name, type, and full value, nested values as a JSON tree, each
-  with a copy button; a new run clears the selection. The
+  with a copy button; a new run clears the selection. When some value in the
+  row is an http(s) URL ending in a video extension (`.mp4`, `.m4v`, `.mov`,
+  `.webm`, `.h265`, `.hevc`; a query string is allowed), the pane adds a
+  Playback tab with a native player per such column and an Open link; files the
+  browser cannot decode (raw H.265 streams in most browsers) show a note instead
+  of a player. The
   editor loads when the tab first opens and then stays mounted, so the query and
   results survive switching tabs until the user leaves the table page; the other
   tabs stay usable while a query runs.

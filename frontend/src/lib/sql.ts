@@ -59,3 +59,11 @@ export function shortTypeName(type: string): string {
 export function versionRef(tableName: string, version: number): string {
   return quoteIdent(`${tableName}@v${version}`);
 }
+
+const VIDEO_URL = /^https?:\/\/\S+\.(?:mp4|m4v|mov|webm|h265|hevc)(?:[?#]\S*)?$/i;
+
+/** Whether a result value is an http(s) URL to a video file (by extension, query string
+ *  allowed), which the row pane offers for playback. */
+export function isVideoUrl(value: unknown): value is string {
+  return typeof value === "string" && VIDEO_URL.test(value.trim());
+}

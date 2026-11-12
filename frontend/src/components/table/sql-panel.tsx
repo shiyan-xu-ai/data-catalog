@@ -5,7 +5,7 @@ import type { PagedVersions } from "@/lib/catalog-queries";
 import { formatCount, parseTime } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
 import { ErrorCode, type SqlResponse } from "@/lib/schemas";
-import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef, type CellKind } from "@/lib/sql";
+import { defaultQuery, formatCell, isVideoUrl, quoteIdent, resultsToCsv, shortTypeName, versionRef, type CellKind } from "@/lib/sql";
 import { versionStatus } from "@/lib/table-metadata";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/copy-button";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { JsonTree } from "@/components/json-tree";
-import { SidePane, SidePaneLayout, usePaneSelection } from "@/components/side-pane";
+import { PaneTabs, SidePane, SidePaneLayout, usePaneSelection } from "@/components/side-pane";
 import { SqlEditor } from "@/components/sql-editor";
 
 // Value of the picker's trailing "load earlier versions" option.
@@ -54,15 +54,62 @@ function copyText(value: unknown): string {
   return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
 }
 
-/** Every column of one result row with its type and full value; nested values as a JSON tree. */
-function RowPane({ result, row, top, onClose }: { result: SqlResponse; row: number; top: number; onClose: () => void }) {
+type RowView = "values" | "playback";
+
+/** One playable column: a native video player, or a note and link when the browser cannot
+ *  decode the file (raw H.265 streams, for example). */
+function VideoClip({ name, url }: { name: string; url: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <section className="space-y-1.5 border-t px-4 py-3">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate font-mono text-xs font-medium" title={name}>
+          {name}
+        </span>
+        <a href={url} target="_blank" rel="noreferrer" className="ml-auto shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+          Open
+        </a>
+      </div>
+      {failed ? (
+        <p className="text-xs text-muted-foreground">This browser cannot play this file. Open it to download.</p>
+      ) : (
+        <video controls preload="metadata" src={url} onError={() => setFailed(true)} className="aspect-video w-full rounded bg-black" />
+      )}
+    </section>
+  );
+}
+
+/** Every column of one result row with its type and full value, nested values as a JSON tree.
+ *  When some value is a video URL (see `isVideoUrl`), a Playback view shows a player per such
+ *  column. */
+function RowPane({
+  result,
+  row,
+  top,
+  view,
+  onView,
+  onClose,
+}: {
+  result: SqlResponse;
+  row: number;
+  top: number;
+  view: RowView;
+  onView: (view: RowView) => void;
+  onClose: () => void;
+}) {
   const values = result.rows[row];
+  const videos = result.columns.flatMap((c, i) => {
+    const value = values[i];
+    return isVideoUrl(value) ? [{ name: c.name, url: value.trim() }] : [];
+  });
+  const shown = videos.length > 0 ? view : "values";
   return (
     <SidePane
       label={`Row ${row + 1} details`}
       top={top}
       onClose={onClose}
-      bodyKey={row}
+      bodyKey={`${row}:${shown}`}
+      wide={shown === "playback"}
       className="xl:mt-3 xl:mr-3"
       header={
         <>
@@ -70,34 +117,48 @@ function RowPane({ result, row, top, onClose }: { result: SqlResponse; row: numb
           <div className="text-xs text-muted-foreground">of {formatCount(result.rows.length)} returned</div>
         </>
       }
+      toolbar={
+        videos.length > 0 && (
+          <PaneTabs
+            views={[
+              ["values", "Values"],
+              ["playback", `Playback (${videos.length})`],
+            ]}
+            value={shown}
+            onChange={onView}
+          />
+        )
+      }
     >
-      {result.columns.map((c, i) => {
-        const cell = formatCell(values[i], c.type);
-        return (
-          <section key={i} className="space-y-1 border-t px-4 py-2.5">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate font-mono text-xs font-medium" title={c.name}>
-                {c.name}
-              </span>
-              <span className="truncate text-[10px] text-muted-foreground" title={c.type}>
-                {shortTypeName(c.type)}
-              </span>
-              <span className="ml-auto">
-                <CopyButton value={() => copyText(values[i])} label={`Copy ${c.name}`} />
-              </span>
-            </div>
-            {cell.kind === "nested" ? (
-              <div className="overflow-x-auto">
-                <JsonTree name={c.name} value={values[i]} />
-              </div>
-            ) : (
-              <div className={cn("font-mono text-xs break-all whitespace-pre-wrap", cellClass[cell.kind], "text-left")}>
-                {cell.text}
-              </div>
-            )}
-          </section>
-        );
-      })}
+      {shown === "playback"
+        ? videos.map((v, i) => <VideoClip key={i} name={v.name} url={v.url} />)
+        : result.columns.map((c, i) => {
+            const cell = formatCell(values[i], c.type);
+            return (
+              <section key={i} className="space-y-1 border-t px-4 py-2.5">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-mono text-xs font-medium" title={c.name}>
+                    {c.name}
+                  </span>
+                  <span className="truncate text-[10px] text-muted-foreground" title={c.type}>
+                    {shortTypeName(c.type)}
+                  </span>
+                  <span className="ml-auto">
+                    <CopyButton value={() => copyText(values[i])} label={`Copy ${c.name}`} />
+                  </span>
+                </div>
+                {cell.kind === "nested" ? (
+                  <div className="overflow-x-auto">
+                    <JsonTree name={c.name} value={values[i]} />
+                  </div>
+                ) : (
+                  <div className={cn("font-mono text-xs break-all whitespace-pre-wrap", cellClass[cell.kind], "text-left")}>
+                    {cell.text}
+                  </div>
+                )}
+              </section>
+            );
+          })}
     </SidePane>
   );
 }
@@ -111,6 +172,7 @@ function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number 
   const head = useRef<HTMLDivElement>(null);
   const indices = useMemo(() => result.rows.map((_, i) => i), [result]);
   const { current, close, rowProps } = usePaneSelection(indices, rowIndex);
+  const [view, setView] = useState<RowView>("values");
   const widthAt = (index: number) => widths[index] ?? 220;
 
   function resizeColumn(index: number, width: number) {
@@ -151,7 +213,11 @@ function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number 
   const tableClass = "table-fixed border-separate border-spacing-0 font-mono text-xs";
   return (
     <SidePaneLayout
-      pane={current != null && <RowPane result={result} row={current} top={paneTop} onClose={close} />}
+      pane={
+        current != null && (
+          <RowPane result={result} row={current} top={paneTop} view={view} onView={setView} onClose={close} />
+        )
+      }
     >
       <div ref={head} className="sticky top-[calc(var(--tabs-h,0px)+var(--sticky-top,0px)-1px)] z-10 overflow-hidden">
         <table className={tableClass} style={{ width, minWidth: "100%" }}>

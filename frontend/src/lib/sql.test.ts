@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef } from "./sql";
+import { defaultQuery, formatCell, isVideoUrl, quoteIdent, resultsToCsv, shortTypeName, versionRef } from "./sql";
 
 describe("SQL pre-fill", () => {
   it("always double-quotes the table name and escapes embedded quotes", () => {
@@ -52,5 +52,19 @@ describe("resultsToCsv", () => {
       [{ name: "id" }, { name: 'a,"b"' }, { name: "nested" }],
       [[1, 'hello, "world"\nnext', { x: [1, 2] }], [2, null, "x".repeat(150)]],
     )).toBe('id,"a,""b""",nested\r\n1,"hello, ""world""\nnext","{""x"":[1,2]}"\r\n2,,' + "x".repeat(150) + "\r\n");
+  });
+});
+
+describe("isVideoUrl", () => {
+  it("accepts http(s) video file URLs, with a query string or surrounding space", () => {
+    expect(isVideoUrl("https://cdn.example.com/clips/a.mp4")).toBe(true);
+    expect(isVideoUrl("http://host/x/front.H265?X-Amz-Signature=abc&t=1")).toBe(true);
+    expect(isVideoUrl(" https://host/v.webm ")).toBe(true);
+  });
+  it("rejects other schemes, extensions, and non-strings", () => {
+    expect(isVideoUrl("s3://bucket/a.mp4")).toBe(false);
+    expect(isVideoUrl("https://host/a.mp4.json")).toBe(false);
+    expect(isVideoUrl("https://host/mp4")).toBe(false);
+    expect(isVideoUrl({ url: "https://host/a.mp4" })).toBe(false);
   });
 });
