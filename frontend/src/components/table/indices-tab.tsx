@@ -5,12 +5,13 @@ import { indexCoverage } from "@/lib/table-metadata";
 import type { IndexContent } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
 import { Timestamp } from "@/components/timestamp";
 import { Identifier } from "@/components/identifier";
+import { STICKY_HEAD } from "./sticky-head";
 
 function Coverage({ ix }: { ix: IndexContent }) {
   const fraction = indexCoverage(ix);
@@ -65,20 +66,21 @@ export function IndicesTab({ indices }: { indices: UseQueryResult<IndexContent[]
       help="Coverage is indexed rows out of indexed plus unindexed rows."
       contentClassName="px-0 pb-0"
     >
-      <Table>
-        <TableHeader className="bg-muted/40">
-          <TableRow className="hover:bg-transparent">
-            <TableHead className="min-w-48 pl-4">Name</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead>Columns</TableHead>
-            <TableHead className="text-right">Size</TableHead>
-            <TableHead className="w-48 pr-4">Coverage</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody className="tabular-nums">
+      {/* A plain table (no scroll wrapper) so its header can pin below the tab bar. */}
+      <table className="w-full text-sm">
+        <thead>
+          <tr>
+            <th className={cn(STICKY_HEAD, "min-w-48 pl-4")}>Name</th>
+            <th className={STICKY_HEAD}>Type</th>
+            <th className={STICKY_HEAD}>Columns</th>
+            <th className={cn(STICKY_HEAD, "text-right")}>Size</th>
+            <th className={cn(STICKY_HEAD, "w-48 pr-4")}>Coverage</th>
+          </tr>
+        </thead>
+        <tbody className="tabular-nums [&_td]:px-2 [&_td]:py-2 [&_tr]:border-b [&_tr:last-child]:border-0">
           {list.map((ix) => (
-            <TableRow key={ix.index_uuid ?? ix.index_name} className="align-top">
-              <TableCell className="pl-4">
+            <tr key={ix.index_uuid ?? ix.index_name} className="align-top transition-colors hover:bg-muted/50">
+              <td className="pl-4">
                 <Identifier name={ix.index_name} className="font-mono text-[13px] font-medium" />
                 <div className="text-xs text-muted-foreground">
                   {ix.status}
@@ -89,11 +91,11 @@ export function IndicesTab({ indices }: { indices: UseQueryResult<IndexContent[]
                     </>
                   )}
                 </div>
-              </TableCell>
-              <TableCell>
+              </td>
+              <td>
                 {ix.index_type ? <Badge variant="secondary">{ix.index_type}</Badge> : <span className="text-muted-foreground/60">—</span>}
-              </TableCell>
-              <TableCell>
+              </td>
+              <td>
                 <div className="flex flex-wrap gap-1">
                   {ix.columns.map((c) => (
                     <Badge key={c} variant="outline" className="font-mono font-normal">
@@ -101,15 +103,15 @@ export function IndicesTab({ indices }: { indices: UseQueryResult<IndexContent[]
                     </Badge>
                   ))}
                 </div>
-              </TableCell>
-              <TableCell className="text-right whitespace-nowrap">{formatBytes(ix.size_bytes)}</TableCell>
-              <TableCell className="pr-4">
+              </td>
+              <td className="text-right whitespace-nowrap">{formatBytes(ix.size_bytes)}</td>
+              <td className="pr-4">
                 <Coverage ix={ix} />
-              </TableCell>
-            </TableRow>
+              </td>
+            </tr>
           ))}
-        </TableBody>
-      </Table>
+        </tbody>
+      </table>
     </Section>
   );
 }

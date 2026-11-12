@@ -15,6 +15,7 @@ import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
 import { GrowthChart } from "./charts";
+import { STICKY_HEAD as HEAD } from "./sticky-head";
 import { VersionDetailPane, type PaneView } from "./version-pane";
 
 function Delta({ value }: { value: number | null }) {
@@ -120,10 +121,6 @@ function RefsTiles({ segments }: { segments: readonly string[] }) {
     </div>
   );
 }
-
-// Sticky just under the Trends chart, itself under the tab bar; the 1px overlap hides sub-pixel
-// seams at fractional zoom. The top rule closes the card's border once its top scrolls away.
-const HEAD = "sticky top-[calc(var(--tabs-h,0px)+var(--trends-h)-1px)] z-10 h-10 bg-muted px-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--border)),inset_0_-1px_0_hsl(var(--border))]";
 
 /** Loaded versions, newest first, with "Load earlier" for the next page. Selecting a row opens
  *  its pane. */
@@ -322,7 +319,8 @@ export function VersionsTab({
     setActive(null);
   };
   return (
-    <div className="@container" style={{ "--trends-h": `${trendsHeight}px` } as React.CSSProperties}>
+    // The table header pins just below the pinned Trends chart.
+    <div className="@container" style={{ "--sticky-top": `${trendsHeight}px` } as React.CSSProperties}>
       <div ref={trends} className="sticky top-(--tabs-h,0px) z-20 -mx-1 bg-background px-1 pt-1 pb-4">
         <TrendsSection loaded={all} />
       </div>

@@ -18,6 +18,7 @@ import { JsonTree } from "@/components/json-tree";
 import { PropertiesList } from "@/components/properties-list";
 import { Section } from "@/components/section";
 import { Fact, Mono, PaneSection, SidePane } from "@/components/side-pane";
+import { STICKY_HEAD } from "./sticky-head";
 
 /** Schema-level metadata, then the field table; selecting a field opens its details beside the
  *  table. Per-column size on disk loads on its own once the tab opens. */
@@ -270,15 +271,17 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                 <EmptyState icon={ListTree} title="No fields">The schema has no columns.</EmptyState>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              // A plain table (no scroll wrapper) so its header can pin below the tab bar. While a
+              // pane is open beside it, the columns the pane repeats are hidden.
+              <>
                 <table className="w-full text-sm">
-                  <thead className="border-y bg-muted/40 text-left text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                  <thead>
                     <tr>
-                      <th className="h-9 min-w-72 px-4">Field</th>
-                      <th className="h-9 min-w-40 px-3">Type</th>
-                      <th className="h-9 px-3">Nullable</th>
-                      <th className="h-9 px-3 whitespace-nowrap">Field metadata</th>
-                      <th className="h-9 px-3 pr-4 whitespace-nowrap">
+                      <th className={cn(STICKY_HEAD, "min-w-48 pl-4")}>Field</th>
+                      <th className={cn(STICKY_HEAD, "min-w-32")}>Type</th>
+                      {!current && <th className={STICKY_HEAD}>Nullable</th>}
+                      {!current && <th className={STICKY_HEAD}>Field metadata</th>}
+                      <th className={cn(STICKY_HEAD, "pr-4")}>
                         <span className="inline-flex items-center gap-1">
                           Size on disk
                           <HelpTooltip label="About size on disk">
@@ -335,18 +338,22 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                         <td className="px-3 py-2 font-mono text-xs break-words text-muted-foreground" title={r.fullType}>
                           {r.type}
                         </td>
-                        <td className="px-3 py-2">
-                          <Badge variant="outline">{r.nullable ? "nullable" : "required"}</Badge>
-                        </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
-                          {r.metadata.length ? (
-                            <Badge variant="secondary" className="font-normal">
-                              {formatCountOf(r.metadata.length, "entry", "entries")}
-                            </Badge>
-                          ) : (
-                            <Dash />
-                          )}
-                        </td>
+                        {!current && (
+                          <td className="px-3 py-2">
+                            <Badge variant="outline">{r.nullable ? "nullable" : "required"}</Badge>
+                          </td>
+                        )}
+                        {!current && (
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {r.metadata.length ? (
+                              <Badge variant="secondary" className="font-normal">
+                                {formatCountOf(r.metadata.length, "entry", "entries")}
+                              </Badge>
+                            ) : (
+                              <Dash />
+                            )}
+                          </td>
+                        )}
                         <td className="px-3 py-2 pr-4">
                           <SizeCell row={r} columns={columns} sizes={sizes} />
                         </td>
@@ -354,7 +361,7 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </>
             )}
           </Section>
         </div>

@@ -118,6 +118,9 @@ page can fill; the table page puts its SQL panel there.
     Arrow field as a JSON tree.
   - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
 
+  The version, field, and index tables pin their header row below the tab bar
+  (the version table's below the Trends chart) while their rows scroll.
+
   The **SQL panel** (labeled read-only) runs one query at a time against this
   table (`POST /catalog/v1/table/{id}/sql`). A version picker, listing the
   loaded versions newest first (its last option loads earlier ones; it shares
