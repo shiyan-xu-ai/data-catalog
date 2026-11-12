@@ -70,8 +70,8 @@ function diff(cur: Record<string, string>, prev: Record<string, string>, key: st
   return a == null || b == null ? null : a - b;
 }
 
-/** Change of `cur` against the version before it. */
-export function summaryDelta(cur: TimelineEvent, prev: TimelineEvent): SummaryDelta {
+/** Change of `cur` against the version before it, from their manifest summaries. */
+export function summaryDelta(cur: Pick<TimelineEvent, "summary">, prev: Pick<TimelineEvent, "summary">): SummaryDelta {
   return {
     rows: diff(cur.summary, prev.summary, "total_rows"),
     bytes: diff(cur.summary, prev.summary, "total_files_size"),

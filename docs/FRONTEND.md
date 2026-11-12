@@ -93,10 +93,12 @@ page can fill; the table page puts its SQL panel there.
     rows and row change against the next older loaded version ("—" for the
     oldest loaded one), data size, data files, and deletions. The served
     version carries a "current" badge; versions committed after it carry
-    "newer than served" until a catalog refresh. Clicking a row opens the same
-    kind of pane, below the sticky Trends chart: commit time, the manifest
-    file's path, size, and e-tag, and the totals, with the same Source files
-    view.
+    "newer than served" until a catalog refresh. Clicking a row opens the
+    Timeline's pane (the same component, below the sticky Trends chart), with
+    the version's timeline event fetched as a one-event page
+    (`?page_token=<version + 1>&limit=1`) and the change measured against the
+    next older loaded version. While the pane is open, the table shows only
+    Version, Created, Rows, and Data size.
   - **Schema:** one table, an expandable field tree with compact types (full
     type on hover), nullability, size on disk, field metadata, and schema
     metadata, plus a raw JSON view. Size on disk is the served version's bytes

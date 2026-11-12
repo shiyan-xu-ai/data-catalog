@@ -40,6 +40,7 @@ export const keys = {
   tableStorage: (id: string) => ["table", id, "storage"] as const,
   tableStats: (id: string) => ["table", id, "stats"] as const,
   tableTimeline: (id: string) => ["table", id, "timeline"] as const,
+  timelineEvent: (id: string, version: number) => ["table", id, "timeline", "event", version] as const,
   versionFiles: (id: string, version: number) => ["table", id, "version", version, "files"] as const,
 };
 
@@ -225,6 +226,21 @@ export function useTableTimeline(segments: readonly string[]) {
     queryFn: ({ pageParam }) => getTableTimeline(segments, pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.page_token || undefined,
+  });
+}
+
+/** The timeline event of one version (the one-event page below `version + 1`), or null when the
+ *  version is no longer retained. */
+export function useTimelineEvent(segments: readonly string[], version: number, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.timelineEvent(joinId(segments), version),
+    queryFn: async () => {
+      const page = await getTableTimeline(segments, String(version + 1), 1);
+      const event = page.events[0];
+      return event?.version === version ? event : null;
+    },
+    enabled,
+    staleTime: Infinity,
   });
 }
 

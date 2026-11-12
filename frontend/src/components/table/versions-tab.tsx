@@ -2,20 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { BarChart3, Layers } from "lucide-react";
 import { useTableBranches, useTableTags, type PagedVersions } from "@/lib/catalog-queries";
-import { formatBytes, formatCount, formatIsoTimestamp, formatRelative, parseTime } from "@/lib/format";
-import { useDateTimeFormatter, useTimeZonePref } from "@/lib/preferences";
+import { formatBytes, formatCount, formatRelative, parseTime } from "@/lib/format";
+import { useDateTimeFormatter } from "@/lib/preferences";
 import { parseManifestSummary, versionSeries, versionStatus } from "@/lib/table-metadata";
+import { summaryDelta } from "@/lib/timeline";
 import type { TableVersion } from "@/lib/schemas";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
-import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
 import { GrowthChart } from "./charts";
-import { Fact, Mono, PaneSection, SummaryTotals, VersionPane, type PaneView } from "./version-pane";
+import { VersionDetailPane, type PaneView } from "./version-pane";
 
 function Delta({ value }: { value: number | null }) {
   if (value == null || value === 0) return <span className="text-muted-foreground/60">—</span>;
@@ -244,77 +244,6 @@ function VersionHistory({
   );
 }
 
-/** A version's commit time, manifest file, and totals, or its decoded files. */
-function VersionDetailPane({
-  segments,
-  version: v,
-  servedVersion,
-  view,
-  onView,
-  onClose,
-  top,
-}: {
-  segments: readonly string[];
-  version: TableVersion;
-  servedVersion: number | null | undefined;
-  view: PaneView;
-  onView: (view: PaneView) => void;
-  onClose: () => void;
-  top: number;
-}) {
-  const zone = useTimeZonePref();
-  const date = parseTime(v.timestamp_millis);
-  const status = versionStatus(v.version, servedVersion);
-  return (
-    <VersionPane
-      label={`Version ${v.version} details`}
-      segments={segments}
-      version={v.version}
-      view={view}
-      onView={onView}
-      onClose={onClose}
-      top={top}
-      header={
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono font-medium">v{v.version}</span>
-            {status === "served" && <Badge variant="secondary">current</Badge>}
-            {status === "newer" && <Badge variant="outline">newer than served</Badge>}
-          </div>
-          <div className="text-xs text-muted-foreground">{formatRelative(date)}</div>
-        </>
-      }
-    >
-      <PaneSection title="Commit">
-        <Fact label="Time">
-          <span className="font-mono text-xs tabular-nums">{formatIsoTimestamp(date, zone)}</span>
-        </Fact>
-      </PaneSection>
-      <PaneSection title="Manifest file">
-        {v.manifest_path && (
-          <Fact label="Path">
-            <span className="flex items-start gap-1">
-              <code className="min-w-0 rounded bg-muted px-1 py-0.5 font-mono text-xs break-all">{v.manifest_path}</code>
-              <CopyButton value={v.manifest_path} label="Copy path" />
-            </span>
-          </Fact>
-        )}
-        <Fact label="Size">
-          <span className="tabular-nums">{formatBytes(v.manifest_size)}</span>
-        </Fact>
-        {v.e_tag && (
-          <Fact label="E-tag">
-            <Mono>{v.e_tag}</Mono>
-          </Fact>
-        )}
-      </PaneSection>
-      <PaneSection title="Totals at this version">
-        <SummaryTotals summary={v.metadata ?? {}} />
-      </PaneSection>
-    </VersionPane>
-  );
-}
-
 /** Trends over the loaded versions (sticky while the table scrolls), then tags and branches, then
  *  the version table with the selected version's pane beside it. */
 export function VersionsTab({
@@ -410,8 +339,12 @@ export function VersionsTab({
           <VersionDetailPane
             key={current.version}
             segments={segments}
-            version={current}
-            servedVersion={servedVersion}
+            version={current.version}
+            delta={
+              all[index + 1]
+                ? summaryDelta({ summary: current.metadata ?? {} }, { summary: all[index + 1].metadata ?? {} })
+                : null
+            }
             view={view}
             onView={setView}
             onClose={close}
