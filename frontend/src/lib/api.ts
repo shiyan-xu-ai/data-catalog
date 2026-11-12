@@ -17,6 +17,7 @@ import {
   tableStorageResponseSchema,
   timelineResponseSchema,
   versionFilesResponseSchema,
+  type TimelineEvent,
   type TimelineResponse,
   type VersionFilesResponse,
   type ColumnStorageResponse,
@@ -253,6 +254,14 @@ export function getTableTimeline(
   );
 }
 
+/** The timeline event of one version (the one-event page below `version + 1`), or null when the
+ *  version is no longer retained. */
+export async function getTimelineEvent(table: readonly string[], version: number): Promise<TimelineEvent | null> {
+  const page = await getTableTimeline(table, String(version + 1), 1);
+  const event = page.events[0];
+  return event?.version === version ? event : null;
+}
+
 /** Catalog route: the files that record `version`, decoded. */
 export function getVersionFiles(table: readonly string[], version: number): Promise<VersionFilesResponse> {
   return request(
@@ -262,7 +271,7 @@ export function getVersionFiles(table: readonly string[], version: number): Prom
   );
 }
 
-/** Catalog route: run one read-only SQL query. The plain table name reads `version` (the latest
+/** Catalog route: run one read-only SQL query. The plain table name reads `version` (the current
  *  when omitted). Aborting `signal` only stops waiting; the server finishes or times out on its
  *  own. */
 export function runSql(

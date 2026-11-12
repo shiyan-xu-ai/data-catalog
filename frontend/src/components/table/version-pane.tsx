@@ -13,6 +13,7 @@ import {
   TableProperties,
   Trash2,
 } from "lucide-react";
+import type { UseQueryResult } from "@tanstack/react-query";
 import { useTimelineEvent, useVersionFiles } from "@/lib/catalog-queries";
 import { formatBytes, formatCount, formatIsoTimestamp } from "@/lib/format";
 import { useTimeZonePref } from "@/lib/preferences";
@@ -122,61 +123,6 @@ const VIEWS: [PaneView, string][] = [
   ["details", "Details"],
   ["source", "Source files"],
 ];
-
-/** The version pane: `children` in the details view, the decoded files in the (wider) source
- *  view. */
-function PaneShell({
-  label,
-  header,
-  segments,
-  version,
-  view,
-  onView,
-  onClose,
-  top,
-  children,
-}: {
-  label: string;
-  header: React.ReactNode;
-  segments: readonly string[];
-  version: number;
-  view: PaneView;
-  onView: (view: PaneView) => void;
-  onClose: () => void;
-  top?: number;
-  children: React.ReactNode;
-}) {
-  return (
-    <SidePane
-      label={label}
-      header={header}
-      wide={view === "source"}
-      onClose={onClose}
-      top={top}
-      toolbar={
-        <div role="tablist" aria-label="View" className="flex gap-1 px-4 pb-3">
-          {VIEWS.map(([v, name]) => (
-            <button
-              key={v}
-              type="button"
-              role="tab"
-              aria-selected={view === v}
-              onClick={() => onView(v)}
-              className={cn(
-                "rounded-md px-2.5 py-1 text-xs transition-colors",
-                view === v ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:bg-accent/60",
-              )}
-            >
-              {name}
-            </button>
-          ))}
-        </div>
-      }
-    >
-      {view === "details" ? children : <VersionSource segments={segments} version={version} />}
-    </SidePane>
-  );
-}
 
 export const ICON: Record<string, LucideIcon> = {
   Append: FilePlus2,
@@ -549,10 +495,39 @@ function EventDetails({ event, delta }: { event: TimelineEvent; delta: SummaryDe
   );
 }
 
+function EventBody({
+  shown,
+  fetched,
+  delta,
+}: {
+  shown: TimelineEvent | null;
+  fetched: UseQueryResult<TimelineEvent | null>;
+  delta: SummaryDelta | null;
+}) {
+  if (shown) return <EventDetails event={shown} delta={delta} />;
+  if (fetched.error) {
+    return (
+      <div className="p-4">
+        <ErrorState message={fetched.error.message} />
+      </div>
+    );
+  }
+  if (fetched.isPending) {
+    return (
+      <div className="space-y-2 border-t p-4">
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="h-4 w-3/5" />
+      </div>
+    );
+  }
+  return <p className="border-t p-4 text-sm text-muted-foreground">This version is no longer retained.</p>;
+}
+
 /** Everything recorded for one version (commit, change, operation details, totals, writer and
- *  transaction), or the decoded files behind it. Pass `event` when the caller already loaded the
- *  version's timeline event; otherwise it is fetched. `delta` is the change against the next
- *  older loaded version. */
+ *  transaction), or the decoded files behind it in the wider source view. Pass `event` when the
+ *  caller already loaded the version's timeline event; otherwise it is fetched. `delta` is the
+ *  change against the next older loaded version. */
 export function VersionDetailPane({
   segments,
   version,
@@ -575,31 +550,38 @@ export function VersionDetailPane({
   const fetched = useTimelineEvent(segments, version, event === undefined);
   const shown = event ?? fetched.data ?? null;
   return (
-    <PaneShell
+    <SidePane
       label={`Version ${version} details`}
       header={<EventHeader version={version} event={shown} />}
-      segments={segments}
-      version={version}
-      view={view}
-      onView={onView}
+      wide={view === "source"}
       onClose={onClose}
       top={top}
+      bodyKey={version}
+      toolbar={
+        <div role="tablist" aria-label="View" className="flex gap-1 px-4 pb-3">
+          {VIEWS.map(([v, name]) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => onView(v)}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-xs transition-colors",
+                view === v ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:bg-accent/60",
+              )}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      }
     >
-      {shown ? (
-        <EventDetails event={shown} delta={delta} />
-      ) : fetched.error ? (
-        <div className="p-4">
-          <ErrorState message={fetched.error.message} />
-        </div>
-      ) : fetched.isPending ? (
-        <div className="space-y-2 border-t p-4">
-          <Skeleton className="h-4 w-2/3" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-4 w-3/5" />
-        </div>
+      {view === "details" ? (
+        <EventBody shown={shown} fetched={fetched} delta={delta} />
       ) : (
-        <p className="border-t p-4 text-sm text-muted-foreground">This version is no longer retained.</p>
+        <VersionSource segments={segments} version={version} />
       )}
-    </PaneShell>
+    </SidePane>
   );
 }

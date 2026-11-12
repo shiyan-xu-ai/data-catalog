@@ -10,12 +10,12 @@ import {
   type PagedNames,
 } from "@/lib/catalog-queries";
 import { joinId } from "@/lib/ids";
-import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT } from "@/lib/table-metadata";
+import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT, sortedEntries } from "@/lib/table-metadata";
 import { useInView } from "@/lib/use-in-view";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { EmptyState } from "@/components/empty-state";
+import { Dash, EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { PropertiesList } from "@/components/properties-list";
 import { Section } from "@/components/section";
@@ -76,13 +76,13 @@ function TableListRow({ segments }: { segments: string[] }) {
             props[DESCRIPTION] ? (
               <span className="line-clamp-2 text-muted-foreground" title={props[DESCRIPTION]}>{props[DESCRIPTION]}</span>
             ) : (
-              <span className="text-muted-foreground/60">—</span>
+              <Dash />
             ),
             "w-40",
           )
         )}
       </TableCell>
-      <TableCell className="whitespace-nowrap">{cell(props[OWNER] ?? <span className="text-muted-foreground/60">—</span>)}</TableCell>
+      <TableCell className="whitespace-nowrap">{cell(props[OWNER] ?? <Dash />)}</TableCell>
       <TableCell className="max-w-72">
         {cell(
           <span className="block truncate font-mono text-xs text-muted-foreground" title={location ?? undefined}>
@@ -110,7 +110,7 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
   const children = useChildNamespaces(segments);
   const tables = useNamespaceTables(segments);
   const name = isRoot ? "Catalog" : segments[segments.length - 1];
-  const nsEntries = Object.entries(describe.data?.properties ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const nsEntries = sortedEntries(describe.data?.properties);
 
   return (
     <div className="space-y-6">

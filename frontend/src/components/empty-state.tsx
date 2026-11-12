@@ -26,3 +26,8 @@ export function EmptyState({
     </div>
   );
 }
+
+/** Placeholder for a missing value in a table cell or fact. */
+export function Dash() {
+  return <span className="text-muted-foreground/60">—</span>;
+}

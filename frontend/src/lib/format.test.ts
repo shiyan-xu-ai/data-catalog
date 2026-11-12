@@ -5,7 +5,6 @@ import {
   formatCost,
   formatCount,
   formatDateTime,
-  formatGigabytes,
   formatIsoDate,
   formatIsoTime,
   formatIsoTimestamp,
@@ -89,11 +88,6 @@ describe("formatDateTime", () => {
 });
 
 describe("storage cost formatting", () => {
-  it("prints decimal gigabytes", () => {
-    expect(formatGigabytes(19_069_123_456_789)).toBe("19,069 GB");
-    expect(formatGigabytes(990_123_456)).toBe("0.99 GB");
-    expect(formatGigabytes(null)).toBe("—");
-  });
   it("prints the cost in cents and the rate at full precision", () => {
     expect(formatCost(255.2875, "USD")).toBe("$255.29");
     expect(formatCost(0, "USD")).toBe("$0.00");

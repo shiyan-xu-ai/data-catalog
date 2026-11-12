@@ -21,8 +21,8 @@ const Unset = ({ children = "Not set" }: { children?: string }) => (
   <span className="text-muted-foreground/70 italic">{children}</span>
 );
 
-/** A Lance-derived field value: a skeleton while loading, a short failure note on error. */
-function Pending({ error, children }: { error: Error | null; children: React.ReactNode }) {
+/** A Lance-derived field value: a short failure note on error, a skeleton while loading. */
+function Pending({ error, loading, children }: { error: Error | null; loading: boolean; children: React.ReactNode }) {
   if (error) {
     return (
       <span className="text-xs text-muted-foreground" title={error.message}>
@@ -30,14 +30,21 @@ function Pending({ error, children }: { error: Error | null; children: React.Rea
       </span>
     );
   }
-  return <>{children ?? <Skeleton className="h-4 w-16" />}</>;
+  if (loading) return <Skeleton className="h-4 w-16" />;
+  return <>{children}</>;
 }
 
 /** The newest committed version (first of the newest-first list) and, when it differs, the
  *  version the catalog considers current. */
 function LatestVersion({ versions, current }: { versions: PagedVersions; current: number | null | undefined }) {
   const latest = versions.versions[0];
-  if (!latest) return <Pending error={versions.error}>{versions.isPending ? null : <Unset />}</Pending>;
+  if (!latest) {
+    return (
+      <Pending error={versions.error} loading={versions.isPending}>
+        <Unset />
+      </Pending>
+    );
+  }
   return (
     <>
       <div className="font-mono">v{latest.version}</div>
@@ -49,15 +56,13 @@ function LatestVersion({ versions, current }: { versions: PagedVersions; current
   );
 }
 
-function AboutBody({
-  cheap,
-  detail,
-  versions,
-}: {
+interface AboutProps {
   cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
   versions: PagedVersions;
-}) {
+}
+
+function AboutBody({ cheap, detail, versions }: AboutProps) {
   const props = cheap.data?.properties ?? {};
   const location = cheap.data?.location ?? cheap.data?.table_uri ?? null;
 
@@ -93,8 +98,8 @@ function AboutBody({
         <Timestamp value={props[UPDATED_AT]} stacked />
       </Field>
       <Field label="Lance format">
-        <Pending error={detail.error}>
-          {detail.data ? (storageFormatVersion(detail.data.metadata) ?? <Unset />) : null}
+        <Pending error={detail.error} loading={!detail.data}>
+          {storageFormatVersion(detail.data?.metadata) ?? <Unset />}
         </Pending>
       </Field>
       <Field label="Latest version">
@@ -107,15 +112,7 @@ function AboutBody({
 /** Untitled card of catalog-recorded facts from the cheap describe (description, location,
  *  owner, registration and update times), the Lance file format of the current version, and the
  *  newest committed version. Place it inside an `@container`. */
-export function AboutSection({
-  cheap,
-  detail,
-  versions,
-}: {
-  cheap: UseQueryResult<DescribeTableResponse>;
-  detail: UseQueryResult<DescribeTableResponse>;
-  versions: PagedVersions;
-}) {
+export function AboutSection({ cheap, detail, versions }: AboutProps) {
   return (
     <section aria-label="About" className="rounded-lg border bg-card p-4 text-card-foreground shadow-xs">
       <AboutBody cheap={cheap} detail={detail} versions={versions} />

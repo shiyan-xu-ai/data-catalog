@@ -277,14 +277,13 @@ export type TimelineResponse = z.infer<typeof timelineResponseSchema>;
 /** Catalog `GET /catalog/v1/table/{id}/version/{version}/files`: the files that record one
  *  version, each as its protobuf sections decoded to JSON. `path` is relative to the table
  *  location; a section that does not decode carries `error` instead of `content`. */
-export const versionFileSectionSchema = z.object({
+const versionFileSectionSchema = z.object({
   name: z.string(),
   offset: z.number(),
   message: z.string().nullish(),
   content: z.unknown().optional(),
   error: z.string().nullish(),
 });
-export type VersionFileSection = z.infer<typeof versionFileSectionSchema>;
 
 export const versionFilesResponseSchema = z.object({
   version: z.number(),

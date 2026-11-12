@@ -144,13 +144,6 @@ export function formatIsoTimestamp(date: Date | null, zone: TimeZonePref, localZ
   return `${p.date}T${p.time}.${p.millis}${p.offset}`;
 }
 
-/** Decimal gigabytes, the unit storage is priced in: `19,069 GB`, `0.99 GB`. */
-export function formatGigabytes(bytes: number | null | undefined): string {
-  if (bytes == null) return DASH;
-  const gb = bytes / 1e9;
-  return `${gb.toLocaleString("en-US", { maximumFractionDigits: gb >= 100 ? 0 : 2 })} GB`;
-}
-
 function currencyFormat(amount: number, currency: string, maxDigits: number): string {
   try {
     return amount.toLocaleString("en-US", {

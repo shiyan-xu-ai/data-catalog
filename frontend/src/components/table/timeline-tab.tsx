@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { CalendarDays, CircleDot, GitCommitVertical, Scissors } from "lucide-react";
 import { useTableTimeline } from "@/lib/catalog-queries";
 import { formatCount, formatCountOf, formatIsoTime, type TimeZonePref } from "@/lib/format";
@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
+import { SidePaneLayout, usePaneSelection, type PaneRowProps } from "@/components/side-pane";
 import { FAMILY_STYLE, ICON, VersionDetailPane, type PaneView } from "./version-pane";
 
 // Width of the left rail; the node is centered on it and the connecting line runs through it.
@@ -31,18 +32,18 @@ interface Entry {
   delta: SummaryDelta | null;
 }
 
+const eventVersion = (entry: Entry) => entry.event.version;
+
 function EventRow({
   entry,
   zone,
   selected,
-  onSelect,
-  rowRef,
+  rowProps,
 }: {
   entry: Entry;
   zone: TimeZonePref;
   selected: boolean;
-  onSelect: () => void;
-  rowRef: (el: HTMLLIElement | null) => void;
+  rowProps: PaneRowProps;
 }) {
   const { event, delta } = entry;
   const Icon = ICON[event.operation] ?? CircleDot;
@@ -50,16 +51,8 @@ function EventRow({
   const summary = eventSummary(event, delta);
   return (
     <li
-      ref={rowRef}
-      tabIndex={0}
+      {...rowProps}
       aria-current={selected || undefined}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
       className={cn(
         "group relative flex cursor-pointer items-center gap-3 rounded-md py-1 pr-2 outline-none focus-visible:ring-2 focus-visible:ring-ring",
         selected ? "bg-accent" : "hover:bg-accent/50",
@@ -173,9 +166,7 @@ export function TimelineTab({ segments }: { segments: readonly string[] }) {
   const timeline = useTableTimeline(segments);
   const zone = useTimeZonePref();
   const [filter, setFilter] = useState<ReadonlySet<string>>(new Set());
-  const [active, setActive] = useState<number | null>(null);
   const [view, setView] = useState<PaneView>("details");
-  const rowRefs = useRef(new Map<number, HTMLLIElement>());
   const events = useMemo(() => timeline.data?.pages.flatMap((p) => p.events) ?? [], [timeline.data]);
   const counts = useMemo(() => operationCounts(events), [events]);
   const rows = useMemo(() => {
@@ -184,34 +175,7 @@ export function TimelineTab({ segments }: { segments: readonly string[] }) {
   }, [events, filter]);
   const groups = useMemo(() => groupByDay(rows, zone), [rows, zone]);
   const visible = useMemo(() => rows.filter((r) => r.kind === "event"), [rows]);
-  const index = visible.findIndex((r) => r.event.version === active);
-  const current = index >= 0 ? visible[index] : null;
-
-  // While the pane is open: Esc closes it, arrows move the selection. Typing elsewhere (the
-  // SQL editor, inputs) is left alone.
-  useEffect(() => {
-    if (!current) return;
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.isContentEditable || t.closest("input, textarea, select, [role=dialog]"))) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setActive(null);
-        rowRefs.current.get(current.event.version)?.focus();
-        return;
-      }
-      const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
-      const next = visible[index + step];
-      if (!step || !next) return;
-      e.preventDefault();
-      setActive(next.event.version);
-      const el = rowRefs.current.get(next.event.version);
-      el?.focus({ preventScroll: true });
-      el?.scrollIntoView({ block: "nearest" });
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [current, index, visible]);
+  const { current, close, rowProps } = usePaneSelection(visible, eventVersion);
 
   if (timeline.isPending) return <TimelineSkeleton />;
   if (timeline.error && events.length === 0) {
@@ -231,107 +195,100 @@ export function TimelineTab({ segments }: { segments: readonly string[] }) {
       if (!next.delete(op)) next.add(op);
       return next;
     });
-  const close = () => {
-    if (current) rowRefs.current.get(current.event.version)?.focus();
-    setActive(null);
-  };
 
   return (
-    <div className="flex items-start gap-4">
-      <div className="min-w-0 flex-1 space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          {counts.map(([op, n]) => {
-            const on = filter.has(op);
-            return (
-              <button
-                key={op}
-                type="button"
-                aria-pressed={on}
-                onClick={() => toggle(op)}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
-                  on ? "border-foreground/30 bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
-                )}
-              >
-                <span className={cn("h-2 w-2 rounded-full", FAMILY_STYLE[operationFamily(op)].dot)} />
-                {operationLabel(op)}
-                <span className="tabular-nums opacity-70">{n}</span>
-              </button>
-            );
-          })}
-          {filter.size > 0 && (
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setFilter(new Set())}>
-              Clear
-            </Button>
-          )}
-          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-            {filter.size > 0 ? `${formatCount(visible.length)} of ` : ""}
-            {formatCount(events.length)} loaded
-            {timeline.hasNextPage ? "" : " · all versions"}
-          </span>
-        </div>
-
-        {groups.length === 0 ? (
-          <EmptyState title="No matching entries">No loaded versions match the selected operations.</EmptyState>
-        ) : (
-          <div className="relative">
-            {/* The rail's connecting line, behind the nodes. */}
-            <div aria-hidden className={cn("absolute top-3 bottom-3 left-0 flex justify-center", RAIL)}>
-              <div className="w-px bg-border" />
-            </div>
-            {groups.map((g) => (
-              <section key={g.day} className="relative">
-                <DayHeader group={g} />
-                <ol className="mb-2">
-                  {g.rows.map((r) =>
-                    r.kind === "event" ? (
-                      <EventRow
-                        key={`e${r.event.version}`}
-                        entry={r}
-                        zone={zone}
-                        selected={r.event.version === current?.event.version}
-                        onSelect={() => setActive(r.event.version)}
-                        rowRef={(el) => {
-                          if (el) rowRefs.current.set(r.event.version, el);
-                          else rowRefs.current.delete(r.event.version);
-                        }}
-                      />
-                    ) : (
-                      <GapRow key={`g${r.from}`} from={r.from} to={r.to} />
-                    ),
-                  )}
-                </ol>
-              </section>
-            ))}
-          </div>
-        )}
-
-        {timeline.error && <ErrorState message={`Could not load earlier versions: ${timeline.error.message}`} />}
-        {timeline.hasNextPage && (
-          <div className="flex justify-center">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={timeline.isFetchingNextPage}
-              onClick={() => void timeline.fetchNextPage()}
+    <SidePaneLayout
+      className="space-y-3"
+      pane={
+        current && (
+          <VersionDetailPane
+            segments={segments}
+            version={current.event.version}
+            event={current.event}
+            delta={current.delta}
+            view={view}
+            onView={setView}
+            onClose={close}
+          />
+        )
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {counts.map(([op, n]) => {
+          const on = filter.has(op);
+          return (
+            <button
+              key={op}
+              type="button"
+              aria-pressed={on}
+              onClick={() => toggle(op)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                on ? "border-foreground/30 bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
+              )}
             >
-              {timeline.isFetchingNextPage ? "Loading…" : "Load earlier"}
-            </Button>
-          </div>
+              <span className={cn("h-2 w-2 rounded-full", FAMILY_STYLE[operationFamily(op)].dot)} />
+              {operationLabel(op)}
+              <span className="tabular-nums opacity-70">{n}</span>
+            </button>
+          );
+        })}
+        {filter.size > 0 && (
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setFilter(new Set())}>
+            Clear
+          </Button>
         )}
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+          {filter.size > 0 ? `${formatCount(visible.length)} of ` : ""}
+          {formatCount(events.length)} loaded
+          {timeline.hasNextPage ? "" : " · all versions"}
+        </span>
       </div>
-      {current && (
-        <VersionDetailPane
-          key={current.event.version}
-          segments={segments}
-          version={current.event.version}
-          event={current.event}
-          delta={current.delta}
-          view={view}
-          onView={setView}
-          onClose={close}
-        />
+
+      {groups.length === 0 ? (
+        <EmptyState title="No matching entries">No loaded versions match the selected operations.</EmptyState>
+      ) : (
+        <div className="relative">
+          {/* The rail's connecting line, behind the nodes. */}
+          <div aria-hidden className={cn("absolute top-3 bottom-3 left-0 flex justify-center", RAIL)}>
+            <div className="w-px bg-border" />
+          </div>
+          {groups.map((g) => (
+            <section key={g.day} className="relative">
+              <DayHeader group={g} />
+              <ol className="mb-2">
+                {g.rows.map((r) =>
+                  r.kind === "event" ? (
+                    <EventRow
+                      key={`e${r.event.version}`}
+                      entry={r}
+                      zone={zone}
+                      selected={r.event.version === current?.event.version}
+                      rowProps={rowProps(r.event.version)}
+                    />
+                  ) : (
+                    <GapRow key={`g${r.from}`} from={r.from} to={r.to} />
+                  ),
+                )}
+              </ol>
+            </section>
+          ))}
+        </div>
       )}
-    </div>
+
+      {timeline.error && <ErrorState message={`Could not load earlier versions: ${timeline.error.message}`} />}
+      {timeline.hasNextPage && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={timeline.isFetchingNextPage}
+            onClick={() => void timeline.fetchNextPage()}
+          >
+            {timeline.isFetchingNextPage ? "Loading…" : "Load earlier"}
+          </Button>
+        </div>
+      )}
+    </SidePaneLayout>
   );
 }

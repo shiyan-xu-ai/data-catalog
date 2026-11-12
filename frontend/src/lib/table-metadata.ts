@@ -40,6 +40,11 @@ export function parseManifestSummary(meta: Metadata): ManifestSummary {
   };
 }
 
+/** `[key, value]` pairs of `record`, sorted by key. */
+export function sortedEntries<V>(record: Record<string, V> | null | undefined): [string, V][] {
+  return Object.entries(record ?? {}).sort(([a], [b]) => a.localeCompare(b));
+}
+
 function prefixedEntries(meta: Metadata, prefix: string): [string, string][] {
   return Object.entries(meta ?? {})
     .filter(([k]) => k.startsWith(prefix))
@@ -62,12 +67,10 @@ export function storageFormatVersion(meta: Metadata): string | null {
   return meta?.[STORAGE_VERSION] || null;
 }
 
-/** Properties shown under "Properties": everything except the fields the details sidebar
- *  renders on their own (owner, description, and the two catalog-recorded times). */
+/** Client properties except the ones shown on their own (owner, description, and the two
+ *  catalog-recorded times). */
 export function extraProperties(props: Metadata): [string, string][] {
-  return Object.entries(props ?? {})
-    .filter(([k]) => k !== OWNER && k !== DESCRIPTION && k !== REGISTERED_AT && k !== UPDATED_AT)
-    .sort(([a], [b]) => a.localeCompare(b));
+  return sortedEntries(props).filter(([k]) => k !== OWNER && k !== DESCRIPTION && k !== REGISTERED_AT && k !== UPDATED_AT);
 }
 
 /** Indexed share of rows for an index, or null when counts are missing or both zero. */

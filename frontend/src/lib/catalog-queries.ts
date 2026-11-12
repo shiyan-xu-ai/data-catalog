@@ -9,6 +9,7 @@ import {
   getTableStats,
   getTableStorage,
   getTableTimeline,
+  getTimelineEvent,
   getVersionFiles,
   listAllTableIndices,
   listAllTables,
@@ -162,8 +163,7 @@ export interface PagedVersions {
   fetchNextPage: () => void;
 }
 
-/** Versions newest first, one page per "Load earlier"; shared by the Versions tab and the SQL
- *  version picker. */
+/** Versions newest first, one page per "Load earlier". */
 export function useTableVersions(segments: readonly string[]): PagedVersions {
   const q = useInfiniteQuery({
     queryKey: keys.tableVersions(joinId(segments)),
@@ -194,16 +194,18 @@ export function useTableBranches(segments: readonly string[]) {
   return useQuery({ queryKey: keys.tableBranches(joinId(segments)), queryFn: () => listTableBranches(segments) });
 }
 
-/** Per-column bytes; slow, so callers enable it only after the rest of the page loaded. */
+/** Per-column bytes. Reads every fragment, so it is slow and not refetched when the Schema tab
+ *  remounts. */
 export function useColumnStorage(segments: readonly string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.tableColumns(joinId(segments)),
     queryFn: () => getColumnStorage(segments),
     enabled,
+    refetchOnMount: false,
   });
 }
 
-/** On-storage footprint and cost; slow (lists the dataset prefix), enabled like column storage. */
+/** On-storage footprint and cost; slow (lists the dataset prefix). */
 export function useTableStorage(segments: readonly string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.tableStorage(joinId(segments)),
@@ -212,7 +214,7 @@ export function useTableStorage(segments: readonly string[], enabled: boolean) {
   });
 }
 
-/** Spec table stats (fragment distribution, field-level bytes); slow, enabled like the above. */
+/** Spec table stats (fragment distribution, field-level bytes); slow (reads every fragment). */
 export function useTableStats(segments: readonly string[], enabled: boolean) {
   return useQuery({
     queryKey: keys.tableStats(joinId(segments)),
@@ -239,26 +241,22 @@ export function useTableTimeline(segments: readonly string[]) {
   });
 }
 
-/** The timeline event of one version (the one-event page below `version + 1`), or null when the
- *  version is no longer retained. */
+// A version's event and files never change once committed.
+const IMMUTABLE = { staleTime: Infinity } as const;
+
 export function useTimelineEvent(segments: readonly string[], version: number, enabled: boolean) {
   return useQuery({
     queryKey: keys.timelineEvent(joinId(segments), version),
-    queryFn: async () => {
-      const page = await getTableTimeline(segments, String(version + 1), 1);
-      const event = page.events[0];
-      return event?.version === version ? event : null;
-    },
+    queryFn: () => getTimelineEvent(segments, version),
     enabled,
-    staleTime: Infinity,
+    ...IMMUTABLE,
   });
 }
 
-/** The decoded files of one version. A version's files never change, so they never go stale. */
 export function useVersionFiles(segments: readonly string[], version: number) {
   return useQuery({
     queryKey: keys.versionFiles(joinId(segments), version),
     queryFn: () => getVersionFiles(segments, version),
-    staleTime: Infinity,
+    ...IMMUTABLE,
   });
 }

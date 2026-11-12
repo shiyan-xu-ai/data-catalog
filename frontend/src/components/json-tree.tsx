@@ -16,6 +16,13 @@ function Scalar({ value }: { value: unknown }) {
   return <span>{String(value)}</span>;
 }
 
+function childEntries(value: object, limit: number): [string, unknown][] {
+  if (Array.isArray(value)) return value.slice(0, limit).map((v, i) => [String(i), v]);
+  return Object.keys(value)
+    .slice(0, limit)
+    .map((k) => [k, (value as Record<string, unknown>)[k]]);
+}
+
 function Node({ name, value, depth }: { name: string; value: unknown; depth: number }) {
   const [open, setOpen] = useState(depth === 0);
   const [shown, setShown] = useState(PAGE);
@@ -28,8 +35,8 @@ function Node({ name, value, depth }: { name: string; value: unknown; depth: num
     );
   }
   const isArray = Array.isArray(value);
-  const entries: [string, unknown][] = isArray ? value.map((v, i) => [String(i), v]) : Object.entries(value);
-  const size = isArray ? `[${formatCount(entries.length)}]` : `{${formatCount(entries.length)}}`;
+  const count = isArray ? value.length : Object.keys(value).length;
+  const size = isArray ? `[${formatCount(count)}]` : `{${formatCount(count)}}`;
   return (
     <div>
       <button
@@ -44,16 +51,16 @@ function Node({ name, value, depth }: { name: string; value: unknown; depth: num
       </button>
       {open && (
         <div className="ml-1.5 border-l pl-2">
-          {entries.slice(0, shown).map(([k, v]) => (
+          {childEntries(value, shown).map(([k, v]) => (
             <Node key={k} name={k} value={v} depth={depth + 1} />
           ))}
-          {entries.length > shown && (
+          {count > shown && (
             <button
               type="button"
               onClick={() => setShown(shown + PAGE)}
               className="pl-4 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
             >
-              Show {formatCount(Math.min(PAGE, entries.length - shown))} more of {formatCount(entries.length - shown)}
+              Show {formatCount(Math.min(PAGE, count - shown))} more of {formatCount(count - shown)}
             </button>
           )}
         </div>

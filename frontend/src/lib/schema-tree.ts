@@ -1,5 +1,6 @@
 import { formatArrowType, formatArrowTypeShort } from "./arrow";
 import type { JsonArrowField } from "./schemas";
+import { sortedEntries } from "./table-metadata";
 
 export interface SchemaRow {
   /** Dotted path from the top-level column, unique within the schema. */
@@ -34,7 +35,7 @@ export function flattenSchema(
       type: formatArrowTypeShort(f.type),
       fullType: formatArrowType(f.type),
       nullable: f.nullable,
-      metadata: Object.entries(f.metadata ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+      metadata: sortedEntries(f.metadata),
       hasChildren: children.length > 0,
       field: f,
     });
@@ -66,7 +67,7 @@ export function schemaMetadataByColumn(
 ): Map<string, [string, string][]> {
   const names = [...columns].sort((a, b) => b.length - a.length);
   const byColumn = new Map<string, [string, string][]>();
-  for (const [key, value] of Object.entries(meta ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [key, value] of sortedEntries(meta)) {
     const column = names.find((n) => key.length > n.length + 1 && key.endsWith(`:${n}`));
     if (!column) continue;
     const entries = byColumn.get(column) ?? [];

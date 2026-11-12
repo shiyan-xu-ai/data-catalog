@@ -71,6 +71,38 @@ function ChartSkeleton({ caption, height = "h-52" }: { caption?: string; height?
   );
 }
 
+function StorageSection({
+  title,
+  help,
+  storage,
+  breakdown,
+  caption,
+}: {
+  title: string;
+  help: string;
+  storage: UseQueryResult<TableStorageResponse>;
+  breakdown: "current" | "on_storage";
+  caption: string;
+}) {
+  return (
+    <Section title={title} help={help} className="@container">
+      {storage.error ? (
+        <ErrorState message={storage.error.message} />
+      ) : !storage.data ? (
+        <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
+      ) : (
+        <StorageComposition breakdown={storage.data[breakdown]} caption={caption} />
+      )}
+    </Section>
+  );
+}
+
+const FRAGMENT_MEASURES: [label: string, key: "data_files" | "data_bytes" | "deleted_rows", bytes?: boolean][] = [
+  ["Data files", "data_files"],
+  ["Data size", "data_bytes", true],
+  ["Deleted rows", "deleted_rows"],
+];
+
 export function OverviewTab({
   cheap,
   detail,
@@ -130,32 +162,20 @@ export function OverviewTab({
       </div>
 
       <div className="grid gap-6 @4xl:grid-cols-2">
-        <Section
+        <StorageSection
           title="Storage: current version"
           help="Objects under the table location that the current version references, by file category."
-          className="@container"
-        >
-          {storage.error ? (
-            <ErrorState message={storage.error.message} />
-          ) : !storage.data ? (
-            <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
-          ) : (
-            <StorageComposition breakdown={storage.data.current} caption="current version" />
-          )}
-        </Section>
-        <Section
+          storage={storage}
+          breakdown="current"
+          caption="current version"
+        />
+        <StorageSection
           title="Storage: all versions"
           help="Every object under the table location, all versions included, by file category."
-          className="@container"
-        >
-          {storage.error ? (
-            <ErrorState message={storage.error.message} />
-          ) : !storage.data ? (
-            <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
-          ) : (
-            <StorageComposition breakdown={storage.data.on_storage} caption="all versions" />
-          )}
-        </Section>
+          storage={storage}
+          breakdown="on_storage"
+          caption="all versions"
+        />
       </div>
 
       <Section
@@ -174,25 +194,13 @@ export function OverviewTab({
                   loading: !stats.data && !stats.error,
                   error: stats.error?.message,
                 },
-                {
-                  label: "Data files",
-                  value: measures.data?.data_files,
+                ...FRAGMENT_MEASURES.map(([label, key, bytes]) => ({
+                  label,
+                  value: measures.data?.[key],
+                  bytes,
                   loading: measures.isPending,
                   error: measures.error?.message,
-                },
-                {
-                  label: "Data size",
-                  value: measures.data?.data_bytes,
-                  bytes: true,
-                  loading: measures.isPending,
-                  error: measures.error?.message,
-                },
-                {
-                  label: "Deleted rows",
-                  value: measures.data?.deleted_rows,
-                  loading: measures.isPending,
-                  error: measures.error?.message,
-                },
+                })),
               ]}
             />
             <div className="border-t pt-5 @3xl:border-t-0 @3xl:border-l @3xl:pt-0 @3xl:pl-6">

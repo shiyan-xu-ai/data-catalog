@@ -1,27 +1,12 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { DescribeTableResponse } from "@/lib/schemas";
 import { configEntries, extraProperties, tableMetadataEntries } from "@/lib/table-metadata";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorState } from "@/components/error-state";
 import { PropertiesList } from "@/components/properties-list";
+import { QueryBody } from "@/components/query-body";
 import { Section } from "@/components/section";
 
-/** Lance-derived section body: skeleton while loading, an error of its own on failure. */
-function LanceBody({
-  detail,
-  children,
-}: {
-  detail: UseQueryResult<DescribeTableResponse>;
-  children: (data: DescribeTableResponse) => React.ReactNode;
-}) {
-  if (detail.error) return <ErrorState message={detail.error.message} />;
-  if (detail.isPending) return <Skeleton className="h-4 w-48" />;
-  return <>{children(detail.data)}</>;
-}
-
 /** Client properties (from the cheap describe) and the two Lance manifest maps (`table_metadata`,
- *  `config`). The About facts live on the Overview tab, tags and branches on the Versions tab,
- *  schema metadata on the Schema tab. */
+ *  `config`). */
 export function PropertiesTab({
   cheap,
   detail,
@@ -32,25 +17,21 @@ export function PropertiesTab({
   return (
     <div className="@container space-y-6">
       <Section title="Catalog properties" help="Client properties set at registration.">
-        {cheap.error ? (
-          <ErrorState message={cheap.error.message} />
-        ) : cheap.isPending ? (
-          <Skeleton className="h-4 w-48" />
-        ) : (
-          <PropertiesList entries={extraProperties(cheap.data.properties)} empty="No client properties." />
-        )}
+        <QueryBody query={cheap} skeletonClassName="h-4 w-48">
+          {(c) => <PropertiesList entries={extraProperties(c.properties)} empty="No client properties." />}
+        </QueryBody>
       </Section>
 
       <Section title="Lance table metadata" help="Manifest table_metadata of the current version.">
-        <LanceBody detail={detail}>
+        <QueryBody query={detail} skeletonClassName="h-4 w-48">
           {(d) => <PropertiesList entries={tableMetadataEntries(d.metadata)} empty="No Lance table metadata." />}
-        </LanceBody>
+        </QueryBody>
       </Section>
 
       <Section title="Lance table configuration" help="Manifest config of the current version.">
-        <LanceBody detail={detail}>
+        <QueryBody query={detail} skeletonClassName="h-4 w-48">
           {(d) => <PropertiesList entries={configEntries(d.metadata)} empty="No Lance table configuration." />}
-        </LanceBody>
+        </QueryBody>
       </Section>
     </div>
   );
