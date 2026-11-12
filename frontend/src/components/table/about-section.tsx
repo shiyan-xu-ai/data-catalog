@@ -88,6 +88,8 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
           <CurrentVersion versions={versions} current={detail.data?.version} />
         </Pending>
       </Field>
+      <Field label="Business owner">{props[BUSINESS_OWNER] ?? <Unset />}</Field>
+      <Field label="Technical owner">{props[TECHNICAL_OWNER] ?? <Unset />}</Field>
       <Field label="Location" className="col-span-full">
         {location ? (
           <div className="flex items-start gap-1">
@@ -98,14 +100,12 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
           <Unset />
         )}
       </Field>
-      <Field label="Business owner">{props[BUSINESS_OWNER] ?? <Unset />}</Field>
-      <Field label="Technical owner">{props[TECHNICAL_OWNER] ?? <Unset />}</Field>
     </dl>
   );
 }
 
-/** Untitled card: the current version's table format, the current version, the location, and
- *  the business and technical owners (`business_owner` / `technical_owner` table properties).
+/** Untitled card: the current version's table format, the current version, the business and
+ *  technical owners (`business_owner` / `technical_owner` table properties), then the location.
  *  Place it inside an `@container`. */
 export function AboutSection({ cheap, detail, versions }: AboutProps) {
   return (
