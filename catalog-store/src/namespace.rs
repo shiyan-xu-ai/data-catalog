@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -26,12 +26,11 @@ use lance_namespace::models::{
 };
 use lance_namespace::schema::arrow_schema_to_json;
 use lance_namespace::{Error, LanceNamespace, NamespaceError, Result};
-use lance_table::io::deletion::relative_deletion_file_path;
 use sqlx::types::Json;
 use sqlx::PgPool;
 
 use crate::cache::{
-    DeletedRows, FieldBytes, FragmentRows, LocationCache, OpenedDataset, StorageListing,
+    DeletedRows, FieldBytes, FragmentRows, LocationCache, OpenedDataset, VersionValue,
 };
 
 /// Path delimiter of REST ids. Names may not contain it, so joined ids stay unambiguous.
@@ -50,7 +49,6 @@ const TABLE_COLUMNS: &str = r#"location, properties, owner, description, current
     to_char(registered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS registered_at,
     to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at"#;
 
-/// Default total budget of the Lance session's caches.
 pub const DEFAULT_CACHE_BUDGET_BYTES: usize = 256 << 20;
 
 /// Fragments below the compaction target row count, as upstream `get_table_stats` counts them.
@@ -74,68 +72,6 @@ pub struct ColumnStorage {
     pub columns: Vec<ColumnBytes>,
 }
 
-/// Object-storage categories of a dataset prefix, in response order.
-pub const STORAGE_CATEGORIES: [&str; 7] = [
-    "data",
-    "blob",
-    "index",
-    "deletion",
-    "manifest",
-    "transaction",
-    "other",
-];
-
-/// Bytes and object count of one storage category.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageCategory {
-    pub name: &'static str,
-    pub bytes: u64,
-    pub objects: u64,
-}
-
-/// Bytes and objects of a set of stored objects, by category.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageBreakdown {
-    pub total_bytes: u64,
-    pub total_objects: u64,
-    /// One entry per [`STORAGE_CATEGORIES`] name, in that order.
-    pub categories: Vec<StorageCategory>,
-}
-
-impl StorageBreakdown {
-    fn new(counts: &[(u64, u64)]) -> Self {
-        let categories: Vec<StorageCategory> = STORAGE_CATEGORIES
-            .iter()
-            .zip(counts)
-            .map(|(&name, &(bytes, objects))| StorageCategory {
-                name,
-                bytes,
-                objects,
-            })
-            .collect();
-        Self {
-            total_bytes: categories.iter().map(|c| c.bytes).sum(),
-            total_objects: categories.iter().map(|c| c.objects).sum(),
-            categories,
-        }
-    }
-}
-
-/// A table version's data next to everything stored under its location.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageFootprint {
-    pub version: u64,
-    /// Data files the version references (manifest `total_files_size`).
-    pub data_bytes: u64,
-    /// Files of the version's indices.
-    pub index_bytes: u64,
-    /// Objects under the location that the version references.
-    pub current: StorageBreakdown,
-    /// Every object under the location, all versions included.
-    pub all: StorageBreakdown,
-}
-
-/// Min, mean, max, and percentiles of one per-fragment measure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Distribution {
     pub min: u64,
@@ -148,10 +84,13 @@ pub struct Distribution {
 }
 
 impl Distribution {
-    /// `None` for no values. A percentile is the sorted value at `floor((n - 1) * p)`, as in
-    /// Lance's `GetTableStats`; the mean rounds down.
     fn of(mut values: Vec<u64>) -> Option<Self> {
         values.sort_unstable();
+        Self::of_sorted(&values)
+    }
+
+    /// `None` when empty; the value at `floor((n - 1) * p)` is percentile `p`, as in Lance.
+    fn of_sorted(values: &[u64]) -> Option<Self> {
         let (&min, &max) = (values.first()?, values.last()?);
         let pct = |p: f64| values[((values.len() - 1) as f64 * p) as usize];
         Some(Self {
@@ -178,7 +117,6 @@ pub struct FragmentMeasures {
     pub deleted_rows: Option<Distribution>,
 }
 
-/// Outcome of [`PostgresNamespace::refresh_table`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refresh {
     /// The current version before the refresh; `None` when none was recorded yet.
@@ -198,7 +136,6 @@ struct TableRow {
     updated_at: String,
 }
 
-/// A registered table opened at the version a read targets.
 pub(crate) struct OpenTable {
     pub(crate) location: String,
     pub(crate) dataset: Arc<Dataset>,
@@ -210,47 +147,54 @@ impl OpenTable {
         self.dataset.manifest_location().e_tag.as_deref()
     }
 
-    /// Reads every data file's metadata on a miss.
-    async fn field_bytes(&self) -> Result<Arc<FieldBytes>> {
-        let (dataset, location) = (self.dataset.clone(), &self.location);
+    pub(crate) async fn cached<'a, V, F, Fut>(&'a self, load: F) -> Result<Arc<V>>
+    where
+        V: VersionValue,
+        F: FnOnce(Arc<Dataset>, &'a str) -> Fut + Send,
+        Fut: Future<Output = Result<V>> + Send,
+    {
+        let dataset = self.dataset.clone();
         self.cache
-            .get_or_load(self.dataset.version_id(), self.e_tag(), || async move {
-                let stats = dataset
-                    .calculate_data_stats()
-                    .await
-                    .map_err(lance_error(format!("calculate data stats at {location}")))?;
-                Ok(FieldBytes(
-                    stats
-                        .fields
-                        .iter()
-                        .map(|f| (f.id, f.bytes_on_disk))
-                        .collect(),
-                ))
+            .get_or_load(self.dataset.version_id(), self.e_tag(), || {
+                load(dataset, &self.location)
             })
             .await
+    }
+
+    async fn field_bytes(&self) -> Result<Arc<FieldBytes>> {
+        self.cached(|dataset, location| async move {
+            let stats = dataset
+                .calculate_data_stats()
+                .await
+                .map_err(lance_error(format!("calculate data stats at {location}")))?;
+            Ok(FieldBytes(
+                stats
+                    .fields
+                    .iter()
+                    .map(|f| (f.id, f.bytes_on_disk))
+                    .collect(),
+            ))
+        })
+        .await
     }
 
     async fn fragment_rows(&self) -> Result<Arc<FragmentRows>> {
-        let (dataset, location) = (self.dataset.clone(), &self.location);
-        self.cache
-            .get_or_load(self.dataset.version_id(), self.e_tag(), || async move {
-                let mut rows: Vec<u64> = futures::stream::iter(dataset.get_fragments())
-                    .map(|f| async move { f.physical_rows().await.map(|rows| rows as u64) })
-                    .buffered(READ_CONCURRENCY)
-                    .try_collect()
-                    .await
-                    .map_err(lance_error(format!("count fragment rows at {location}")))?;
-                rows.sort_unstable();
-                Ok(FragmentRows(rows))
-            })
-            .await
+        self.cached(|dataset, location| async move {
+            let mut rows: Vec<u64> = futures::stream::iter(dataset.get_fragments())
+                .map(|f| async move { f.physical_rows().await.map(|rows| rows as u64) })
+                .buffered(READ_CONCURRENCY)
+                .try_collect()
+                .await
+                .map_err(lance_error(format!("count fragment rows at {location}")))?;
+            rows.sort_unstable();
+            Ok(FragmentRows(rows))
+        })
+        .await
     }
 
     async fn deleted_rows(&self) -> Result<usize> {
-        let (dataset, location) = (self.dataset.clone(), &self.location);
         let deleted = self
-            .cache
-            .get_or_load(self.dataset.version_id(), self.e_tag(), || async move {
+            .cached(|dataset, location| async move {
                 let rows = dataset
                     .count_deleted_rows()
                     .await
@@ -260,48 +204,13 @@ impl OpenTable {
             .await?;
         Ok(deleted.0)
     }
-
-    /// Every object under the location, bucketed once over all objects and once over the
-    /// objects this version references.
-    async fn storage_listing(&self) -> Result<Arc<StorageListing>> {
-        let (dataset, location) = (self.dataset.clone(), &self.location);
-        self.cache
-            .get_or_load(self.dataset.version_id(), self.e_tag(), || async move {
-                let store = dataset
-                    .object_store(None)
-                    .await
-                    .map_err(lance_error(format!("open object store at {location}")))?;
-                let referenced = VersionFiles::of(&dataset)
-                    .await
-                    .map_err(lance_error(format!("load indices at {location}")))?;
-                let base = dataset.branch_location().path;
-                let mut all = vec![(0u64, 0u64); STORAGE_CATEGORIES.len()];
-                let mut current = all.clone();
-                let mut objects = store.read_dir_all(&base, None);
-                while let Some(meta) = objects
-                    .try_next()
-                    .await
-                    .map_err(lance_error(format!("list objects at {location}")))?
-                {
-                    let path = meta.location.as_ref();
-                    let relative = path
-                        .strip_prefix(base.as_ref())
-                        .map_or(path, |p| p.trim_start_matches('/'));
-                    let category = storage_category(relative);
-                    all[category].0 += meta.size;
-                    all[category].1 += 1;
-                    if referenced.contains(relative) {
-                        current[category].0 += meta.size;
-                        current[category].1 += 1;
-                    }
-                }
-                Ok(StorageListing { current, all })
-            })
-            .await
-    }
 }
 
 impl TableRow {
+    fn current_version(&self) -> Option<u64> {
+        self.current_version.map(|v| v as u64)
+    }
+
     /// The properties as the client registered them.
     fn client_properties(&self) -> Properties {
         let mut properties = self.properties.0.clone();
@@ -425,45 +334,11 @@ impl PostgresNamespace {
         .await
     }
 
-    /// Lists every object under the registered location (metadata only, never writes) once per
-    /// current version and instance, bucketed by path relative to that location, both overall
-    /// and for the objects the current version references. The prefix match is per path
-    /// segment, so sibling directories such as `<table>.lance_tags/` are excluded.
-    pub async fn storage_footprint(&self, id: &[String]) -> Result<StorageFootprint> {
-        self.read_table(id, None, |table| async move {
-            let location = &table.location;
-            let index_bytes = async {
-                let descriptions = table
-                    .dataset
-                    .describe_indices(None)
-                    .await
-                    .map_err(lance_error(format!("describe indices at {location}")))?;
-                Ok::<u64, Error>(
-                    descriptions
-                        .iter()
-                        .filter(|d| d.metadata().first().is_some_and(|m| !is_system_index(m)))
-                        .filter_map(|d| d.total_size_bytes())
-                        .sum(),
-                )
-            };
-            let (index_bytes, listing) = futures::try_join!(index_bytes, table.storage_listing())?;
-            Ok(StorageFootprint {
-                version: table.dataset.version_id(),
-                data_bytes: table.dataset.manifest().summary().total_files_size,
-                index_bytes,
-                current: StorageBreakdown::new(&listing.current),
-                all: StorageBreakdown::new(&listing.all),
-            })
-        })
-        .await
-    }
-
     /// Per-fragment data files, data bytes, and deleted rows of the current version, read from
     /// its manifest alone.
     pub async fn fragment_measures(&self, id: &[String]) -> Result<FragmentMeasures> {
         self.read_table(id, None, |table| async move {
-            let fragments = table.dataset.manifest().fragments.clone();
-            let data_files = fragments.iter().map(|f| Some(f.files.len() as u64));
+            let fragments = &table.dataset.manifest().fragments;
             let data_bytes = fragments.iter().map(|f| {
                 f.files
                     .iter()
@@ -478,7 +353,9 @@ impl PostgresNamespace {
             Ok(FragmentMeasures {
                 version: table.dataset.version_id(),
                 fragments: fragments.len() as u64,
-                data_files: measure(data_files.collect()),
+                data_files: Distribution::of(
+                    fragments.iter().map(|f| f.files.len() as u64).collect(),
+                ),
                 data_bytes: measure(data_bytes.collect()),
                 deleted_rows: measure(deleted_rows.collect()),
             })
@@ -491,26 +368,46 @@ impl PostgresNamespace {
     pub async fn refresh_table(&self, id: &[String]) -> Result<Refresh> {
         let row = self.table_row(id).await?;
         let latest = self.open_latest(&row.location).await?;
-        let (namespace, name) = split_table_id(id)?;
-        let updated = sqlx::query(
-            "UPDATE tables SET current_version = $4, current_e_tag = $5
-             WHERE namespace_path = $1 AND name = $2 AND location = $3",
-        )
-        .bind(namespace)
-        .bind(name)
-        .bind(&row.location)
-        .bind(latest.dataset.version_id() as i64)
-        .bind(latest.e_tag())
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        if updated.rows_affected() == 0 {
+        if !self.set_current(id, &row, &latest, false).await? {
             return Err(concurrent_registration(id));
         }
         Ok(Refresh {
-            previous_version: row.current_version.map(|v| v as u64),
+            previous_version: row.current_version(),
             current_version: latest.dataset.version_id(),
         })
+    }
+
+    /// Records `latest` as the current version of `row`'s registration and returns whether a row
+    /// matched. With `guarded`, only while the row still holds the current version `row` read.
+    async fn set_current(
+        &self,
+        id: &[String],
+        row: &TableRow,
+        latest: &OpenTable,
+        guarded: bool,
+    ) -> Result<bool> {
+        let (namespace, name) = split_table_id(id)?;
+        let mut sql = String::from(
+            "UPDATE tables SET current_version = $4, current_e_tag = $5
+             WHERE namespace_path = $1 AND name = $2 AND location = $3",
+        );
+        if guarded {
+            sql.push_str(
+                " AND current_version IS NOT DISTINCT FROM $6
+                  AND current_e_tag IS NOT DISTINCT FROM $7",
+            );
+        }
+        let mut query = sqlx::query(&sql)
+            .bind(namespace)
+            .bind(name)
+            .bind(&row.location)
+            .bind(latest.dataset.version_id() as i64)
+            .bind(latest.e_tag());
+        if guarded {
+            query = query.bind(row.current_version).bind(&row.current_e_tag);
+        }
+        let updated = query.execute(&self.pool).await.map_err(db_error)?;
+        Ok(updated.rows_affected() == 1)
     }
 
     async fn table_row(&self, id: &[String]) -> Result<TableRow> {
@@ -534,32 +431,22 @@ impl PostgresNamespace {
         version: Option<u64>,
     ) -> Result<OpenTable> {
         let row = self.table_row(id).await?;
-        Ok(self.open_row(id, &row, version).await?.0)
+        self.open_row(id, &row, version).await
     }
 
-    /// The table at `version`, or at its current version when unset; also whether this is an
-    /// unversioned read of the current version, the only kind that may advance it.
     async fn open_row(
         &self,
         id: &[String],
         row: &TableRow,
         version: Option<u64>,
-    ) -> Result<(OpenTable, bool)> {
+    ) -> Result<OpenTable> {
         let Some(version) = version else {
-            return Ok((self.open_current(id, row).await?, true));
+            return self.open_current(id, row).await;
         };
-        if row.current_version != Some(version as i64) {
-            return Ok((self.open_version(&row.location, version).await?, false));
+        if row.current_version() != Some(version) {
+            return self.open_version(&row.location, version).await;
         }
-        // A pinned read of the current version still uses the cache, but never advances.
-        let table = self
-            .open_cached(&row.location, version, row.current_e_tag.as_deref())
-            .await
-            .map_err(lance_error(format!(
-                "cannot open Lance dataset at {}",
-                row.location
-            )))?;
-        Ok((table, false))
+        self.open_cached(row, version).await
     }
 
     /// Runs `read` on the table at `version`, or at its current version when unset.
@@ -591,11 +478,11 @@ impl PostgresNamespace {
         F: Fn(OpenTable) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let (table, current) = self.open_row(id, row, version).await?;
+        let table = self.open_row(id, row, version).await?;
         let opened_version = table.dataset.version_id();
         match read(table).await {
             Err(e)
-                if current
+                if version.is_none()
                     && is_version_missing(&e)
                     && self.version_gone(row, opened_version).await =>
             {
@@ -606,22 +493,13 @@ impl PostgresNamespace {
         }
     }
 
-    /// The current version, from this instance's cache when present. A missing or unrecorded
-    /// current version advances to the newest one.
     async fn open_current(&self, id: &[String], row: &TableRow) -> Result<OpenTable> {
-        let Some(version) = row.current_version.map(|v| v as u64) else {
+        let Some(version) = row.current_version() else {
             return self.advance(id, row).await;
         };
-        match self
-            .open_cached(&row.location, version, row.current_e_tag.as_deref())
-            .await
-        {
-            Ok(table) => Ok(table),
-            Err(e) if is_missing(&e) => self.advance(id, row).await,
-            Err(e) => Err(lance_error(format!(
-                "cannot open Lance dataset at {}",
-                row.location
-            ))(e)),
+        match self.open_cached(row, version).await {
+            Err(e) if is_version_missing(&e) => self.advance(id, row).await,
+            result => result,
         }
     }
 
@@ -629,35 +507,12 @@ impl PostgresNamespace {
     /// version past what `row` holds; then serves what that request recorded.
     async fn advance(&self, id: &[String], row: &TableRow) -> Result<OpenTable> {
         let latest = self.open_latest(&row.location).await?;
-        let (namespace, name) = split_table_id(id)?;
-        let updated = sqlx::query(
-            "UPDATE tables SET current_version = $4, current_e_tag = $5
-             WHERE namespace_path = $1 AND name = $2 AND location = $3
-               AND current_version IS NOT DISTINCT FROM $6
-               AND current_e_tag IS NOT DISTINCT FROM $7",
-        )
-        .bind(namespace)
-        .bind(name)
-        .bind(&row.location)
-        .bind(latest.dataset.version_id() as i64)
-        .bind(latest.e_tag())
-        .bind(row.current_version)
-        .bind(&row.current_e_tag)
-        .execute(&self.pool)
-        .await
-        .map_err(db_error)?;
-        if updated.rows_affected() == 1 {
+        if self.set_current(id, row, &latest, true).await? {
             return Ok(latest);
         }
         let current = self.table_row(id).await?;
-        match current.current_version.map(|v| v as u64) {
-            Some(version) => self
-                .open_cached(&current.location, version, current.current_e_tag.as_deref())
-                .await
-                .map_err(lance_error(format!(
-                    "cannot open Lance dataset at {}",
-                    current.location
-                ))),
+        match current.current_version() {
+            Some(version) => self.open_cached(&current, version).await,
             None => Err(concurrent_registration(id)),
         }
     }
@@ -704,28 +559,22 @@ impl PostgresNamespace {
         Ok(self.table_handle(location, dataset))
     }
 
-    /// `version` from this instance's cache, opened and cached on a miss.
-    async fn open_cached(
-        &self,
-        location: &str,
-        version: u64,
-        e_tag: Option<&str>,
-    ) -> lance::Result<OpenTable> {
+    async fn open_cached(&self, row: &TableRow, version: u64) -> Result<OpenTable> {
+        let (location, e_tag) = (&row.location, row.current_e_tag.as_deref());
         let cache = LocationCache::new(&self.session, location);
         let dataset = match cache.get::<OpenedDataset>(version, e_tag).await {
             Some(opened) => opened.0.clone(),
             None => {
-                let dataset = Arc::new(self.open_dataset(location, Some(version)).await?);
-                // A dataset recreated at the same location reuses version numbers; a different
-                // e-tag means the recorded version no longer exists.
-                let opened = dataset.manifest_location().e_tag.as_deref();
-                if let (Some(expected), Some(opened)) = (e_tag, opened) {
-                    if expected != opened {
-                        return Err(lance::Error::not_found(format!(
-                            "{location} version {version} with e-tag {expected}"
-                        )));
-                    }
-                }
+                let dataset = self
+                    .open_dataset(location, Some(version))
+                    .await
+                    .and_then(|dataset| {
+                        reject_recreated(location, version, e_tag, &dataset)?;
+                        Ok(Arc::new(dataset))
+                    })
+                    .map_err(lance_error(format!(
+                        "cannot open Lance dataset at {location}"
+                    )))?;
                 cache
                     .insert(version, e_tag, OpenedDataset(dataset.clone()))
                     .await;
@@ -1220,7 +1069,7 @@ impl LanceNamespace for PostgresNamespace {
             let lengths = &rows.0;
             let num_rows: u64 = lengths.iter().sum();
             let num_small_fragments = lengths.iter().filter(|&&n| n < SMALL_FRAGMENT_ROWS).count();
-            let summary = match Distribution::of(lengths.clone()) {
+            let summary = match Distribution::of_sorted(lengths) {
                 Some(d) => FragmentSummary::new(
                     d.min as i64,
                     d.max as i64,
@@ -1253,14 +1102,7 @@ impl LanceNamespace for PostgresNamespace {
         reject_branch(request.branch.as_deref())?;
         let id = request.id.unwrap_or_default();
         let descending = request.descending.unwrap_or(false);
-        let after = match request.page_token.filter(|t| !t.is_empty()) {
-            Some(token) => Some(
-                token
-                    .parse::<u64>()
-                    .map_err(|_| invalid_input(format!("invalid page token {token:?}")))?,
-            ),
-            None => None,
-        };
+        let after = parse_version_token(request.page_token.as_deref())?;
         let limit = request.limit.and_then(|l| usize::try_from(l).ok());
         self.read_table(&id, None, |table| async move {
             let (location, dataset) = (&table.location, &table.dataset);
@@ -1667,6 +1509,17 @@ fn parse_version(version: Option<i64>) -> Result<Option<u64>> {
         .transpose()
 }
 
+pub(crate) fn parse_version_token(token: Option<&str>) -> Result<Option<u64>> {
+    token
+        .filter(|t| !t.is_empty())
+        .map(|token| {
+            token
+                .parse::<u64>()
+                .map_err(|_| invalid_input(format!("invalid page token {token:?}")))
+        })
+        .transpose()
+}
+
 /// Only the main branch is readable; "main" is accepted as its explicit name.
 fn reject_branch(branch: Option<&str>) -> Result<()> {
     match branch {
@@ -1695,7 +1548,6 @@ pub(crate) fn lance_error(context: String) -> impl FnOnce(lance::Error) -> Error
     }
 }
 
-/// Lance's errors for a missing object, version, or dataset.
 pub(crate) fn is_missing(e: &lance::Error) -> bool {
     matches!(
         e.find_root(),
@@ -1709,7 +1561,22 @@ fn is_version_missing(e: &Error) -> bool {
         .is_some_and(|e| matches!(e, NamespaceError::TableVersionNotFound { .. })))
 }
 
-/// The row changed location or vanished between reading it and updating it.
+/// A dataset recreated at the same location reuses version numbers; an e-tag other than the
+/// recorded one means the recorded version no longer exists.
+fn reject_recreated(
+    location: &str,
+    version: u64,
+    expected: Option<&str>,
+    dataset: &Dataset,
+) -> lance::Result<()> {
+    match (expected, dataset.manifest_location().e_tag.as_deref()) {
+        (Some(expected), Some(opened)) if expected != opened => Err(lance::Error::not_found(
+            format!("{location} version {version} with e-tag {expected}"),
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn concurrent_registration(id: &[String]) -> Error {
     NamespaceError::ConcurrentModification {
         message: format!(
@@ -1763,84 +1630,24 @@ fn paginate_sorted<T>(
     }
 }
 
-/// Index into [`STORAGE_CATEGORIES`] for a path relative to the dataset location.
-fn storage_category(relative: &str) -> usize {
-    let category = match relative.split_once('/') {
-        Some(("data", file)) if file.ends_with(".lance") => "data",
-        Some(("data", file)) if file.ends_with(".blob") => "blob",
-        Some(("_indices", _)) => "index",
-        Some(("_deletions", _)) => "deletion",
-        Some(("_versions", _)) => "manifest",
-        Some(("_transactions", _)) => "transaction",
-        _ => "other",
-    };
-    STORAGE_CATEGORIES
-        .iter()
-        .position(|&name| name == category)
-        .expect("category is listed")
-}
+#[cfg(test)]
+mod tests {
+    use super::Distribution;
 
-/// Paths, relative to the dataset location, of the objects one version references: its data
-/// files and their sidecar blob files, deletion files, index directories, manifest, and
-/// external transaction file. Files under other bases are not under the location and are left
-/// out.
-struct VersionFiles {
-    files: HashSet<String>,
-    /// Index UUIDs; each index's files live under `_indices/<uuid>/`.
-    indices: HashSet<String>,
-}
-
-impl VersionFiles {
-    async fn of(dataset: &Dataset) -> lance::Result<Self> {
-        let manifest = dataset.manifest();
-        let mut files = HashSet::new();
-        for fragment in manifest.fragments.iter() {
-            for file in fragment.files.iter().filter(|f| f.base_id.is_none()) {
-                files.insert(format!("data/{}", file.path));
-            }
-            if let Some(deletion) = &fragment.deletion_file {
-                files.insert(relative_deletion_file_path(fragment.id, deletion));
-            }
-        }
-        let base = dataset.branch_location().path;
-        let manifest_path = dataset.manifest_location().path.as_ref();
-        files.insert(
-            manifest_path
-                .strip_prefix(base.as_ref())
-                .map_or(manifest_path, |p| p.trim_start_matches('/'))
-                .to_string(),
+    #[test]
+    fn percentiles_take_the_floor_index_and_mean_rounds_down() {
+        assert_eq!(
+            Distribution::of((1..=10).rev().collect()),
+            Some(Distribution {
+                min: 1,
+                p25: 3,
+                p50: 5,
+                mean: 5,
+                p75: 7,
+                p99: 9,
+                max: 10,
+            })
         );
-        if let Some(transaction) = manifest
-            .transaction_file
-            .as_deref()
-            .filter(|t| !t.is_empty())
-        {
-            files.insert(format!("_transactions/{transaction}"));
-        }
-        let indices = dataset
-            .load_indices()
-            .await?
-            .iter()
-            .map(|index| index.uuid.to_string())
-            .collect();
-        Ok(Self { files, indices })
-    }
-
-    fn contains(&self, relative: &str) -> bool {
-        if self.files.contains(relative) {
-            return true;
-        }
-        // Sidecar blobs of data file `data/<key>.lance` live at `data/<key>/<id>.blob`.
-        if let Some((key, _)) = relative
-            .strip_prefix("data/")
-            .and_then(|rest| rest.split_once('/'))
-            .filter(|(_, file)| file.ends_with(".blob"))
-        {
-            return self.files.contains(&format!("data/{key}.lance"));
-        }
-        relative
-            .strip_prefix("_indices/")
-            .and_then(|rest| rest.split_once('/'))
-            .is_some_and(|(uuid, _)| self.indices.contains(uuid))
+        assert_eq!(Distribution::of(Vec::new()), None);
     }
 }

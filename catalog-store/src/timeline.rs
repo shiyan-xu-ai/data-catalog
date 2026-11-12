@@ -10,7 +10,9 @@ use lance_index::registry::display_type_from_url;
 use lance_namespace::Result;
 use serde_json::{json, Map, Value};
 
-use crate::namespace::{internal, invalid_input, OpenTable, PostgresNamespace, READ_CONCURRENCY};
+use crate::namespace::{
+    internal, parse_version_token, OpenTable, PostgresNamespace, READ_CONCURRENCY,
+};
 
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
@@ -34,14 +36,7 @@ impl PostgresNamespace {
         limit: Option<usize>,
     ) -> Result<Timeline> {
         let limit = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-        let before = match page_token.filter(|t| !t.is_empty()) {
-            Some(token) => Some(
-                token
-                    .parse::<u64>()
-                    .map_err(|_| invalid_input(format!("invalid page token {token:?}")))?,
-            ),
-            None => None,
-        };
+        let before = parse_version_token(page_token)?;
         let OpenTable {
             location, dataset, ..
         } = self.open_table(id, None).await?;

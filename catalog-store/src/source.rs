@@ -1,7 +1,4 @@
-//! The files that record one table version, decoded field by field: its manifest file (with the
-//! index and transaction sections stored inside it) and, from older writers, a separate
-//! transaction file.
-
+use std::fmt::Write;
 use std::sync::LazyLock;
 
 use lance::Dataset;
@@ -10,21 +7,18 @@ use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MapKey, ReflectMessage
 use serde_json::{json, Map, Value};
 
 use crate::namespace::{internal, lance_error, OpenTable, PostgresNamespace};
+use crate::storage::relative_to;
 
 static POOL: LazyLock<DescriptorPool> = LazyLock::new(|| {
     DescriptorPool::decode(include_bytes!(concat!(env!("OUT_DIR"), "/lance_table.bin")).as_ref())
         .expect("valid Lance descriptor set")
 });
 
-/// Last bytes of a manifest file: the manifest message position (u64), format version
-/// (two u16), and this magic.
-const FOOTER_LEN: usize = 16;
 const MAGIC: &[u8] = b"LANC";
-/// Byte fields up to this size are shown as hex; longer ones only by their length.
+const FOOTER_LEN: usize = size_of::<u64>() + 2 * size_of::<u16>() + MAGIC.len();
 const MAX_HEX_BYTES: usize = 64;
 const ANY: &str = "google.protobuf.Any";
 
-/// Sections a manifest message points at: (field, section label, message type).
 const MANIFEST_SECTIONS: [(&str, &str, &str); 3] = [
     ("index_section", "Index section", "lance.table.IndexSection"),
     (
@@ -52,24 +46,43 @@ impl PostgresNamespace {
             .await
             .map_err(lance_error(format!("open object store at {location}")))?;
         let manifest_path = &dataset.manifest_location().path;
-        let bytes = store
-            .read_one_all(manifest_path)
-            .await
-            .map_err(lance_error(format!("read {manifest_path}")))?;
-        let manifest_message = manifest_message(&bytes)
-            .map_err(|e| internal(format!("decode manifest {manifest_path}: {e}")))?;
-        let (offset, manifest) = &manifest_message;
-        let mut sections = vec![section("Manifest", *offset, Ok(manifest))];
-        for (field, label, message) in MANIFEST_SECTIONS {
-            if let Some(Field::U64(offset)) = manifest
-                .has_field_by_name(field)
-                .then(|| manifest.get_field_by_name(field))
-                .flatten()
-                .map(|v| v.into_owned())
-            {
-                let decoded = framed_message(&bytes, offset, message);
-                sections.push(section(label, offset, decoded.as_ref()));
+        let transaction_path = dataset
+            .manifest()
+            .transaction_file
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .map(|name| dataset.transactions_dir().join(name));
+        let read_manifest = async {
+            store
+                .read_one_all(manifest_path)
+                .await
+                .map_err(lance_error(format!("read {manifest_path}")))
+        };
+        let read_transaction = async {
+            match &transaction_path {
+                Some(path) => store
+                    .read_one_all(path)
+                    .await
+                    .map(Some)
+                    .map_err(lance_error(format!("read {path}"))),
+                None => Ok(None),
             }
+        };
+        let (bytes, transaction) = futures::try_join!(read_manifest, read_transaction)?;
+
+        let (offset, manifest) = manifest_message(&bytes)
+            .map_err(|e| internal(format!("decode manifest {manifest_path}: {e}")))?;
+        let mut sections = vec![section("Manifest", offset, Ok(&manifest))];
+        for (field, label, message) in MANIFEST_SECTIONS {
+            // Unset fields read as their default, 0.
+            if !manifest.has_field_by_name(field) {
+                continue;
+            }
+            let Some(offset) = manifest.get_field_by_name(field).and_then(|v| v.as_u64()) else {
+                continue;
+            };
+            let decoded = framed_message(&bytes, offset, message);
+            sections.push(section(label, offset, decoded.as_ref()));
         }
         let mut files = vec![file(
             &dataset,
@@ -78,16 +91,7 @@ impl PostgresNamespace {
             sections,
         )];
 
-        let transaction_file = manifest
-            .get_field_by_name("transaction_file")
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .filter(|name| !name.is_empty());
-        if let Some(name) = transaction_file {
-            let path = dataset.transactions_dir().join(name.as_str());
-            let bytes = store
-                .read_one_all(&path)
-                .await
-                .map_err(lance_error(format!("read {path}")))?;
+        if let (Some(path), Some(bytes)) = (&transaction_path, transaction) {
             let decoded = decode("lance.table.Transaction", &bytes);
             let sections = vec![section("Transaction", 0, decoded.as_ref())];
             files.push(file(&dataset, path.as_ref(), bytes.len(), sections));
@@ -97,10 +101,7 @@ impl PostgresNamespace {
 }
 
 fn file(dataset: &Dataset, path: &str, size: usize, sections: Vec<Value>) -> Value {
-    let base = dataset.branch_location().path;
-    let relative = path
-        .strip_prefix(base.as_ref())
-        .map_or(path, |p| p.trim_start_matches('/'));
+    let relative = relative_to(dataset.branch_location().path.as_ref(), path);
     json!({"path": relative, "size_bytes": size, "sections": sections})
 }
 
@@ -120,7 +121,6 @@ fn section(
     out
 }
 
-/// The manifest message and its offset, located through the file footer.
 fn manifest_message(bytes: &[u8]) -> std::result::Result<(u64, DynamicMessage), String> {
     let footer = bytes
         .len()
@@ -134,7 +134,6 @@ fn manifest_message(bytes: &[u8]) -> std::result::Result<(u64, DynamicMessage), 
     ))
 }
 
-/// A message stored at `offset` as a little-endian u32 length followed by its body.
 fn framed_message(
     bytes: &[u8],
     offset: u64,
@@ -158,9 +157,6 @@ fn decode(message: &str, body: &[u8]) -> std::result::Result<DynamicMessage, Str
     DynamicMessage::decode(descriptor, body).map_err(|e| format!("decode {message}: {e}"))
 }
 
-/// Set fields by their proto names. Enums are named, 64-bit integers beyond JSON's safe range
-/// become strings, `Any` values whose type is known are decoded, and a message's fields this
-/// descriptor set does not know are counted under `$unknown_fields`.
 fn message_json(message: &DynamicMessage) -> Value {
     if message.descriptor().full_name() == ANY {
         if let Some(any) = any_json(message) {
@@ -197,15 +193,19 @@ fn field_json(value: &Field, kind: &Kind) -> Value {
         Field::Bool(v) => json!(v),
         Field::I32(v) => json!(v),
         Field::U32(v) => json!(v),
-        Field::I64(v) if v.unsigned_abs() <= MAX_SAFE_INTEGER => json!(v),
+        Field::I64(v) if v.unsigned_abs() <= JS_MAX_SAFE_INTEGER => json!(v),
         Field::I64(v) => json!(v.to_string()),
-        Field::U64(v) if *v <= MAX_SAFE_INTEGER => json!(v),
+        Field::U64(v) if *v <= JS_MAX_SAFE_INTEGER => json!(v),
         Field::U64(v) => json!(v.to_string()),
         Field::F32(v) => json!(v),
         Field::F64(v) => json!(v),
         Field::String(v) => json!(v),
         Field::Bytes(v) if v.len() <= MAX_HEX_BYTES => {
-            json!(v.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            let mut hex = String::with_capacity(2 * v.len());
+            for b in v.iter() {
+                write!(hex, "{b:02x}").expect("writing to a String cannot fail");
+            }
+            Value::String(hex)
         }
         Field::Bytes(v) => json!(format!("<{} bytes>", v.len())),
         Field::EnumNumber(n) => kind
@@ -239,5 +239,4 @@ fn field_json(value: &Field, kind: &Kind) -> Value {
     }
 }
 
-/// 2^53 - 1, the largest integer a JSON reader in JavaScript keeps exact.
-const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+const JS_MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;

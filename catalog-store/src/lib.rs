@@ -4,6 +4,7 @@ mod cache;
 mod namespace;
 mod source;
 mod sql;
+mod storage;
 mod timeline;
 
 use std::str::FromStr;
@@ -13,10 +14,10 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
 pub use namespace::{
     ColumnBytes, ColumnStorage, Distribution, FragmentMeasures, PostgresNamespace, Refresh,
-    StorageBreakdown, StorageCategory, StorageFootprint, DEFAULT_CACHE_BUDGET_BYTES,
-    STORAGE_CATEGORIES,
+    DEFAULT_CACHE_BUDGET_BYTES,
 };
 pub use sql::{SqlColumn, SqlLimits, SqlResult};
+pub use storage::{StorageBreakdown, StorageCategory, StorageFootprint, STORAGE_CATEGORIES};
 pub use timeline::Timeline;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");

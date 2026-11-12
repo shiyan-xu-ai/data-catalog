@@ -7,8 +7,13 @@ use std::sync::Arc;
 use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use catalog_store::PostgresNamespace;
+use lance::dataset::{WriteMode, WriteParams};
 use lance::Dataset;
-use lance_namespace::{Error, NamespaceError};
+use lance_namespace::models::{CreateNamespaceRequest, RegisterTableRequest};
+use lance_namespace::{Error, ErrorCode, NamespaceError};
+
+pub const TABLE_NOT_FOUND: u32 = ErrorCode::TableNotFound as u32;
+pub const TABLE_VERSION_NOT_FOUND: u32 = ErrorCode::TableVersionNotFound as u32;
 
 /// A namespace backed by a schema named after the test (dropped and recreated each run).
 /// Returns `None`, after printing a skip notice, when `CATALOG_TEST_DATABASE_URL` is unset,
@@ -44,28 +49,22 @@ pub async fn pool(test: &str) -> Option<sqlx::PgPool> {
 
 /// Writes a three-row Lance dataset (`id: int32`, `name: utf8`) and returns its URI.
 pub async fn write_dataset(dir: &std::path::Path, name: &str) -> String {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("name", DataType::Utf8, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int32Array::from(vec![1, 2, 3])),
-            Arc::new(StringArray::from(vec!["a", "b", "c"])),
-        ],
-    )
-    .unwrap();
     let uri = dir.join(name).to_str().unwrap().to_string();
-    let reader = RecordBatchIterator::new([Ok(batch)], schema);
-    Dataset::write(reader, &uri, None)
-        .await
-        .expect("write dataset");
+    write_rows(&uri, &[1, 2, 3], &["a", "b", "c"], None).await;
     uri
 }
 
 /// Appends one row (`4`, `"d"`) to a dataset written by [`write_dataset`].
 pub async fn append_row(uri: &str) {
+    let params = WriteParams {
+        mode: WriteMode::Append,
+        ..Default::default()
+    };
+    write_rows(uri, &[4], &["d"], Some(params)).await;
+}
+
+/// Writes rows of the [`write_dataset`] schema to `uri`, committing a new version.
+pub async fn write_rows(uri: &str, ids: &[i32], names: &[&str], params: Option<WriteParams>) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("name", DataType::Utf8, true),
@@ -73,22 +72,14 @@ pub async fn append_row(uri: &str) {
     let batch = RecordBatch::try_new(
         schema.clone(),
         vec![
-            Arc::new(Int32Array::from(vec![4])),
-            Arc::new(StringArray::from(vec!["d"])),
+            Arc::new(Int32Array::from(ids.to_vec())),
+            Arc::new(StringArray::from(names.to_vec())),
         ],
     )
     .unwrap();
-    let params = lance::dataset::WriteParams {
-        mode: lance::dataset::WriteMode::Append,
-        ..Default::default()
-    };
-    Dataset::write(
-        RecordBatchIterator::new([Ok(batch)], schema),
-        uri,
-        Some(params),
-    )
-    .await
-    .expect("append row");
+    Dataset::write(RecordBatchIterator::new([Ok(batch)], schema), uri, params)
+        .await
+        .expect("write rows");
 }
 
 /// Adds a BTree index named `id_idx` on `id`, committing the dataset's next version.
@@ -120,4 +111,19 @@ pub fn code(err: Error) -> u32 {
 
 pub fn id(parts: &[&str]) -> Option<Vec<String>> {
     Some(parts.iter().map(|s| s.to_string()).collect())
+}
+
+pub fn create(parts: &[&str]) -> CreateNamespaceRequest {
+    CreateNamespaceRequest {
+        id: id(parts),
+        ..Default::default()
+    }
+}
+
+pub fn register(parts: &[&str], location: &str) -> RegisterTableRequest {
+    RegisterTableRequest {
+        id: id(parts),
+        location: location.to_string(),
+        ..Default::default()
+    }
 }

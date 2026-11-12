@@ -1,5 +1,3 @@
-//! Read-only DataFusion SQL over one registered table, at its current or a chosen version.
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -88,75 +86,69 @@ impl PostgresNamespace {
         limits: &SqlLimits,
     ) -> Result<SqlResult> {
         let (_, name) = split_table_id(id)?;
-        self.read_table(id, version, |table| self.run_on(table, name, sql, limits))
+        self.read_table(id, version, |table| run_on(table, name, sql, limits))
             .await
     }
+}
 
-    async fn run_on(
-        &self,
-        table: OpenTable,
-        name: &str,
-        sql: &str,
-        limits: &SqlLimits,
-    ) -> Result<SqlResult> {
-        let OpenTable {
-            location, dataset, ..
-        } = table;
-        let version = dataset.version_id();
-        let runtime = RuntimeEnvBuilder::new()
-            .with_memory_limit(limits.memory_limit_bytes, 1.0)
-            .with_disk_manager_builder(
-                DiskManagerBuilder::default().with_mode(DiskManagerMode::Disabled),
-            )
-            .build_arc()
-            .map_err(sql_error)?;
-        let config = SessionConfig::new();
-        let defaults = &config.options().catalog;
-        let (catalog_name, schema_name) = (
-            defaults.default_catalog.clone(),
-            defaults.default_schema.clone(),
-        );
-        let ctx = SessionContext::new_with_config_rt(config, runtime);
-        let schema = Arc::new(VersionedTable::new(name, location, dataset));
-        let catalog = MemoryCatalogProvider::new();
-        catalog
-            .register_schema(&schema_name, schema.clone())
-            .map_err(sql_error)?;
-        ctx.register_catalog(catalog_name, Arc::new(catalog));
-        let options = SQLOptions::new()
-            .with_allow_ddl(false)
-            .with_allow_dml(false)
-            .with_allow_statements(false);
-        let frame = match ctx.sql_with_options(sql, options).await {
-            Ok(frame) => frame,
-            // A failed version open surfaces as a planning error; report its own error.
-            Err(e) => return Err(schema.take_open_error().unwrap_or_else(|| sql_error(e))),
-        };
-        let schema = frame.schema().inner().clone();
-        // One row past the limit tells whether the result was truncated.
-        let batches = frame
-            .limit(0, Some(limits.max_rows.saturating_add(1)))
-            .map_err(sql_error)?
-            .collect()
-            .await
-            .map_err(sql_error)?;
-        let mut rows = encode_rows(&schema, &batches)?;
-        let truncated = rows.len() > limits.max_rows;
-        rows.truncate(limits.max_rows);
-        Ok(SqlResult {
-            version,
-            columns: schema
-                .fields()
-                .iter()
-                .map(|f| SqlColumn {
-                    name: f.name().clone(),
-                    data_type: f.data_type().to_string(),
-                })
-                .collect(),
-            rows,
-            truncated,
-        })
-    }
+async fn run_on(table: OpenTable, name: &str, sql: &str, limits: &SqlLimits) -> Result<SqlResult> {
+    let OpenTable {
+        location, dataset, ..
+    } = table;
+    let version = dataset.version_id();
+    let runtime = RuntimeEnvBuilder::new()
+        .with_memory_limit(limits.memory_limit_bytes, 1.0)
+        .with_disk_manager_builder(
+            DiskManagerBuilder::default().with_mode(DiskManagerMode::Disabled),
+        )
+        .build_arc()
+        .map_err(sql_error)?;
+    let config = SessionConfig::new();
+    let defaults = &config.options().catalog;
+    let (catalog_name, schema_name) = (
+        defaults.default_catalog.clone(),
+        defaults.default_schema.clone(),
+    );
+    let ctx = SessionContext::new_with_config_rt(config, runtime);
+    let schema = Arc::new(VersionedTable::new(name, location, dataset));
+    let catalog = MemoryCatalogProvider::new();
+    catalog
+        .register_schema(&schema_name, schema.clone())
+        .map_err(sql_error)?;
+    ctx.register_catalog(catalog_name, Arc::new(catalog));
+    let options = SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false);
+    let frame = match ctx.sql_with_options(sql, options).await {
+        Ok(frame) => frame,
+        // A failed version open surfaces as a planning error; report its own error.
+        Err(e) => return Err(schema.take_open_error().unwrap_or_else(|| sql_error(e))),
+    };
+    let schema = frame.schema().inner().clone();
+    // One row past the limit tells whether the result was truncated.
+    let batches = frame
+        .limit(0, Some(limits.max_rows.saturating_add(1)))
+        .map_err(sql_error)?
+        .collect()
+        .await
+        .map_err(sql_error)?;
+    let mut rows = encode_rows(&schema, &batches)?;
+    let truncated = rows.len() > limits.max_rows;
+    rows.truncate(limits.max_rows);
+    Ok(SqlResult {
+        version,
+        columns: schema
+            .fields()
+            .iter()
+            .map(|f| SqlColumn {
+                name: f.name().clone(),
+                data_type: f.data_type().to_string(),
+            })
+            .collect(),
+        rows,
+        truncated,
+    })
 }
 
 /// The only schema of a query's session: the table's leaf name at the requested version, plus
@@ -310,8 +302,6 @@ fn encode_rows(schema: &Schema, batches: &[RecordBatch]) -> Result<Vec<Vec<Value
         .collect())
 }
 
-/// Query mistakes and exceeded limits are invalid input carrying DataFusion's message; a file
-/// that no longer exists is TableVersionNotFound; other storage and engine faults are internal.
 fn sql_error(e: DataFusionError) -> Error {
     let message = format!("query failed: {e}");
     match e.find_root() {

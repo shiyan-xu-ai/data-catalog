@@ -14,24 +14,15 @@ use lance_namespace::models::{
     NamespaceExistsRequest, RegisterTableRequest, TableExistsRequest,
 };
 use lance_namespace::{ErrorCode, LanceNamespace};
-use support::{code, id};
+use support::{code, create, id, register, TABLE_NOT_FOUND, TABLE_VERSION_NOT_FOUND};
 
 const NAMESPACE_NOT_FOUND: u32 = ErrorCode::NamespaceNotFound as u32;
 const NAMESPACE_EXISTS: u32 = ErrorCode::NamespaceAlreadyExists as u32;
 const NAMESPACE_NOT_EMPTY: u32 = ErrorCode::NamespaceNotEmpty as u32;
-const TABLE_NOT_FOUND: u32 = ErrorCode::TableNotFound as u32;
 const TABLE_EXISTS: u32 = ErrorCode::TableAlreadyExists as u32;
-const TABLE_VERSION_NOT_FOUND: u32 = ErrorCode::TableVersionNotFound as u32;
 const TABLE_INDEX_NOT_FOUND: u32 = ErrorCode::TableIndexNotFound as u32;
 const INVALID_INPUT: u32 = ErrorCode::InvalidInput as u32;
 const UNSUPPORTED: u32 = ErrorCode::Unsupported as u32;
-
-fn create(parts: &[&str]) -> CreateNamespaceRequest {
-    CreateNamespaceRequest {
-        id: id(parts),
-        ..Default::default()
-    }
-}
 
 fn props(pairs: &[(&str, &str)]) -> Option<HashMap<String, String>> {
     Some(
@@ -51,14 +42,6 @@ fn list_ns(
         id: id(parts),
         page_token,
         limit,
-        ..Default::default()
-    }
-}
-
-fn register(parts: &[&str], location: &str) -> RegisterTableRequest {
-    RegisterTableRequest {
-        id: id(parts),
-        location: location.to_string(),
         ..Default::default()
     }
 }
@@ -708,7 +691,6 @@ async fn table_details() {
     let err = ns.timeline(&history_id, Some("x"), None).await.unwrap_err();
     assert_eq!(code(err), INVALID_INPUT);
 
-    // Version files: the manifest file with the sections it carries, decoded field by field.
     let files = ns.version_files(&history_id, 5).await.unwrap();
     let manifest_file = &files[0];
     let path = manifest_file["path"].as_str().unwrap();
@@ -721,14 +703,14 @@ async fn table_details() {
         "id_idx"
     );
     assert_eq!(section("Transaction")["content"]["read_version"], 4);
-    // Every field is known to the vendored protos, so they match the pinned Lance writer.
     let text = serde_json::to_string(&files).unwrap();
-    assert!(!text.contains("$unknown_fields"), "{text}");
+    assert!(
+        !text.contains("$unknown_fields"),
+        "vendored protos lag the pinned Lance writer: {text}"
+    );
     let err = ns.version_files(&history_id, 99).await.unwrap_err();
     assert_eq!(code(err), TABLE_VERSION_NOT_FOUND);
 
-    // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found on an
-    // instance that has not cached the current version (a warm instance never re-checks storage).
     std::fs::remove_dir_all(&metrics).unwrap();
     let cold = PostgresNamespace::new(pool, HashMap::new());
     let cheap = cold.describe_table(describe(false)).await.unwrap();

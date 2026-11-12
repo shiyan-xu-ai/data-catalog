@@ -21,7 +21,6 @@ pub(crate) trait VersionValue: DeepSizeOf + Send + Sync + 'static {
     const NAME: &'static str;
 }
 
-/// Fixed weight added to an opened dataset beyond its manifest, for its handles and caches.
 const DATASET_OVERHEAD_BYTES: usize = 16 * 1024;
 
 pub(crate) struct OpenedDataset(pub Arc<Dataset>);
@@ -58,12 +57,25 @@ impl VersionValue for DeletedRows {
     const NAME: &'static str = "catalog.DeletedRows";
 }
 
-/// `(bytes, objects)` per storage category, in `STORAGE_CATEGORIES` order: for the objects the
-/// version references, and for every object under the location.
+/// Totals per storage category, in `STORAGE_CATEGORIES` order: for the objects the version
+/// references, and for every object under the location.
 #[derive(lance_core::deepsize::DeepSizeOf)]
 pub(crate) struct StorageListing {
-    pub current: Vec<(u64, u64)>,
-    pub all: Vec<(u64, u64)>,
+    pub current: Vec<ObjectTotals>,
+    pub all: Vec<ObjectTotals>,
+}
+
+#[derive(lance_core::deepsize::DeepSizeOf, Clone, Copy, Default)]
+pub(crate) struct ObjectTotals {
+    pub bytes: u64,
+    pub objects: u64,
+}
+
+impl ObjectTotals {
+    pub(crate) fn add(&mut self, bytes: u64) {
+        self.bytes += bytes;
+        self.objects += 1;
+    }
 }
 
 impl VersionValue for StorageListing {
@@ -91,7 +103,6 @@ impl<V: VersionValue> CacheKey for VersionKey<'_, V> {
     }
 }
 
-/// The cache entries of one dataset location.
 pub(crate) struct LocationCache(LanceCache);
 
 impl LocationCache {
@@ -125,7 +136,6 @@ impl LocationCache {
         value
     }
 
-    /// The cached value, or `load`'s result cached; concurrent loads of one key share one call.
     pub(crate) async fn get_or_load<V, F, Fut>(
         &self,
         version: u64,

@@ -446,8 +446,6 @@ struct StorageResponse {
     pricing: Pricing,
 }
 
-/// The current version: its data and index bytes, and the objects under the location it
-/// references, by category.
 #[derive(Serialize)]
 struct CurrentStorage {
     data_bytes: u64,
@@ -508,7 +506,6 @@ async fn table_storage(
         all,
     } = catalog.namespace.storage_footprint(&parse_id(&id)).await?;
     let pricing = &catalog.storage_pricing;
-    // Decimal GB, matching the rate card.
     let estimated_monthly_cost = all.total_bytes as f64 / 1e9 * pricing.price_per_gb_month;
     Ok(Json(StorageResponse {
         version,
@@ -527,7 +524,6 @@ async fn table_storage(
     }))
 }
 
-/// One per-fragment measure: min, percentiles, mean, and max.
 #[derive(Serialize)]
 struct DistributionResponse {
     min: u64,
@@ -553,7 +549,6 @@ impl From<Distribution> for DistributionResponse {
     }
 }
 
-/// Measures are null when some fragment does not record them.
 #[derive(Serialize)]
 struct FragmentMeasuresResponse {
     version: u64,
@@ -587,7 +582,7 @@ async fn fragment_measures(
 struct SqlRequest {
     #[serde(default)]
     sql: String,
-    /// Version the plain table name resolves to; latest when unset.
+    /// Version the plain table name resolves to; the current version when unset.
     version: Option<u64>,
 }
 

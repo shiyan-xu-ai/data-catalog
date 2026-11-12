@@ -46,6 +46,15 @@ fn error(status: StatusCode, code: u32) -> impl Fn((StatusCode, Value)) {
     }
 }
 
+fn named<'a>(categories: &'a Value, name: &str) -> &'a Value {
+    categories
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap()
+}
+
 #[tokio::test]
 async fn rest_catalog_routes() {
     let Some(ns) = support::namespace("api_rest").await else {
@@ -284,7 +293,6 @@ async fn rest_catalog_routes() {
     assert_eq!(page2["events"][0]["operation"], "Overwrite");
     assert!(page2.get("page_token").is_none());
 
-    // Fragment measures come from the manifest: one fragment of one data file, no deletions.
     let (status, measures) = get(&app, "/catalog/v1/table/prod%24users/fragment-measures").await;
     assert_eq!(status, StatusCode::OK, "{measures}");
     assert_eq!(
@@ -331,29 +339,20 @@ async fn rest_catalog_routes() {
         sum("objects"),
         on_storage["total_objects"].as_u64().unwrap()
     );
-    let category = |name: &str| categories.iter().find(|c| c["name"] == name).unwrap();
+    let all = &on_storage["categories"];
     assert_eq!(
-        category("data")["bytes"],
+        named(all, "data")["bytes"],
         footprint["current"]["data_bytes"]
     );
     assert_eq!(
-        category("index")["bytes"],
+        named(all, "index")["bytes"],
         footprint["current"]["index_bytes"]
     );
-    // The current version references every data and index file but only its own manifest.
     let current = &footprint["current"]["categories"];
-    let current = |name: &str| {
-        current
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == name)
-            .unwrap()
-    };
-    assert_eq!(current("data"), category("data"));
-    assert_eq!(current("index"), category("index"));
-    assert_eq!(current("manifest")["objects"], 1);
-    assert!(category("manifest")["objects"].as_u64().unwrap() > 1);
+    assert_eq!(named(current, "data"), named(all, "data"));
+    assert_eq!(named(current, "index"), named(all, "index"));
+    assert_eq!(named(current, "manifest")["objects"], 1);
+    assert!(named(all, "manifest")["objects"].as_u64().unwrap() > 1);
     assert!(footprint["current"]["total_bytes"].as_u64().unwrap() < total_bytes);
     let price = &footprint["pricing"];
     assert_eq!(price["price_per_gb_month"], pricing.price_per_gb_month);
@@ -415,8 +414,6 @@ async fn rest_catalog_routes() {
     }
     assert!(!copied.exists());
 
-    // Time travel: version 3 appends a row. Until a refresh, the plain name keeps reading the
-    // current version; `version` and `"<leaf>@v<N>"` pin any version inside a query.
     support::append_row(&users).await;
     let count = |body: Value| async {
         let (status, body) = post(&app, "/catalog/v1/table/prod%24users/sql", body).await;

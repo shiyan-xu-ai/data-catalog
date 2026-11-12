@@ -21,8 +21,6 @@ pub struct AppConfig {
     pub webui_dir: String,
     /// Allowed top-level namespace names (`CATALOG_VERTICALS`, comma-separated); empty allows any.
     pub verticals: Vec<String>,
-    /// Memory the Lance session may use for cached manifests, per-version results, and index
-    /// metadata (`CATALOG_CACHE_MEMORY_LIMIT_MB`, 256).
     pub cache_budget_bytes: usize,
     /// Settings of the `/catalog/v1` routes.
     pub catalog: CatalogConfig,
@@ -71,9 +69,9 @@ impl Default for SqlConfig {
 impl SqlConfig {
     pub fn from_env() -> Result<Self> {
         let default = Self::default();
-        let memory_limit_mb: usize = positive_env(
+        let memory_limit_bytes = megabytes_env(
             "CATALOG_SQL_MEMORY_LIMIT_MB",
-            default.limits.memory_limit_bytes >> 20,
+            default.limits.memory_limit_bytes,
         )?;
         Ok(Self {
             limits: SqlLimits {
@@ -82,9 +80,7 @@ impl SqlConfig {
                     "CATALOG_SQL_TIMEOUT_SECS",
                     default.limits.timeout.as_secs(),
                 )?),
-                memory_limit_bytes: memory_limit_mb
-                    .checked_mul(1 << 20)
-                    .context("CATALOG_SQL_MEMORY_LIMIT_MB is too large")?,
+                memory_limit_bytes,
             },
             max_concurrent: positive_env("CATALOG_SQL_MAX_CONCURRENT", default.max_concurrent)?,
         })
@@ -136,10 +132,8 @@ impl AppConfig {
             Ok(port) => format!("0.0.0.0:{port}"),
             Err(_) => env_or("CATALOG_BIND_ADDR", "0.0.0.0:8080"),
         };
-        let cache_budget_mb: usize = positive_env(
-            "CATALOG_CACHE_MEMORY_LIMIT_MB",
-            DEFAULT_CACHE_BUDGET_BYTES >> 20,
-        )?;
+        let cache_budget_bytes =
+            megabytes_env("CATALOG_CACHE_MEMORY_LIMIT_MB", DEFAULT_CACHE_BUDGET_BYTES)?;
         Ok(Self {
             bind_addr,
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
@@ -148,9 +142,7 @@ impl AppConfig {
                 .filter(|s| !s.is_empty()),
             webui_dir: env_or("CATALOG_WEBUI_DIR", "frontend/dist"),
             verticals: parse_list(&std::env::var("CATALOG_VERTICALS").unwrap_or_default()),
-            cache_budget_bytes: cache_budget_mb
-                .checked_mul(1 << 20)
-                .context("CATALOG_CACHE_MEMORY_LIMIT_MB is too large")?,
+            cache_budget_bytes,
             catalog: CatalogConfig::from_env()?,
         })
     }
@@ -179,6 +171,13 @@ fn positive_env<T: FromStr + PartialOrd + Default>(name: &str, default: T) -> Re
             .with_context(|| format!("{name} must be a positive integer, got {raw:?}")),
         Err(_) => Ok(default),
     }
+}
+
+/// A positive number of megabytes from `name` in bytes, or `default_bytes` when unset.
+fn megabytes_env(name: &str, default_bytes: usize) -> Result<usize> {
+    positive_env(name, default_bytes >> 20)?
+        .checked_mul(1 << 20)
+        .with_context(|| format!("{name} is too large"))
 }
 
 #[cfg(test)]
