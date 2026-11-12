@@ -121,8 +121,9 @@ function RefsTiles({ segments }: { segments: readonly string[] }) {
   );
 }
 
-// Sticky just under the Trends chart; the 1px overlap hides sub-pixel seams at fractional zoom.
-const HEAD = "sticky top-[calc(var(--trends-h)-1px)] z-10 h-10 bg-muted px-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground shadow-[inset_0_-1px_0_hsl(var(--border))]";
+// Sticky just under the Trends chart, itself under the tab bar; the 1px overlap hides sub-pixel
+// seams at fractional zoom. The top rule closes the card's border once its top scrolls away.
+const HEAD = "sticky top-[calc(var(--tabs-h,0px)+var(--trends-h)-1px)] z-10 h-10 bg-muted px-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground shadow-[inset_0_1px_0_hsl(var(--border)),inset_0_-1px_0_hsl(var(--border))]";
 
 /** Loaded versions, newest first, with "Load earlier" for the next page. Selecting a row opens
  *  its pane. */
@@ -147,6 +148,7 @@ function VersionHistory({
       title="Version history"
       description={versions.hasNextPage ? `${formatCount(all.length)} loaded` : undefined}
       help="The Current badge marks this version; newer versions need a catalog refresh."
+      contentClassName="px-0 pb-0"
     >
       {/* A plain table (no scroll wrapper) so its header can stick below the Trends chart. While a
           pane is open beside it, only the leading columns fit. */}
@@ -321,7 +323,7 @@ export function VersionsTab({
   };
   return (
     <div className="@container" style={{ "--trends-h": `${trendsHeight}px` } as React.CSSProperties}>
-      <div ref={trends} className="sticky top-0 z-20 -mx-1 bg-background px-1 pt-1 pb-4">
+      <div ref={trends} className="sticky top-(--tabs-h,0px) z-20 -mx-1 bg-background px-1 pt-1 pb-4">
         <TrendsSection loaded={all} />
       </div>
       <RefsTiles segments={segments} />

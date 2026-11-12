@@ -32,7 +32,7 @@ page can fill; the table page puts its SQL panel there.
   listing never opens a dataset. The page is read-only: namespaces are
   created and dropped, and tables registered, through the API.
 - **Table page.** A header with the table name (the namespace path is in the
-  breadcrumb), six tabs
+  breadcrumb), six tabs in a tab bar pinned to the top while the content scrolls
   (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
   docked at the bottom. The UI offers no deregistration.

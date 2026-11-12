@@ -85,7 +85,7 @@ export function SmallFragmentShare({
   const r = 34;
   const circumference = 2 * Math.PI * r;
   return (
-    <div className="flex items-start gap-4">
+    <div className="flex items-center gap-4">
       <svg viewBox="0 0 88 88" className="h-20 w-20 shrink-0 -rotate-90" role="img" aria-label={`${formatPercent(fraction)} small fragments`}>
         <circle cx="44" cy="44" r={r} fill="none" stroke="hsl(var(--muted))" strokeWidth="9" />
         <circle

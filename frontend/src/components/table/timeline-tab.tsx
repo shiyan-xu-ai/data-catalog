@@ -106,7 +106,7 @@ function DayHeader({ group }: { group: DayGroup }) {
     families.set(family, (families.get(family) ?? 0) + 1);
   }
   return (
-    <h3 className="sticky top-0 z-20 flex items-center gap-3 rounded-md border bg-card/95 py-1.5 pr-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
+    <h3 className="sticky top-(--tabs-h,0px) z-20 flex items-center gap-3 rounded-md border bg-card/95 py-1.5 pr-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
       <div className={cn("flex shrink-0 justify-center", RAIL)}>
         <span className="z-10 flex h-6 w-6 items-center justify-center rounded-md border bg-muted text-muted-foreground ring-2 ring-card">
           <CalendarDays className="h-3.5 w-3.5" />

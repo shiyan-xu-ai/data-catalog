@@ -194,9 +194,11 @@ function TablePage({ tableId }: { tableId: string }) {
           onValueChange={(v) =>
             navigate({ to: ".", search: v === "overview" ? {} : { tab: v as Tab }, replace: true })
           }
-          className="min-w-0"
+          // The tab bar sticks to the top of the scroll area; `--tabs-h` (its h-9) offsets the
+          // tabs' own sticky elements below it.
+          className="min-w-0 [--tabs-h:2.25rem]"
         >
-          <TabsList>
+          <TabsList className="sticky top-0 z-30 bg-background">
             {TABS.map((t) => {
               const Icon = tabIcon[t];
               return (
