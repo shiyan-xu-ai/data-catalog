@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Folder, Loader2, Search, Table2 } from "lucide-react";
+import { Folder, Loader2, Search } from "lucide-react";
 import { useAllNamespaces, useAllTableIds } from "@/lib/catalog-queries";
 import { ID_DELIMITER, displayName } from "@/lib/ids";
 import { buildSearchIndex, searchCatalog, type SearchEntry } from "@/lib/search";
 import { cn } from "@/lib/utils";
+import { LanceIcon } from "@/components/lance-icon";
 
 const MAX_RESULTS = 20;
 
@@ -128,7 +129,7 @@ export function GlobalSearch({
             </div>
           ) : (
             results.map((entry, i) => {
-              const Icon = entry.kind === "table" ? Table2 : Folder;
+              const Icon = entry.kind === "table" ? LanceIcon : Folder;
               const name = entry.segments[entry.segments.length - 1];
               const parent = displayName(entry.segments.slice(0, -1));
               return (

@@ -15,7 +15,8 @@ an icon rail (search, namespaces, theme, timezone); a click anywhere on the rail
 expands it, except on the theme and timezone buttons. The collapsed state, theme,
 and timezone persist in `localStorage`, and every absolute timestamp renders in
 the chosen timezone. The top bar shows a breadcrumb. Page content scrolls on its
-own.
+own. Tables (all Lance datasets) carry the Lance logo as their icon in the tree,
+search results, namespace lists, and the table page header.
 
 - **Namespace tree.** Expands lazily, one list request per opened namespace,
   with tables as leaves. The current namespace or table is highlighted and its
@@ -41,7 +42,8 @@ Routes carry `$`-joined ids; names display dotted.
   `?tab=`; Schema and Indices show their counts).
   - **Overview:** a full-width, untitled About card (description, owner,
     copyable location, registered and updated times, the current version's
-    Lance file format, and the latest committed version with its age, noting
+    table format (`Lance <data storage version>`, e.g. `Lance 2.2`), and the
+    latest committed version with its age, noting
     the current version when it is older), then three tiles: rows (with
     fragment count), deleted rows (with deletion file count), and the
     estimated monthly storage cost of every object under the location

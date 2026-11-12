@@ -26,6 +26,7 @@ import { ErrorCode } from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/empty-state";
+import { LanceIcon } from "@/components/lance-icon";
 import { ErrorState } from "@/components/error-state";
 import { IndicesTab } from "@/components/table/indices-tab";
 import { OverviewTab } from "@/components/table/overview-tab";
@@ -99,9 +100,7 @@ function TablePage({ tableId }: { tableId: string }) {
   return (
     <div className="space-y-6">
       <div className="flex min-w-0 flex-wrap items-center gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
-          <Table2 className="h-5 w-5 text-muted-foreground" />
-        </div>
+        <LanceIcon className="h-9 w-9 shrink-0 rounded-lg" />
         <h1 className="min-w-0 truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
       </div>
 

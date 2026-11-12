@@ -2,7 +2,7 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type { PagedVersions } from "@/lib/catalog-queries";
 import { formatRelative, parseTime } from "@/lib/format";
 import type { DescribeTableResponse } from "@/lib/schemas";
-import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT, storageFormatVersion } from "@/lib/table-metadata";
+import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT, tableFormat } from "@/lib/table-metadata";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
@@ -97,9 +97,9 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
       <Field label="Updated">
         <Timestamp value={props[UPDATED_AT]} stacked />
       </Field>
-      <Field label="Lance format">
+      <Field label="Table format">
         <Pending error={detail.error} loading={!detail.data}>
-          {storageFormatVersion(detail.data?.metadata) ?? <Unset />}
+          {tableFormat(detail.data?.metadata) ?? <Unset />}
         </Pending>
       </Field>
       <Field label="Latest version">
@@ -110,7 +110,7 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
 }
 
 /** Untitled card of catalog-recorded facts from the cheap describe (description, location,
- *  owner, registration and update times), the Lance file format of the current version, and the
+ *  owner, registration and update times), the table format of the current version, and the
  *  newest committed version. Place it inside an `@container`. */
 export function AboutSection({ cheap, detail, versions }: AboutProps) {
   return (

@@ -62,9 +62,11 @@ export function tableMetadataEntries(meta: Metadata): [string, string][] {
   return prefixedEntries(meta, TABLE_METADATA_PREFIX);
 }
 
-/** The Lance data storage (file format) version from detailed describe metadata. */
-export function storageFormatVersion(meta: Metadata): string | null {
-  return meta?.[STORAGE_VERSION] || null;
+/** The table format with its version (e.g. `Lance 2.2`) from detailed describe metadata, which
+ *  carries the Lance data storage version. */
+export function tableFormat(meta: Metadata): string | null {
+  const version = meta?.[STORAGE_VERSION];
+  return version ? `Lance ${version}` : null;
 }
 
 /** Client properties except the ones shown on their own (owner, description, and the two
