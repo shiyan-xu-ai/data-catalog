@@ -1,6 +1,5 @@
 import { formatBytes, formatCount, formatPercent } from "@/lib/format";
 import type { Distribution } from "@/lib/schemas";
-import { COMPACTION_TARGET_ROWS } from "@/lib/table-metadata";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
@@ -111,12 +110,7 @@ export function SmallFragmentShare({
         </text>
       </svg>
       <div className="min-w-0 space-y-1.5">
-        <p className="text-sm">
-          <span className="font-semibold tabular-nums">{formatCount(small)}</span> of{" "}
-          <span className="tabular-nums">{formatCount(total)}</span> {total === 1 ? "fragment has" : "fragments have"}{" "}
-          fewer than{" "}
-          <span className="tabular-nums">{formatCount(COMPACTION_TARGET_ROWS)}</span> rows
-        </p>
+        <p className="text-sm font-medium">Small fragments</p>
         {targetOverride != null && (
           <p className="text-xs text-muted-foreground">
             Table target: <span className="tabular-nums">{formatCount(targetOverride)}</span> rows.
