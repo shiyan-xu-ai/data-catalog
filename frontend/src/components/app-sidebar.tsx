@@ -74,8 +74,14 @@ export function AppSidebar({
   if (collapsed) {
     const railButton =
       "flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground";
+    // A click anywhere on the rail expands it (links still navigate); theme and timezone
+    // controls stop the click so they only change their setting.
     return (
-      <aside className={cn("flex h-full w-14 shrink-0 flex-col items-center border-r bg-sidebar", className)}>
+      <aside
+        onClick={() => setCollapsed(false)}
+        title="Expand navigation"
+        className={cn("flex h-full w-14 shrink-0 cursor-pointer flex-col items-center border-r bg-sidebar hover:bg-accent/40", className)}
+      >
         <div className="flex h-14 w-full shrink-0 items-center justify-center border-b">
           <Link to="/namespaces" aria-label="Data Catalog home" title={`Data Catalog v${__APP_VERSION__}`}>
             <img src="/logo-light.png" alt="" className="h-5 w-5 object-cover object-left dark:hidden" />
@@ -91,7 +97,9 @@ export function AppSidebar({
           </Link>
         </div>
         <div className="mt-auto flex flex-col items-center gap-1 border-t py-3">
-          <PreferenceControls compact />
+          <div className="flex cursor-default flex-col items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <PreferenceControls compact />
+          </div>
           <button
             type="button"
             className={railButton}

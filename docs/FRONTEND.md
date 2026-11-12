@@ -11,7 +11,8 @@ created and dropped, and tables registered and deregistered, through the
 
 A left sidebar holds global search, the namespace tree, and, at the bottom, the
 theme (light, dark, system) and timezone (UTC, local) controls. It collapses to
-an icon rail (search, namespaces, theme, timezone). The collapsed state, theme,
+an icon rail (search, namespaces, theme, timezone); a click anywhere on the rail
+expands it, except on the theme and timezone buttons. The collapsed state, theme,
 and timezone persist in `localStorage`, and every absolute timestamp renders in
 the chosen timezone. The top bar shows a breadcrumb. Page content scrolls on its
 own.
