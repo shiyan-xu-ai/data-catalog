@@ -2,11 +2,10 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type { PagedVersions } from "@/lib/catalog-queries";
 import { formatRelative, parseTime } from "@/lib/format";
 import type { DescribeTableResponse } from "@/lib/schemas";
-import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT, tableFormat } from "@/lib/table-metadata";
+import { BUSINESS_OWNER, TECHNICAL_OWNER, tableFormat } from "@/lib/table-metadata";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
-import { Timestamp } from "@/components/timestamp";
 
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
@@ -34,23 +33,25 @@ function Pending({ error, loading, children }: { error: Error | null; loading: b
   return <>{children}</>;
 }
 
-/** The newest committed version (first of the newest-first list) and, when it differs, the
- *  version the catalog considers current. */
-function LatestVersion({ versions, current }: { versions: PagedVersions; current: number | null | undefined }) {
-  const latest = versions.versions[0];
-  if (!latest) {
+/** The version the catalog considers current, with its commit age, and the newest committed
+ *  version when that is later (a catalog refresh advances to it). */
+function CurrentVersion({ versions, current }: { versions: PagedVersions; current: number | null | undefined }) {
+  if (current == null) {
     return (
       <Pending error={versions.error} loading={versions.isPending}>
         <Unset />
       </Pending>
     );
   }
+  const latest = versions.versions[0];
+  const committed = versions.versions.find((v) => v.version === current);
   return (
     <>
-      <div className="font-mono">v{latest.version}</div>
+      <div className="font-mono">v{current}</div>
       <div className="text-xs text-muted-foreground">
-        {formatRelative(parseTime(latest.timestamp_millis))}
-        {current != null && current !== latest.version && ` · current v${current}`}
+        {committed && formatRelative(parseTime(committed.timestamp_millis))}
+        {committed && latest && latest.version > current && " · "}
+        {latest && latest.version > current && `latest v${latest.version}`}
       </div>
     </>
   );
@@ -76,11 +77,18 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
     );
   }
   return (
-    <dl className="grid grid-cols-2 gap-x-6 gap-y-4 @3xl:grid-cols-5">
-      <Field label="Description" className="col-span-2 @3xl:col-span-5">
-        {props[DESCRIPTION] ? <p className="whitespace-pre-wrap">{props[DESCRIPTION]}</p> : <Unset>No description</Unset>}
+    <dl className="grid grid-cols-2 gap-x-6 gap-y-4 @3xl:grid-cols-4">
+      <Field label="Table format">
+        <Pending error={detail.error} loading={!detail.data}>
+          {tableFormat(detail.data?.metadata) ?? <Unset />}
+        </Pending>
       </Field>
-      <Field label="Location" className="col-span-2 @3xl:col-span-5">
+      <Field label="Current version">
+        <Pending error={detail.error} loading={!detail.data}>
+          <CurrentVersion versions={versions} current={detail.data?.version} />
+        </Pending>
+      </Field>
+      <Field label="Location" className="col-span-full">
         {location ? (
           <div className="flex items-start gap-1">
             <code className="min-w-0 rounded bg-muted px-1.5 py-1 font-mono text-xs break-all">{location}</code>
@@ -90,28 +98,15 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
           <Unset />
         )}
       </Field>
-      <Field label="Owner">{props[OWNER] ?? <Unset />}</Field>
-      <Field label="Registered">
-        <Timestamp value={props[REGISTERED_AT]} stacked />
-      </Field>
-      <Field label="Updated">
-        <Timestamp value={props[UPDATED_AT]} stacked />
-      </Field>
-      <Field label="Table format">
-        <Pending error={detail.error} loading={!detail.data}>
-          {tableFormat(detail.data?.metadata) ?? <Unset />}
-        </Pending>
-      </Field>
-      <Field label="Latest version">
-        <LatestVersion versions={versions} current={detail.data?.version} />
-      </Field>
+      <Field label="Business owner">{props[BUSINESS_OWNER] ?? <Unset />}</Field>
+      <Field label="Technical owner">{props[TECHNICAL_OWNER] ?? <Unset />}</Field>
     </dl>
   );
 }
 
-/** Untitled card of catalog-recorded facts from the cheap describe (description, location,
- *  owner, registration and update times), the table format of the current version, and the
- *  newest committed version. Place it inside an `@container`. */
+/** Untitled card: the current version's table format, the current version, the location, and
+ *  the business and technical owners (`business_owner` / `technical_owner` table properties).
+ *  Place it inside an `@container`. */
 export function AboutSection({ cheap, detail, versions }: AboutProps) {
   return (
     <section aria-label="About" className="rounded-lg border bg-card p-4 text-card-foreground shadow-xs">

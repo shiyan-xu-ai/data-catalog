@@ -59,18 +59,18 @@ describe("configEntries / tableMetadataEntries / tableFormat", () => {
 });
 
 describe("extraProperties", () => {
-  it("omits owner, description, and the two catalog-recorded times only", () => {
+  it("omits only the business and technical owners", () => {
     expect(
       extraProperties({
-        owner: "t",
+        business_owner: "b",
+        technical_owner: "t",
+        owner: "o",
         description: "d",
-        "catalog.registered_at": "x",
-        "catalog.updated_at": "y",
-        "catalog.other": "z",
         tier: "gold",
       }),
     ).toEqual([
-      ["catalog.other", "z"],
+      ["description", "d"],
+      ["owner", "o"],
       ["tier", "gold"],
     ]);
   });

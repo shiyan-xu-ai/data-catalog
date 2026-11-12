@@ -39,11 +39,11 @@ Routes carry `$`-joined ids; names display dotted.
   tabs in a tab bar pinned to the top while content scrolls (Overview,
   Properties, Timeline, Versions, Schema, Indices, SQL; the active tab is in
   `?tab=`; Schema and Indices show their counts).
-  - **Overview:** a full-width, untitled About card (description, owner,
-    copyable location, registered and updated times, the current version's
-    table format (`Lance <data storage version>`, e.g. `Lance 2.2`), and the
-    latest committed version with its age, noting
-    the current version when it is older), then three tiles: rows (with
+  - **Overview:** a full-width, untitled About card, in order: the current
+    version's table format (`Lance <data storage version>`, e.g. `Lance 2.2`),
+    the current version with its commit age (and the latest committed version
+    when newer), the copyable location, then the business and technical owners
+    (the `business_owner` and `technical_owner` table properties). Then three tiles: rows (with
     fragment count), deleted rows (with deletion file count), and the
     estimated monthly storage cost of every object under the location
     (`GET /catalog/v1/table/{id}/storage`). Tiles keep a short caption; tiles
@@ -66,8 +66,10 @@ Routes carry `$`-joined ids; names display dotted.
 
     The storage listing and table stats are slow, so they are requested only
     after the rest of the page loads; each has its own skeleton and error.
-  - **Properties:** client properties, Lance table metadata
-    (`table_metadata`), and Lance table configuration (`config`).
+  - **Properties:** table properties (including owner, description, and the
+    registration and update times; the two owners shown on the Overview are
+    left out), Lance table metadata (`table_metadata`), and Lance table
+    configuration (`config`).
   - **Timeline:** every retained version as a compact commit row, newest
     first, from `GET /catalog/v1/table/{id}/timeline`, 50 at a time with "Load
     earlier". Rows sit on a vertical rail under sticky `YYYY-MM-DD` day headers

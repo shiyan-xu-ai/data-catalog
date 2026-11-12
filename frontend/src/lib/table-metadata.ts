@@ -7,6 +7,8 @@ export const REGISTERED_AT = "catalog.registered_at";
 export const UPDATED_AT = "catalog.updated_at";
 export const OWNER = "owner";
 export const DESCRIPTION = "description";
+export const BUSINESS_OWNER = "business_owner";
+export const TECHNICAL_OWNER = "technical_owner";
 
 const CONFIG_PREFIX = "config.";
 const TABLE_METADATA_PREFIX = "table_metadata.";
@@ -69,10 +71,9 @@ export function tableFormat(meta: Metadata): string | null {
   return version ? `Lance ${version}` : null;
 }
 
-/** Client properties except the ones shown on their own (owner, description, and the two
- *  catalog-recorded times). */
+/** Table properties except the owners the About card shows on their own. */
 export function extraProperties(props: Metadata): [string, string][] {
-  return sortedEntries(props).filter(([k]) => k !== OWNER && k !== DESCRIPTION && k !== REGISTERED_AT && k !== UPDATED_AT);
+  return sortedEntries(props).filter(([k]) => k !== BUSINESS_OWNER && k !== TECHNICAL_OWNER);
 }
 
 /** Indexed share of rows for an index, or null when counts are missing or both zero. */

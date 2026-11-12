@@ -16,7 +16,10 @@ export function PropertiesTab({
 }) {
   return (
     <div className="@container space-y-6">
-      <Section title="Catalog properties" help="Client properties set at registration.">
+      <Section
+        title="Catalog properties"
+        help="Properties set at registration, including owner and description, plus the catalog's registration and update times. The business and technical owners are on the Overview."
+      >
         <QueryBody query={cheap} skeletonClassName="h-4 w-48">
           {(c) => <PropertiesList entries={extraProperties(c.properties)} empty="No client properties." />}
         </QueryBody>
