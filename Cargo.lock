@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "catalog-api"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "catalog-store"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arrow-array",
  "arrow-json",
