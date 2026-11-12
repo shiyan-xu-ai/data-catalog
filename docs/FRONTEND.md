@@ -101,14 +101,18 @@ page can fill; the table page puts its SQL panel there.
     (`?page_token=<version + 1>&limit=1`) and the change measured against the
     next older loaded version. While the pane is open, the table shows only
     Version, Created, Rows, and Data size.
-  - **Schema:** one table, an expandable field tree with compact types (full
-    type on hover), nullability, size on disk, field metadata, and schema
-    metadata, plus a raw JSON view. Size on disk is the served version's bytes
-    per top-level column (`GET /catalog/v1/table/{id}/column-storage`, blob
-    payloads and index files excluded) with its share; it loads on its own when
-    the tab opens. Schema-level metadata keyed `<key>:<column>` (such as
-    `blob-codec:<column>`) shows on that column's row; other schema-level
-    entries go in a final "Not tied to a column" row.
+  - **Schema:** schema-level metadata in its own section on top, then the
+    field table: an expandable field tree with compact types (full type on
+    hover), nullability, size on disk, and a count of field metadata entries,
+    plus a raw JSON view. Size on disk is a bar per top-level column scaled to
+    the largest column, with the size written inside it, from the served
+    version's bytes per column (`GET /catalog/v1/table/{id}/column-storage`,
+    blob payloads and index files excluded); it loads on its own when the tab
+    opens. Clicking a row (or Enter/Space; Esc closes, arrows move) opens a
+    field pane: path, full type, nullability, size with its share of all
+    columns and rank, field metadata, the schema-level entries keyed
+    `<key>:<column>` to that column (such as `blob-codec:<column>`), and the
+    Arrow field as a JSON tree.
   - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
 
   The **SQL panel** (labeled read-only) runs one query at a time against this

@@ -55,14 +55,10 @@ describe("expandablePaths", () => {
 
 describe("schemaMetadataByColumn", () => {
   it("groups `<key>:<column>` entries under the longest matching column", () => {
-    const { byColumn, rest } = schemaMetadataByColumn(
+    const byColumn = schemaMetadataByColumn(
       { "blob-codec:log": "zstd", "codec:a:log": "lz4", "owner": "x", "note:missing": "y" },
       ["log", "a:log"],
     );
     expect(Object.fromEntries(byColumn)).toEqual({ log: [["blob-codec", "zstd"]], "a:log": [["codec", "lz4"]] });
-    expect(rest).toEqual([
-      ["note:missing", "y"],
-      ["owner", "x"],
-    ]);
   });
 });

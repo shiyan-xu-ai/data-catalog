@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import {
   CircleDot,
   Columns3,
@@ -13,7 +12,6 @@ import {
   Settings2,
   TableProperties,
   Trash2,
-  X,
 } from "lucide-react";
 import { useTimelineEvent, useVersionFiles } from "@/lib/catalog-queries";
 import { formatBytes, formatCount, formatIsoTimestamp } from "@/lib/format";
@@ -30,37 +28,13 @@ import {
 } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
 import { JsonTree } from "@/components/json-tree";
+import { Fact, Mono, PaneSection, SidePane } from "@/components/side-pane";
 
 export type PaneView = "details" | "source";
-
-/** One `label: value` fact in a pane section. */
-function Fact({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
-      <span className="shrink-0 text-xs text-muted-foreground">{label}</span>
-      <span className="min-w-0">{children}</span>
-    </div>
-  );
-}
-
-function Mono({ children }: { children: React.ReactNode }) {
-  return <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs wrap-break-word">{children}</code>;
-}
-
-/** One labeled section of a version pane. */
-function PaneSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="space-y-1.5 border-t px-4 py-3">
-      <h4 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{title}</h4>
-      {children}
-    </section>
-  );
-}
 
 const SUMMARY_FIELDS: [key: string, label: string, bytes?: boolean][] = [
   ["total_rows", "Rows"],
@@ -149,8 +123,8 @@ const VIEWS: [PaneView, string][] = [
   ["source", "Source files"],
 ];
 
-/** Sticky beside the list on wide screens (`top` px below the scroll area's top), an overlay on
- *  narrow ones; `children` in the details view, the decoded files in the (wider) source view. */
+/** The version pane: `children` in the details view, the decoded files in the (wider) source
+ *  view. */
 function PaneShell({
   label,
   header,
@@ -159,7 +133,7 @@ function PaneShell({
   view,
   onView,
   onClose,
-  top = 0,
+  top,
   children,
 }: {
   label: string;
@@ -172,40 +146,14 @@ function PaneShell({
   top?: number;
   children: React.ReactNode;
 }) {
-  const ref = useRef<HTMLElement>(null);
-  const [maxHeight, setMaxHeight] = useState<number>();
-  // Fit the sticky pane to the page's scroll area, which shrinks as the SQL dock grows.
-  useEffect(() => {
-    const main = ref.current?.closest("main");
-    if (!main) return;
-    const observer = new ResizeObserver(() => setMaxHeight(main.clientHeight - 32 - top));
-    observer.observe(main);
-    return () => observer.disconnect();
-  }, [top]);
-
   return (
-    <>
-      <div aria-hidden className="fixed inset-0 z-40 bg-black/30 xl:hidden" onClick={onClose} />
-      <aside
-        ref={ref}
-        aria-label={label}
-        style={
-          {
-            "--pane-max": maxHeight ? `${maxHeight}px` : "100%",
-            "--pane-top": `${top + 16}px`,
-          } as React.CSSProperties
-        }
-        className={cn(
-          "fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-hidden border-l bg-background shadow-xl xl:sticky xl:top-(--pane-top) xl:z-10 xl:max-h-(--pane-max) xl:shrink-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm",
-          view === "source" ? "max-w-[720px] xl:w-[720px]" : "max-w-[420px] xl:w-[420px]",
-        )}
-      >
-        <div className="flex items-start gap-3 px-4 pt-3 pb-2">
-          <div className="min-w-0 flex-1">{header}</div>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} aria-label="Close details">
-            <X />
-          </Button>
-        </div>
+    <SidePane
+      label={label}
+      header={header}
+      wide={view === "source"}
+      onClose={onClose}
+      top={top}
+      toolbar={
         <div role="tablist" aria-label="View" className="flex gap-1 px-4 pb-3">
           {VIEWS.map(([v, name]) => (
             <button
@@ -223,11 +171,10 @@ function PaneShell({
             </button>
           ))}
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {view === "details" ? children : <VersionSource segments={segments} version={version} />}
-        </div>
-      </aside>
-    </>
+      }
+    >
+      {view === "details" ? children : <VersionSource segments={segments} version={version} />}
+    </SidePane>
   );
 }
 
