@@ -135,6 +135,49 @@ pub struct StorageFootprint {
     pub all: StorageBreakdown,
 }
 
+/// Min, mean, max, and percentiles of one per-fragment measure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Distribution {
+    pub min: u64,
+    pub p25: u64,
+    pub p50: u64,
+    pub mean: u64,
+    pub p75: u64,
+    pub p99: u64,
+    pub max: u64,
+}
+
+impl Distribution {
+    /// `None` for no values. A percentile is the sorted value at `floor((n - 1) * p)`, as in
+    /// Lance's `GetTableStats`; the mean rounds down.
+    fn of(mut values: Vec<u64>) -> Option<Self> {
+        values.sort_unstable();
+        let (&min, &max) = (values.first()?, values.last()?);
+        let pct = |p: f64| values[((values.len() - 1) as f64 * p) as usize];
+        Some(Self {
+            min,
+            p25: pct(0.25),
+            p50: pct(0.50),
+            mean: values.iter().sum::<u64>() / values.len() as u64,
+            p75: pct(0.75),
+            p99: pct(0.99),
+            max,
+        })
+    }
+}
+
+/// Per-fragment measures of one version. A measure is `None` when the table has no fragments or
+/// some fragment's manifest entry does not record it (data file sizes from old writers, deletion
+/// files without a row count).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FragmentMeasures {
+    pub version: u64,
+    pub fragments: u64,
+    pub data_files: Option<Distribution>,
+    pub data_bytes: Option<Distribution>,
+    pub deleted_rows: Option<Distribution>,
+}
+
 /// Outcome of [`PostgresNamespace::refresh_table`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refresh {
@@ -410,6 +453,34 @@ impl PostgresNamespace {
                 index_bytes,
                 current: StorageBreakdown::new(&listing.current),
                 all: StorageBreakdown::new(&listing.all),
+            })
+        })
+        .await
+    }
+
+    /// Per-fragment data files, data bytes, and deleted rows of the current version, read from
+    /// its manifest alone.
+    pub async fn fragment_measures(&self, id: &[String]) -> Result<FragmentMeasures> {
+        self.read_table(id, None, |table| async move {
+            let fragments = table.dataset.manifest().fragments.clone();
+            let data_files = fragments.iter().map(|f| Some(f.files.len() as u64));
+            let data_bytes = fragments.iter().map(|f| {
+                f.files
+                    .iter()
+                    .map(|file| file.file_size_bytes.get().map(u64::from))
+                    .sum::<Option<u64>>()
+            });
+            let deleted_rows = fragments.iter().map(|f| match &f.deletion_file {
+                None => Some(0),
+                Some(d) => d.num_deleted_rows.map(|n| n as u64),
+            });
+            let measure = |values: Option<Vec<u64>>| values.and_then(Distribution::of);
+            Ok(FragmentMeasures {
+                version: table.dataset.version_id(),
+                fragments: fragments.len() as u64,
+                data_files: measure(data_files.collect()),
+                data_bytes: measure(data_bytes.collect()),
+                deleted_rows: measure(deleted_rows.collect()),
             })
         })
         .await
@@ -1149,20 +1220,17 @@ impl LanceNamespace for PostgresNamespace {
             let lengths = &rows.0;
             let num_rows: u64 = lengths.iter().sum();
             let num_small_fragments = lengths.iter().filter(|&&n| n < SMALL_FRAGMENT_ROWS).count();
-            let summary = match (lengths.first(), lengths.last()) {
-                (Some(&min), Some(&max)) => {
-                    let pct = |p: f64| lengths[((lengths.len() - 1) as f64 * p) as usize] as i64;
-                    FragmentSummary::new(
-                        min as i64,
-                        max as i64,
-                        (num_rows / lengths.len() as u64) as i64,
-                        pct(0.25),
-                        pct(0.50),
-                        pct(0.75),
-                        pct(0.99),
-                    )
-                }
-                _ => FragmentSummary::new(0, 0, 0, 0, 0, 0, 0),
+            let summary = match Distribution::of(lengths.clone()) {
+                Some(d) => FragmentSummary::new(
+                    d.min as i64,
+                    d.max as i64,
+                    d.mean as i64,
+                    d.p25 as i64,
+                    d.p50 as i64,
+                    d.p75 as i64,
+                    d.p99 as i64,
+                ),
+                None => FragmentSummary::new(0, 0, 0, 0, 0, 0, 0),
             };
             let num_indices = indices.iter().filter(|m| !is_system_index(m)).count();
             Ok(GetTableStatsResponse::new(

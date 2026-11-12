@@ -15,6 +15,7 @@ import {
   type PagedVersions,
   useTableCheap,
   useTableDetail,
+  useFragmentMeasures,
   useTableIndices,
   useTableStats,
   useTableStorage,
@@ -151,6 +152,7 @@ function TablePage({ tableId }: { tableId: string }) {
   const settled = !detail.isPending && !versions.isPending && !indices.isPending;
   const storage = useTableStorage(segments, settled);
   const stats = useTableStats(segments, settled);
+  const measures = useFragmentMeasures(segments);
   const columnNames = useMemo(() => detail.data?.schema?.fields.map((f) => f.name) ?? [], [detail.data]);
 
   if (cheap.error instanceof ApiError && cheap.error.code === ErrorCode.TableNotFound) {
@@ -216,6 +218,7 @@ function TablePage({ tableId }: { tableId: string }) {
               versions={versions}
               storage={storage}
               stats={stats}
+              measures={measures}
             />
           </TabsContent>
           <TabsContent value="properties">

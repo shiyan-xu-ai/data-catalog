@@ -1,4 +1,4 @@
-import type { IndexContent, TableStatsResponse, TableVersion } from "./schemas";
+import type { IndexContent, TableVersion } from "./schemas";
 
 type Metadata = Record<string, string> | null | undefined;
 
@@ -98,8 +98,6 @@ export function versionSeries(versions: readonly TableVersion[]): VersionPoint[]
 /** Lance's default compaction target (`CompactionOptions::target_rows_per_fragment`); the
  *  stats route counts fragments with fewer physical rows than this as small. */
 export const COMPACTION_TARGET_ROWS = 1_048_576;
-
-export type FragmentLengths = TableStatsResponse["fragment_stats"]["lengths"];
 
 /** The table's `lance.compaction.target_rows_per_fragment` override from describe metadata
  *  (`config.` prefixed), or null when unset or not a positive integer. */

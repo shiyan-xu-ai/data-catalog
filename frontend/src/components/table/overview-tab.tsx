@@ -3,7 +3,13 @@ import type { PagedVersions } from "@/lib/catalog-queries";
 import { BarChart3, CircleDollarSign, HardDrive, Rows3, Trash2 } from "lucide-react";
 import { formatCost, formatCount, formatCountOf, formatPercent, formatRate } from "@/lib/format";
 import { COMPACTION_TARGET_ROWS, compactionTargetOverride, parseManifestSummary } from "@/lib/table-metadata";
-import type { DescribeTableResponse, StorageBreakdown, TableStatsResponse, TableStorageResponse } from "@/lib/schemas";
+import type {
+  DescribeTableResponse,
+  FragmentMeasuresResponse,
+  StorageBreakdown,
+  TableStatsResponse,
+  TableStorageResponse,
+} from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
@@ -71,12 +77,14 @@ export function OverviewTab({
   versions,
   storage,
   stats,
+  measures,
 }: {
   cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
   versions: PagedVersions;
   storage: UseQueryResult<TableStorageResponse>;
   stats: UseQueryResult<TableStatsResponse>;
+  measures: UseQueryResult<FragmentMeasuresResponse>;
 }) {
   const s = parseManifestSummary(detail.data?.metadata);
   // The storage listing is enabled lazily, so "not loaded yet" covers both idle and fetching.
@@ -151,24 +159,54 @@ export function OverviewTab({
       </div>
 
       <Section
-        title="Fragment distribution"
-        help={`Rows per fragment in the current version, deleted rows included. Fragments under ${formatCount(COMPACTION_TARGET_ROWS)} rows are compaction candidates.`}
+        title="Fragment health"
+        help={`Per-fragment figures of the current version. Rows include deleted rows; fragments under ${formatCount(COMPACTION_TARGET_ROWS)} rows are compaction candidates.`}
       >
-        {stats.error ? (
-          <ErrorState message={stats.error.message} />
-        ) : !stats.data ? (
-          <ChartSkeleton height="h-28" caption="Reading fragment statistics. Large tables take several seconds." />
-        ) : stats.data.fragment_stats.num_fragments === 0 ? (
+        {stats.data?.fragment_stats.num_fragments === 0 ? (
           <EmptyState icon={BarChart3} title="No fragments" />
         ) : (
           <div className="grid gap-6 @3xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-            <FragmentStatsTable lengths={stats.data.fragment_stats.lengths} />
+            <FragmentStatsTable
+              measures={[
+                {
+                  label: "Rows",
+                  value: stats.data?.fragment_stats.lengths,
+                  loading: !stats.data && !stats.error,
+                  error: stats.error?.message,
+                },
+                {
+                  label: "Data files",
+                  value: measures.data?.data_files,
+                  loading: measures.isPending,
+                  error: measures.error?.message,
+                },
+                {
+                  label: "Data size",
+                  value: measures.data?.data_bytes,
+                  bytes: true,
+                  loading: measures.isPending,
+                  error: measures.error?.message,
+                },
+                {
+                  label: "Deleted rows",
+                  value: measures.data?.deleted_rows,
+                  loading: measures.isPending,
+                  error: measures.error?.message,
+                },
+              ]}
+            />
             <div className="border-t pt-5 @3xl:border-t-0 @3xl:border-l @3xl:pt-0 @3xl:pl-6">
-              <SmallFragmentShare
-                small={stats.data.fragment_stats.num_small_fragments}
-                total={stats.data.fragment_stats.num_fragments}
-                targetOverride={compactionTargetOverride(detail.data?.metadata)}
-              />
+              {stats.error ? (
+                <ErrorState message={stats.error.message} />
+              ) : !stats.data ? (
+                <ChartSkeleton height="h-20" caption="Reading fragment statistics. Large tables take several seconds." />
+              ) : (
+                <SmallFragmentShare
+                  small={stats.data.fragment_stats.num_small_fragments}
+                  total={stats.data.fragment_stats.num_fragments}
+                  targetOverride={compactionTargetOverride(detail.data?.metadata)}
+                />
+              )}
             </div>
           </div>
         )}

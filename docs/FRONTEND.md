@@ -52,12 +52,14 @@ page can fill; the table page puts its SQL panel there.
       (data, index, deletion, manifests, transactions, other). Without blob
       files, one donut by category. Each legend row is the category and its
       share.
-    - *Fragment distribution:* from the spec table stats
-      (`POST /v1/table/{id}/stats`), a table of physical rows per fragment
-      (min, p25, median, mean, p75, p99, max), beside the share of fragments
-      with fewer than 1,048,576 rows (Lance's default compaction target). A
-      table's `lance.compaction.target_rows_per_fragment` override is shown but
-      not used, since the stats count against the fixed default.
+    - *Fragment health:* a table of per-fragment statistics (min, p25, median,
+      mean, p75, p99, max), one row per measure: physical rows from the spec
+      table stats (`POST /v1/table/{id}/stats`), and data files, data size, and
+      deleted rows from `GET /catalog/v1/table/{id}/fragment-measures` (each row
+      loads, fails, or reads "Not recorded" on its own). Beside it, the share
+      of fragments with fewer than 1,048,576 rows (Lance's default compaction
+      target). A table's `lance.compaction.target_rows_per_fragment` override
+      is shown but not used, since the stats count against the fixed default.
 
     The storage listing and table stats are slow, so they are requested only
     after the rest of the page loaded; each shows its own skeleton and error.

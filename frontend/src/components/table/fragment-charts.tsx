@@ -1,5 +1,7 @@
-import { formatCount, formatPercent } from "@/lib/format";
-import { COMPACTION_TARGET_ROWS, type FragmentLengths } from "@/lib/table-metadata";
+import { formatBytes, formatCount, formatPercent } from "@/lib/format";
+import type { Distribution } from "@/lib/schemas";
+import { COMPACTION_TARGET_ROWS } from "@/lib/table-metadata";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 const STATS = [
@@ -12,12 +14,22 @@ const STATS = [
   ["Max", "max"],
 ] as const;
 
-/** Rows-per-fragment statistics, one column each. */
-export function FragmentStatsTable({ lengths }: { lengths: FragmentLengths }) {
+/** One per-fragment measure: its distribution, or loading / unavailable / not recorded. */
+export interface FragmentMeasure {
+  label: string;
+  value: Distribution | null | undefined;
+  bytes?: boolean;
+  loading: boolean;
+  error?: string;
+}
+
+/** Per-fragment statistics, one row per measure and one column per statistic. */
+export function FragmentStatsTable({ measures }: { measures: FragmentMeasure[] }) {
   return (
-    <Table aria-label="Rows per fragment">
+    <Table aria-label="Per-fragment statistics">
       <TableHeader>
         <TableRow className="hover:bg-transparent">
+          <TableHead>Per fragment</TableHead>
           {STATS.map(([label]) => (
             <TableHead key={label} className="text-right">
               {label}
@@ -26,16 +38,37 @@ export function FragmentStatsTable({ lengths }: { lengths: FragmentLengths }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        <TableRow className="hover:bg-transparent">
-          {STATS.map(([label, key]) => (
-            <TableCell key={label} className="text-right tabular-nums">
-              {formatCount(lengths[key])}
-            </TableCell>
-          ))}
-        </TableRow>
+        {measures.map((m) => (
+          <TableRow key={m.label} className="hover:bg-transparent">
+            <TableCell className="whitespace-nowrap">{m.label}</TableCell>
+            <MeasureCells measure={m} />
+          </TableRow>
+        ))}
       </TableBody>
     </Table>
   );
+}
+
+function MeasureCells({ measure: { value, bytes, loading, error } }: { measure: FragmentMeasure }) {
+  if (loading) {
+    return (
+      <TableCell colSpan={STATS.length}>
+        <Skeleton className="h-4 w-full" />
+      </TableCell>
+    );
+  }
+  if (error || !value) {
+    return (
+      <TableCell colSpan={STATS.length} className="text-right text-xs text-muted-foreground" title={error}>
+        {error ? "Unavailable" : "Not recorded"}
+      </TableCell>
+    );
+  }
+  return STATS.map(([label, key]) => (
+    <TableCell key={label} className="text-right tabular-nums">
+      {bytes ? formatBytes(value[key]) : formatCount(value[key])}
+    </TableCell>
+  ));
 }
 
 /** Share of fragments below Lance's default compaction target, as a ring. */

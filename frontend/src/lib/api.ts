@@ -5,6 +5,7 @@ import {
   describeNamespaceResponseSchema,
   describeTableResponseSchema,
   errorResponseSchema,
+  fragmentMeasuresResponseSchema,
   listNamespacesResponseSchema,
   listTableBranchesResponseSchema,
   listTableIndicesResponseSchema,
@@ -21,6 +22,7 @@ import {
   type ColumnStorageResponse,
   type DescribeNamespaceResponse,
   type DescribeTableResponse,
+  type FragmentMeasuresResponse,
   type IndexContent,
   type ListNamespacesResponse,
   type ListTableBranchesResponse,
@@ -226,6 +228,15 @@ export function getTableStorage(table: readonly string[]): Promise<TableStorageR
  *  data bytes. Reads every fragment's metadata, so it is slow on large tables. */
 export function getTableStats(table: readonly string[]): Promise<TableStatsResponse> {
   return request("POST", `/v1/table/${idPathSegment(table)}/stats`, tableStatsResponseSchema, {});
+}
+
+/** Catalog route: per-fragment data files, data bytes, and deleted rows from the manifest. */
+export function getFragmentMeasures(table: readonly string[]): Promise<FragmentMeasuresResponse> {
+  return request(
+    "GET",
+    `/catalog/v1/table/${idPathSegment(table)}/fragment-measures`,
+    fragmentMeasuresResponseSchema,
+  );
 }
 
 /** Catalog route: one page of the table timeline, newest first; `pageToken` is the last

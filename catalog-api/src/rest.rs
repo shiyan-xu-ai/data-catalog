@@ -17,7 +17,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use catalog_store::{PostgresNamespace, StorageBreakdown, StorageFootprint};
+use catalog_store::{
+    Distribution, FragmentMeasures, PostgresNamespace, StorageBreakdown, StorageFootprint,
+};
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
     DeregisterTableResponse, DescribeNamespaceRequest, DescribeNamespaceResponse,
@@ -87,6 +89,7 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
     Router::new()
         .route("/table/:id/column-storage", get(column_storage))
         .route("/table/:id/storage", get(table_storage))
+        .route("/table/:id/fragment-measures", get(fragment_measures))
         .route("/table/:id/timeline", get(table_timeline))
         .route("/table/:id/version/:version/files", get(version_files))
         .route("/table/:id/refresh", post(refresh_table))
@@ -521,6 +524,62 @@ async fn table_storage(
             tier: pricing.tier.clone(),
             estimated_monthly_cost,
         },
+    }))
+}
+
+/// One per-fragment measure: min, percentiles, mean, and max.
+#[derive(Serialize)]
+struct DistributionResponse {
+    min: u64,
+    p25: u64,
+    p50: u64,
+    mean: u64,
+    p75: u64,
+    p99: u64,
+    max: u64,
+}
+
+impl From<Distribution> for DistributionResponse {
+    fn from(d: Distribution) -> Self {
+        Self {
+            min: d.min,
+            p25: d.p25,
+            p50: d.p50,
+            mean: d.mean,
+            p75: d.p75,
+            p99: d.p99,
+            max: d.max,
+        }
+    }
+}
+
+/// Measures are null when some fragment does not record them.
+#[derive(Serialize)]
+struct FragmentMeasuresResponse {
+    version: u64,
+    fragments: u64,
+    data_files: Option<DistributionResponse>,
+    data_bytes: Option<DistributionResponse>,
+    deleted_rows: Option<DistributionResponse>,
+}
+
+async fn fragment_measures(
+    State(catalog): State<Catalog>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<FragmentMeasuresResponse>> {
+    let FragmentMeasures {
+        version,
+        fragments,
+        data_files,
+        data_bytes,
+        deleted_rows,
+    } = catalog.namespace.fragment_measures(&parse_id(&id)).await?;
+    Ok(Json(FragmentMeasuresResponse {
+        version,
+        fragments,
+        data_files: data_files.map(Into::into),
+        data_bytes: data_bytes.map(Into::into),
+        deleted_rows: deleted_rows.map(Into::into),
     }))
 }
 

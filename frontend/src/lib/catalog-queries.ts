@@ -5,6 +5,7 @@ import {
   describeTableCheap,
   followPages,
   getColumnStorage,
+  getFragmentMeasures,
   getTableStats,
   getTableStorage,
   getTableTimeline,
@@ -39,6 +40,7 @@ export const keys = {
   tableColumns: (id: string) => ["table", id, "columns"] as const,
   tableStorage: (id: string) => ["table", id, "storage"] as const,
   tableStats: (id: string) => ["table", id, "stats"] as const,
+  fragmentMeasures: (id: string) => ["table", id, "fragment-measures"] as const,
   tableTimeline: (id: string) => ["table", id, "timeline"] as const,
   timelineEvent: (id: string, version: number) => ["table", id, "timeline", "event", version] as const,
   versionFiles: (id: string, version: number) => ["table", id, "version", version, "files"] as const,
@@ -216,6 +218,14 @@ export function useTableStats(segments: readonly string[], enabled: boolean) {
     queryKey: keys.tableStats(joinId(segments)),
     queryFn: () => getTableStats(segments),
     enabled,
+  });
+}
+
+/** Per-fragment measures of the current version; manifest-only, so cheap. */
+export function useFragmentMeasures(segments: readonly string[]) {
+  return useQuery({
+    queryKey: keys.fragmentMeasures(joinId(segments)),
+    queryFn: () => getFragmentMeasures(segments),
   });
 }
 

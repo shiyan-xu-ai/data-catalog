@@ -207,6 +207,29 @@ export const tableStorageResponseSchema = z.object({
 });
 export type TableStorageResponse = z.infer<typeof tableStorageResponseSchema>;
 
+/** Min, percentiles, mean, and max of one per-fragment measure. */
+const distributionSchema = z.object({
+  min: z.number(),
+  p25: z.number(),
+  p50: z.number(),
+  mean: z.number(),
+  p75: z.number(),
+  p99: z.number(),
+  max: z.number(),
+});
+export type Distribution = z.infer<typeof distributionSchema>;
+
+/** Catalog route `GET /catalog/v1/table/{id}/fragment-measures`: per-fragment measures of the
+ *  current version from its manifest; a measure is null when some fragment does not record it. */
+export const fragmentMeasuresResponseSchema = z.object({
+  version: z.number(),
+  fragments: z.number(),
+  data_files: distributionSchema.nullable(),
+  data_bytes: distributionSchema.nullable(),
+  deleted_rows: distributionSchema.nullable(),
+});
+export type FragmentMeasuresResponse = z.infer<typeof fragmentMeasuresResponseSchema>;
+
 /** Spec `GetTableStatsResponse` (`POST /v1/table/{id}/stats`). Fragment lengths are physical
  *  rows per fragment. */
 export const tableStatsResponseSchema = z.object({

@@ -284,6 +284,19 @@ async fn rest_catalog_routes() {
     assert_eq!(page2["events"][0]["operation"], "Overwrite");
     assert!(page2.get("page_token").is_none());
 
+    // Fragment measures come from the manifest: one fragment of one data file, no deletions.
+    let (status, measures) = get(&app, "/catalog/v1/table/prod%24users/fragment-measures").await;
+    assert_eq!(status, StatusCode::OK, "{measures}");
+    assert_eq!(
+        (
+            &measures["fragments"],
+            &measures["data_files"]["max"],
+            &measures["deleted_rows"]["max"]
+        ),
+        (&json!(1), &json!(1), &json!(0))
+    );
+    assert!(measures["data_bytes"]["min"].as_u64().unwrap() > 0);
+
     // On-storage footprint: categories partition the listing, priced per decimal GB-month.
     let (status, footprint) = get(&app, "/catalog/v1/table/prod%24users/storage").await;
     assert_eq!(status, StatusCode::OK, "{footprint}");
@@ -490,6 +503,9 @@ async fn rest_catalog_routes() {
         get(&app, "/catalog/v1/table/prod%24gone/column-storage").await,
     );
     error(StatusCode::NOT_FOUND, 4)(get(&app, "/catalog/v1/table/prod%24gone/storage").await);
+    error(StatusCode::NOT_FOUND, 4)(
+        get(&app, "/catalog/v1/table/prod%24gone/fragment-measures").await,
+    );
     error(StatusCode::NOT_FOUND, 4)(get(&app, "/catalog/v1/table/prod%24gone/timeline").await);
     error(StatusCode::NOT_FOUND, 4)(
         post(
