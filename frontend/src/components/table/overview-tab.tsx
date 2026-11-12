@@ -1,23 +1,15 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
 import { formatBytes, formatCost, formatCount, formatCountOf, formatPercent, formatRate } from "@/lib/format";
-import { COMPACTION_TARGET_ROWS, compactionTargetOverride, parseManifestSummary, topColumns, totalIndexBytes } from "@/lib/table-metadata";
-import type {
-  ColumnStorageResponse,
-  DescribeTableResponse,
-  IndexContent,
-  TableStatsResponse,
-  TableStorageResponse,
-} from "@/lib/schemas";
+import { COMPACTION_TARGET_ROWS, compactionTargetOverride, parseManifestSummary, totalIndexBytes } from "@/lib/table-metadata";
+import type { DescribeTableResponse, IndexContent, TableStatsResponse, TableStorageResponse } from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
-import { ColumnStorageChart, LegendItem, StorageSplitChart, type StorageSlice } from "./charts";
+import { LegendItem, StorageSplitChart, type StorageSlice } from "./charts";
 import { FragmentStatsTable, SmallFragmentShare } from "./fragment-charts";
-
-const TOP_COLUMNS = 12;
 
 function Kpi({
   icon: Icon,
@@ -74,13 +66,11 @@ function ChartSkeleton({ caption, height = "h-52" }: { caption?: string; height?
 export function OverviewTab({
   detail,
   indices,
-  columns,
   storage,
   stats,
 }: {
   detail: UseQueryResult<DescribeTableResponse>;
   indices: UseQueryResult<IndexContent[]>;
-  columns: UseQueryResult<ColumnStorageResponse>;
   storage: UseQueryResult<TableStorageResponse>;
   stats: UseQueryResult<TableStatsResponse>;
 }) {
@@ -156,32 +146,15 @@ export function OverviewTab({
         />
       </div>
 
-      <div className="grid gap-6 @4xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <Section title="Storage composition" help="Every object under the table location, by file category.">
-          {storage.error ? (
-            <ErrorState message={storage.error.message} />
-          ) : !storage.data ? (
-            <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
-          ) : (
-            <StorageComposition onStorage={storage.data.on_storage} />
-          )}
-        </Section>
-
-        <Section
-          title="Storage by column"
-          help="Bytes on disk per column in the served version. Excludes blob payloads and index files."
-        >
-          {columns.error ? (
-            <ErrorState message={columns.error.message} />
-          ) : !columns.data ? (
-            <ChartSkeleton height="h-64" caption="Measuring column sizes across every fragment. Large tables take several seconds." />
-          ) : columns.data.columns.length === 0 ? (
-            <EmptyState icon={BarChart3} title="No data files" />
-          ) : (
-            <ColumnStorageChart columns={topColumns(columns.data.columns, TOP_COLUMNS)} />
-          )}
-        </Section>
-      </div>
+      <Section title="Storage composition" help="Every object under the table location, by file category.">
+        {storage.error ? (
+          <ErrorState message={storage.error.message} />
+        ) : !storage.data ? (
+          <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
+        ) : (
+          <StorageComposition onStorage={storage.data.on_storage} />
+        )}
+      </Section>
 
       <Section
         title="Fragment distribution"

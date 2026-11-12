@@ -13,7 +13,6 @@ import {
 import { ApiError } from "@/lib/api";
 import {
   type PagedVersions,
-  useColumnStorage,
   useTableCheap,
   useTableDetail,
   useTableIndices,
@@ -148,10 +147,9 @@ function TablePage({ tableId }: { tableId: string }) {
   const detail = useTableDetail(segments);
   const versions = useTableVersions(segments);
   const indices = useTableIndices(segments);
-  // Per-column storage, the storage listing, and table stats read every fragment or object;
-  // start them only once the rest of the page (and the first version page) settled.
+  // The storage listing and table stats read every object or fragment; start them only once the
+  // rest of the page (and the first version page) settled.
   const settled = !detail.isPending && !versions.isPending && !indices.isPending;
-  const columns = useColumnStorage(segments, settled);
   const storage = useTableStorage(segments, settled);
   const stats = useTableStats(segments, settled);
   const columnNames = useMemo(() => detail.data?.schema?.fields.map((f) => f.name) ?? [], [detail.data]);
@@ -222,13 +220,7 @@ function TablePage({ tableId }: { tableId: string }) {
             })}
           </TabsList>
           <TabsContent value="overview">
-            <OverviewTab
-              detail={detail}
-              indices={indices}
-              columns={columns}
-              storage={storage}
-              stats={stats}
-            />
+            <OverviewTab detail={detail} indices={indices} storage={storage} stats={stats} />
           </TabsContent>
           <TabsContent value="properties">
             <PropertiesTab cheap={cheap} detail={detail} />
@@ -240,7 +232,7 @@ function TablePage({ tableId }: { tableId: string }) {
             <VersionsTab segments={segments} versions={versions} servedVersion={detail.data?.version} />
           </TabsContent>
           <TabsContent value="schema">
-            <SchemaTab detail={detail} />
+            <SchemaTab segments={segments} detail={detail} />
           </TabsContent>
           <TabsContent value="indices">
             <IndicesTab indices={indices} />

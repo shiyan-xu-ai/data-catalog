@@ -1,57 +1,8 @@
-import { Bar, BarChart, CartesianGrid, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
+import { CartesianGrid, Line, LineChart, Pie, PieChart, XAxis, YAxis } from "recharts";
 import { formatBytes, formatCompact, formatCount, formatPercent } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
-import type { ColumnSlice, VersionPoint } from "@/lib/table-metadata";
+import type { VersionPoint } from "@/lib/table-metadata";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
-
-const columnConfig = { bytes: { label: "Bytes on disk", color: "hsl(var(--chart-1))" } } satisfies ChartConfig;
-
-/** Horizontal bars of bytes on disk per top-level column, largest first. */
-export function ColumnStorageChart({ columns }: { columns: ColumnSlice[] }) {
-  const total = columns.reduce((s, c) => s + c.bytes, 0);
-  const data = columns.map((c) => ({
-    ...c,
-    fill: c.other ? "hsl(var(--chart-6))" : "var(--color-bytes)",
-  }));
-  return (
-    <ChartContainer config={columnConfig} className="aspect-auto w-full" style={{ height: data.length * 30 + 24 }}>
-      <BarChart data={data} layout="vertical" margin={{ left: 4, right: 56, top: 0, bottom: 0 }}>
-        <CartesianGrid horizontal={false} />
-        <XAxis type="number" dataKey="bytes" tickFormatter={formatBytes} tickLine={false} axisLine={false} fontSize={11} />
-        <YAxis
-          type="category"
-          dataKey="name"
-          width={150}
-          tickLine={false}
-          axisLine={false}
-          interval={0}
-          fontSize={11}
-          tickFormatter={(v: string) => (v.length > 22 ? `${v.slice(0, 21)}…` : v)}
-        />
-        <ChartTooltip
-          cursor={false}
-          content={
-            <ChartTooltipContent
-              valueFormatter={(v) => `${formatBytes(Number(v))} · ${formatPercent(total ? Number(v) / total : null)}`}
-            />
-          }
-        />
-        <Bar
-          dataKey="bytes"
-          radius={3}
-          barSize={18}
-          isAnimationActive={false}
-          label={{
-            position: "right",
-            fontSize: 11,
-            className: "fill-muted-foreground",
-            formatter: (v: unknown) => formatBytes(Number(v)),
-          }}
-        />
-      </BarChart>
-    </ChartContainer>
-  );
-}
 
 export interface StorageSlice {
   key: string;

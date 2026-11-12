@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expandablePaths, flattenSchema } from "./schema-tree";
+import { expandablePaths, flattenSchema, schemaMetadataByColumn } from "./schema-tree";
 import type { JsonArrowField } from "./schemas";
 
 const FIELDS: JsonArrowField[] = [
@@ -50,5 +50,19 @@ describe("flattenSchema", () => {
 describe("expandablePaths", () => {
   it("lists every nested path", () => {
     expect(expandablePaths(FIELDS)).toEqual(["pose", "pose.tags"]);
+  });
+});
+
+describe("schemaMetadataByColumn", () => {
+  it("groups `<key>:<column>` entries under the longest matching column", () => {
+    const { byColumn, rest } = schemaMetadataByColumn(
+      { "blob-codec:log": "zstd", "codec:a:log": "lz4", "owner": "x", "note:missing": "y" },
+      ["log", "a:log"],
+    );
+    expect(Object.fromEntries(byColumn)).toEqual({ log: [["blob-codec", "zstd"]], "a:log": [["codec", "lz4"]] });
+    expect(rest).toEqual([
+      ["note:missing", "y"],
+      ["owner", "x"],
+    ]);
   });
 });

@@ -103,31 +103,6 @@ export function versionSeries(versions: readonly TableVersion[]): VersionPoint[]
     });
 }
 
-export interface ColumnSlice {
-  name: string;
-  bytes: number;
-  /** True for the aggregated "other columns" slice. */
-  other?: boolean;
-}
-
-/** The `limit` largest columns by bytes plus one aggregated slice for the rest. */
-export function topColumns(
-  columns: readonly { name: string; bytes_on_disk: number }[],
-  limit: number,
-): ColumnSlice[] {
-  const sorted = [...columns].sort((a, b) => b.bytes_on_disk - a.bytes_on_disk);
-  const top: ColumnSlice[] = sorted.slice(0, limit).map((c) => ({ name: c.name, bytes: c.bytes_on_disk }));
-  const rest = sorted.slice(limit);
-  if (rest.length > 0) {
-    top.push({
-      name: `${rest.length} other column${rest.length === 1 ? "" : "s"}`,
-      bytes: rest.reduce((s, c) => s + c.bytes_on_disk, 0),
-      other: true,
-    });
-  }
-  return top;
-}
-
 /** Lance's default compaction target (`CompactionOptions::target_rows_per_fragment`); the
  *  stats route counts fragments with fewer physical rows than this as small. */
 export const COMPACTION_TARGET_ROWS = 1_048_576;

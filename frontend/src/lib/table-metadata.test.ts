@@ -6,7 +6,6 @@ import {
   indexCoverage,
   parseManifestSummary,
   storageFormatVersion,
-  topColumns,
   totalIndexBytes,
   versionSeries,
   versionStatus,
@@ -103,23 +102,6 @@ describe("versionSeries", () => {
       { version: 1, timestamp: null, rows: 10, bytes: null },
       { version: 2, timestamp: 2000, rows: 20, bytes: 200 },
     ]);
-  });
-});
-
-describe("topColumns", () => {
-  it("keeps the largest columns and aggregates the rest", () => {
-    const cols = [
-      { name: "a", bytes_on_disk: 1 },
-      { name: "b", bytes_on_disk: 30 },
-      { name: "c", bytes_on_disk: 20 },
-      { name: "d", bytes_on_disk: 4 },
-    ];
-    expect(topColumns(cols, 2)).toEqual([
-      { name: "b", bytes: 30 },
-      { name: "c", bytes: 20 },
-      { name: "2 other columns", bytes: 5, other: true },
-    ]);
-    expect(topColumns(cols, 10)).toHaveLength(4);
   });
 });
 

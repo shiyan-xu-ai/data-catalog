@@ -42,14 +42,11 @@ page can fill; the table page puts its SQL panel there.
     (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption and
     a one-line (?) tooltip. Sections, each with a one-line (?) tooltip instead
     of a subtitle:
-    - *Storage composition* (left): every object under the location. With blob
-      files, two donuts: blob files vs everything else, then the non-blob files
-      by category (data, index, deletion, manifests, transactions, other).
-      Without blob files, one donut by category. Each legend row is the
-      category and its share.
-    - *Storage by column* (right): served-version inline column bytes per
-      top-level column (`GET /catalog/v1/table/{id}/column-storage`); blob
-      payload files and index files are excluded.
+    - *Storage composition* (full width): every object under the location.
+      With blob files, two donuts: blob files vs everything else, then the
+      non-blob files by category (data, index, deletion, manifests,
+      transactions, other). Without blob files, one donut by category. Each
+      legend row is the category and its share.
     - *Fragment distribution:* from the spec table stats
       (`POST /v1/table/{id}/stats`), a table of physical rows per fragment
       (min, p25, median, mean, p75, p99, max), beside the share of fragments
@@ -57,9 +54,8 @@ page can fill; the table page puts its SQL panel there.
       table's `lance.compaction.target_rows_per_fragment` override is shown but
       not used, since the stats count against the fixed default.
 
-    Column storage, the storage listing, and table stats are slow, so they are
-    requested only after the rest of the page loaded; each shows its own
-    skeleton and error.
+    The storage listing and table stats are slow, so they are requested only
+    after the rest of the page loaded; each shows its own skeleton and error.
   - **Properties:** the About facts first (description, owner, copyable
     location, registered and updated times), then client
     properties, Lance table metadata (`table_metadata`), and Lance table
@@ -101,9 +97,14 @@ page can fill; the table page puts its SQL panel there.
     kind of pane, below the sticky Trends chart: commit time, the manifest
     file's path, size, and e-tag, and the totals, with the same Source files
     view.
-  - **Schema:** an expandable field tree with compact types (full type on
-    hover), nullability, and field metadata, a raw JSON view, and schema-level
-    metadata.
+  - **Schema:** one table, an expandable field tree with compact types (full
+    type on hover), nullability, size on disk, field metadata, and schema
+    metadata, plus a raw JSON view. Size on disk is the served version's bytes
+    per top-level column (`GET /catalog/v1/table/{id}/column-storage`, blob
+    payloads and index files excluded) with its share; it loads on its own when
+    the tab opens. Schema-level metadata keyed `<key>:<column>` (such as
+    `blob-codec:<column>`) shows on that column's row; other schema-level
+    entries go in a final "Not tied to a column" row.
   - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
 
   The **SQL panel** (labeled read-only) runs one query at a time against this
