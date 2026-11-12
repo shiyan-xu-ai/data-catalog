@@ -32,9 +32,6 @@ pub struct CatalogConfig {
     /// Object-storage rate used for the storage cost estimate.
     pub storage_pricing: StoragePricing,
     pub sql: SqlConfig,
-    /// URI prefixes the media route may sign (`CATALOG_MEDIA_PREFIXES`, comma-separated, e.g.
-    /// `s3://research-datasets/`); empty disables the route.
-    pub media_prefixes: Vec<String>,
     /// Lifetime of presigned media URLs (`CATALOG_MEDIA_URL_TTL_MINUTES`, 60).
     pub media_url_ttl: Duration,
 }
@@ -44,7 +41,6 @@ impl Default for CatalogConfig {
         Self {
             storage_pricing: StoragePricing::default(),
             sql: SqlConfig::default(),
-            media_prefixes: Vec::new(),
             media_url_ttl: Duration::from_secs(60 * 60),
         }
     }
@@ -55,9 +51,6 @@ impl CatalogConfig {
         Ok(Self {
             storage_pricing: StoragePricing::from_env()?,
             sql: SqlConfig::from_env()?,
-            media_prefixes: parse_list(
-                &std::env::var("CATALOG_MEDIA_PREFIXES").unwrap_or_default(),
-            ),
             media_url_ttl: Duration::from_secs(
                 60 * positive_env("CATALOG_MEDIA_URL_TTL_MINUTES", 60u64)?,
             ),

@@ -80,8 +80,6 @@ struct Catalog {
     namespace: Arc<PostgresNamespace>,
     storage_pricing: Arc<StoragePricing>,
     sql: Arc<SqlConfig>,
-    /// URI prefixes the media route may sign; empty disables it.
-    media_prefixes: Arc<Vec<String>>,
     media_url_ttl: Duration,
     /// Per-instance cap on concurrent SQL queries.
     sql_slots: Arc<Semaphore>,
@@ -105,7 +103,6 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
             storage_pricing: Arc::new(config.storage_pricing),
             sql_slots: Arc::new(Semaphore::new(config.sql.max_concurrent)),
             sql: Arc::new(config.sql),
-            media_prefixes: Arc::new(config.media_prefixes),
             media_url_ttl: config.media_url_ttl,
         })
 }
@@ -123,28 +120,12 @@ struct PresignResponse {
     expires_in_secs: u64,
 }
 
-/// A short-lived presigned GET URL for an object under an allowed media prefix; the browser
-/// reads the object (with byte ranges) from object storage directly.
+/// Short-lived presigned GET URLs for any `s3://` object the catalog's storage credentials can
+/// read; the browser reads the object (with byte ranges) from object storage directly.
 async fn presign_media(
     State(catalog): State<Catalog>,
     Query(q): Query<MediaQuery>,
 ) -> ApiResult<Json<PresignResponse>> {
-    let allowed = !q
-        .uri
-        .split('/')
-        .any(|segment| segment == ".." || segment == ".")
-        && catalog
-            .media_prefixes
-            .iter()
-            .any(|p| q.uri.starts_with(p.as_str()));
-    if !allowed {
-        return Err(ApiError(
-            NamespaceError::PermissionDenied {
-                message: format!("{} is not under an allowed media prefix", q.uri),
-            }
-            .into(),
-        ));
-    }
     let urls = catalog
         .namespace
         .presign_media(&q.uri, catalog.media_url_ttl)

@@ -553,7 +553,7 @@ async fn rest_catalog_routes() {
 }
 
 #[tokio::test]
-async fn media_presign_signs_allowed_s3_uris() {
+async fn media_presign_signs_s3_uris() {
     let Some(pool) = support::pool("api_media").await else {
         return;
     };
@@ -566,11 +566,7 @@ async fn media_presign_signs_allowed_s3_uris() {
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .into();
     let ns = std::sync::Arc::new(catalog_store::PostgresNamespace::new(pool, options));
-    let catalog = catalog_api_lib::config::CatalogConfig {
-        media_prefixes: vec!["s3://media/clips/".into()],
-        ..Default::default()
-    };
-    let app = catalog_api_lib::app(ns, catalog, None);
+    let app = catalog_api_lib::app(ns, Default::default(), None);
     let presign = |uri: &str| {
         let path = format!("/catalog/v1/media/presign?uri={uri}");
         let app = app.clone();
@@ -597,6 +593,6 @@ async fn media_presign_signs_allowed_s3_uris() {
         "{download}"
     );
 
-    error(StatusCode::FORBIDDEN, 15)(presign("s3://media/other/a.h265").await);
-    error(StatusCode::FORBIDDEN, 15)(presign("s3://media/clips/../other/a.h265").await);
+    error(StatusCode::BAD_REQUEST, 13)(presign("https://host/a.h265").await);
+    error(StatusCode::BAD_REQUEST, 13)(presign("s3://media/clips/../other/a.h265").await);
 }
