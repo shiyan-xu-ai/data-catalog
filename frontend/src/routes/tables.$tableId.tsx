@@ -24,7 +24,6 @@ import { formatCount } from "@/lib/format";
 import { displayName, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
 import { ErrorCode } from "@/lib/schemas";
-import { storageFormatVersion } from "@/lib/table-metadata";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -163,7 +162,6 @@ function TablePage({ tableId }: { tableId: string }) {
   }
 
   const name = segments[segments.length - 1];
-  const format = storageFormatVersion(detail.data?.metadata);
   const tabIcon = {
     overview: BarChart3,
     properties: SlidersHorizontal,
@@ -185,14 +183,6 @@ function TablePage({ tableId }: { tableId: string }) {
             <Table2 className="h-5 w-5 text-muted-foreground" />
           </div>
           <h1 className="min-w-0 truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
-          {detail.isPending ? (
-            <Skeleton className="h-5 w-24" />
-          ) : (
-            <>
-              {format && <Badge variant="outline">Lance {format}</Badge>}
-              {detail.data?.version != null && <Badge variant="outline">v{detail.data.version}</Badge>}
-            </>
-          )}
         </div>
 
         {cheap.error && <ErrorState message={cheap.error.message} />}

@@ -31,8 +31,8 @@ page can fill; the table page puts its SQL panel there.
   describe (Postgres only) once it scrolls into view, at most six at a time, so
   listing never opens a dataset. The page is read-only: namespaces are
   created and dropped, and tables registered, through the API.
-- **Table page.** A header with the table name and the storage format and
-  served version badges (the namespace path is in the breadcrumb), six tabs
+- **Table page.** A header with the table name (the namespace path is in the
+  breadcrumb), six tabs
   (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
   docked at the bottom. The UI offers no deregistration.

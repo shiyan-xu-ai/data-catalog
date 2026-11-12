@@ -20,8 +20,8 @@ function LanceBody({
 }
 
 /** Client properties (from the cheap describe) and the two Lance manifest maps (`table_metadata`,
- *  `config`). The About facts live on the Overview tab, storage format and served version in the
- *  page header, tags and branches on the Versions tab, schema metadata on the Schema tab. */
+ *  `config`). The About facts live on the Overview tab, tags and branches on the Versions tab,
+ *  schema metadata on the Schema tab. */
 export function PropertiesTab({
   cheap,
   detail,
