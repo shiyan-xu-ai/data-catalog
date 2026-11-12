@@ -1,8 +1,9 @@
 # Architecture
 
 The catalog is an HMS-style [Lance REST catalog](https://lance.org/format/catalog/rest/):
-Postgres stores namespaces and table registrations, and each registered Lance
-dataset's manifest stays authoritative for its versions, schema, and stats.
+Postgres stores namespaces, table registrations, and each table's served version
+(the version reads that name no version answer for); each registered Lance
+dataset's manifest stays authoritative for the contents of every version.
 
 ```mermaid
 flowchart TB
@@ -10,7 +11,7 @@ flowchart TB
   Client[Lance namespace client] --> API
   API[catalog-api: axum router] --> NS[catalog-store: PostgresNamespace]
   NS --> PG[(Postgres: namespaces, tables)]
-  NS -->|open on register / detailed describe| Lance[Registered Lance datasets]
+  NS -->|open and cache per version| Lance[Registered Lance datasets]
 ```
 
 ## Crates
@@ -26,7 +27,8 @@ flowchart TB
 - `namespaces(path text[] primary key, parent_path → namespaces ON DELETE RESTRICT, properties)`.
   The root namespace is implicit and has no row.
 - `tables(namespace_path → namespaces ON DELETE RESTRICT, name, location, properties,
-  owner, description, registered_at, updated_at)`, primary key `(namespace_path, name)`.
+  owner, description, served_version, served_e_tag, registered_at, updated_at)`,
+  primary key `(namespace_path, name)`.
 
 Foreign keys make "parent must exist" and "drop only when empty" atomic under
 concurrent requests; primary keys enforce unique names per parent. On the wire,
@@ -49,24 +51,47 @@ so `catalog-api` owns an axum router that follows the adapter's conventions:
 
 Supported operations: namespace list / describe / create / drop / exists; table
 list / list-all / register / describe / exists / deregister; read-only table
-stats, version list / describe, index list / stats, tag list, branch list. Four
-catalog routes sit outside `/v1` because no spec model carries their data:
-`GET /catalog/v1/table/:id/column-storage` (bytes per top-level column of the
-current version), `GET /catalog/v1/table/:id/storage` (storage footprint and
-cost estimate), `POST /catalog/v1/table/:id/sql` (read-only SQL), and
-`GET /catalog/v1/table/:id/timeline` (per-version operation history from each
-version's Lance transaction and manifest, read page by page). Cleanup is not
-committed as a version, so the UI shows it only as a gap in version numbers.
+stats, version list / describe, index list / stats, tag list, branch list. Five
+catalog routes sit outside `/v1` because no spec model carries their data or
+operation: `GET /catalog/v1/table/:id/column-storage` (bytes per top-level
+column of the served version), `GET /catalog/v1/table/:id/storage` (storage
+footprint and cost estimate), `POST /catalog/v1/table/:id/refresh` (advance the
+served version to the newest commit), `POST /catalog/v1/table/:id/sql`
+(read-only SQL), and `GET /catalog/v1/table/:id/timeline` (per-version operation
+history from each version's Lance transaction and manifest, read page by page).
+Cleanup is not committed as a version, so the UI shows it only as a gap in
+version numbers.
+
+## Served version and caching
+
+Every read that names no version, on spec and catalog routes alike, answers for
+the table's served version. Registration records the newest version and its
+manifest e-tag; the refresh route or re-registration advances them. A commit
+made directly to Lance is therefore not served until then, and every instance
+serves the same version because each request reads it from the table row. When
+the served version's files are gone (cleanup), the next read that touches them
+advances it to the newest version with a compare-and-set, so concurrent
+instances agree. Version lists, the timeline, tags, and branches stay live and
+include versions newer than the served one; those are readable by number.
+
+A Lance version never changes once written, so everything derived from one
+version is cached per instance in the Lance session's metadata cache, keyed by
+location, version, and manifest e-tag: opened datasets, data statistics shared by
+stats and column storage, fragment row counts, deleted-row counts, and the
+storage listing of the served version. A warm instance answers repeat reads of
+the served version without touching object storage. `CATALOG_CACHE_MEMORY_LIMIT_MB`
+bounds the session (three quarters metadata, the rest index metadata) in place of
+Lance's 1 GiB and 6 GiB defaults; full caches evict.
 
 The SQL route builds a fresh DataFusion session per query and exposes only this
-table: the plain table name reads the requested version (default latest), and
+table: the plain table name reads the requested version (default: the served version), and
 `"<name>@v<N>"` opens version N on demand, so one query can compare versions.
 Planning runs with DDL, DML, and statements disabled and spilling off, so a
 query cannot write anywhere. Each query is bounded by row, time, and memory
 limits, and a per-instance semaphore caps concurrency.
 
 Lance has no API for total storage size: the manifest summary and field
-statistics cover only the current version's data files, not blob v2 payload
+statistics cover only one version's data files, not blob v2 payload
 files (`data/*.blob`), index files, or files retained for older versions. The
 storage route therefore lists object metadata under the registered location,
 groups it by category, and prices the total at
@@ -77,21 +102,20 @@ groups it by category, and prices the total at
   `<vertical>/<domain>/<table>`. Deeper levels are unrestricted, and existing
   top-level namespaces outside the list stay readable and droppable.
 - **Register** opens the location as a Lance dataset before inserting, so an
-  unreadable URI never becomes a table.
-- **Describe** reads Postgres only, unless `load_detailed_metadata` is set; then
-  it opens the dataset and returns version, schema, `stats`, and `metadata`:
-  the current manifest summary, `table_metadata.*` entries (Lance
-  `Dataset::metadata`), `config.*` entries (Lance `Dataset::config`), and
-  `lance.data_storage_version`.
+  unreadable URI never becomes a table, and records its newest version as served.
+- **Describe** reads Postgres only, unless `load_detailed_metadata` or a
+  `version` is set; then it returns that version (default: the served version),
+  schema, `stats`, and `metadata`: the version's manifest summary,
+  `table_metadata.*` entries (Lance `Dataset::metadata`), `config.*` entries
+  (Lance `Dataset::config`), and `lance.data_storage_version`.
 - **Lance read routes** (stats, versions, indices, tags, branches, column
-  storage) open the dataset on every request; nothing is cached. Stats and
-  column storage read field-level statistics and are slow on large tables. A
-  missing dataset returns `TableNotFound` (404).
+  storage) read the served version, or the requested one, through the cache.
+  A dataset with no manifest left returns `TableNotFound` (404).
 - **Lists** never open datasets. Pagination uses an exclusive start-after name
   as `page_token` (version number for version lists).
 - **Deregister** deletes the catalog row only; source data is untouched.
 
-The catalog only ever opens datasets for reading.
+The catalog only ever opens datasets for reading; its one write is the served version in Postgres.
 
 Datasets are opened with storage options built from the `AWS_*` environment and
 Secret Manager credentials. These are never returned to clients.

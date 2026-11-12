@@ -32,7 +32,7 @@ page can fill; the table page puts its SQL panel there.
   listing never opens a dataset. The page is read-only: namespaces are
   created and dropped, and tables registered, through the API.
 - **Table page.** A header with the table name and the storage format and
-  current version badges (the namespace path is in the breadcrumb), six tabs
+  served version badges (the namespace path is in the breadcrumb), six tabs
   (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
   docked at the bottom. The UI offers no deregistration.
@@ -93,7 +93,9 @@ page can fill; the table page puts its SQL panel there.
     the top while the version table scrolls under it, with the table header
     pinned just below. The table lists the loaded versions with timestamp,
     rows and row change against the next older loaded version ("—" for the
-    oldest loaded one), data size, data files, and deletions.
+    oldest loaded one), data size, data files, and deletions. The served
+    version carries a "current" badge; versions committed after it carry
+    "newer than served" until a catalog refresh.
   - **Schema:** an expandable field tree with compact types (full type on
     hover), nullability, and field metadata, a raw JSON view, and schema-level
     metadata.
@@ -102,8 +104,9 @@ page can fill; the table page puts its SQL panel there.
   The **SQL panel** (labeled read-only) runs one query at a time against this
   table (`POST /catalog/v1/table/{id}/sql`). A version picker, listing the
   loaded versions newest first (its last option loads earlier ones; it shares
-  the Versions tab's pages), sets which version the table name reads (latest by
-  default); any other version is addressable in SQL as `"<table>@v<N>"`, for
+  the Versions tab's pages), sets which version the table name reads (the
+  served version by default, labeled "Served (vN)"; newer versions are marked);
+  any other version is addressable in SQL as `"<table>@v<N>"`, for
   example to compare versions. The panel opens with
   `SELECT * FROM "<table>" LIMIT 20`, runs on the Run button or Ctrl/Cmd+Enter,
   and shows column names and types, nested values as JSON, binary values as hex,
