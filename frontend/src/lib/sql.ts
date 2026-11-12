@@ -60,10 +60,23 @@ export function versionRef(tableName: string, version: number): string {
   return quoteIdent(`${tableName}@v${version}`);
 }
 
-const VIDEO_URL = /^https?:\/\/\S+\.(?:mp4|m4v|mov|webm|h265|hevc)(?:[?#]\S*)?$/i;
+const VIDEO_URL = /^(https?|s3):\/\/\S+\.(mp4|m4v|mov|webm|h265|hevc)(?:[?#]\S*)?$/i;
 
-/** Whether a result value is an http(s) URL to a video file (by extension, query string
- *  allowed), which the row pane offers for playback. */
-export function isVideoUrl(value: unknown): value is string {
-  return typeof value === "string" && VIDEO_URL.test(value.trim());
+/** A playable video referenced by a result value. */
+export interface VideoSource {
+  url: string;
+  /** Raw H.265 stream (no container): decoded in the browser instead of a `<video>` element. */
+  rawHevc: boolean;
+  /** `s3://` objects play from a presigned https URL the catalog signs. */
+  presign: boolean;
+}
+
+/** The video a result value points to: an http(s) or s3 URL ending in a video extension (a
+ *  query string allowed), or null. */
+export function videoSource(value: unknown): VideoSource | null {
+  if (typeof value !== "string") return null;
+  const url = value.trim();
+  const match = VIDEO_URL.exec(url);
+  if (!match) return null;
+  return { url, rawHevc: /^(h265|hevc)$/i.test(match[2]), presign: match[1].toLowerCase() === "s3" };
 }

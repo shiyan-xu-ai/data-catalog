@@ -30,6 +30,7 @@ Identifiers in paths are segments joined by `$`; the root namespace is `$`. For 
 | GET | `/catalog/v1/table/:id/column-storage` | Bytes on disk per top-level column, excluding blob payload files. |
 | GET | `/catalog/v1/table/:id/storage` | Bytes and objects under the table location by category (data, blob, index, deletion, manifest, transaction, other), both for the objects the current version references (`current`: its data files and their blob sidecars, deletion files, index directories, manifest, and transaction file) and for every object (`on_storage`); the current version's data and index bytes; and an estimated monthly cost of every object. |
 | GET | `/catalog/v1/table/:id/fragment-measures` | Per-fragment data files, data bytes, and deleted rows (min, p25, median, mean, p75, p99, max each), read from the manifest alone; a measure is null when some fragment does not record it. |
+| GET | `/catalog/v1/media/presign?uri=` | A presigned https GET URL (`{url, expires_in_secs}`) for an `s3://bucket/key` media object under `CATALOG_MEDIA_PREFIXES`, signed with the catalog's storage credentials; the UI reads videos from object storage with it. Other URIs get 403. |
 | POST | `/catalog/v1/table/:id/refresh` | Advance the current version to the newest version at the table location; returns `previous_version` and `current_version`. |
 | POST | `/catalog/v1/table/:id/sql` | Run a read-only SQL query (`{"sql": "...", "version": N}`) against the table, addressed by its name. `version` (default: current) picks which version the plain name reads; `"<name>@v<N>"` reads version N in the same query, for comparisons. DDL, DML, and `COPY` are rejected; results are capped at `CATALOG_SQL_MAX_ROWS` rows and flagged `truncated`. |
 | GET | `/catalog/v1/table/:id/timeline` | One event per retained version, newest first (`page_token`, `limit` up to 200), read from each version's transaction and manifest: the Lance operation (append, delete, update, overwrite, compaction, index build, schema or config change, restore), its recorded details, the manifest summary, the writer library version, transaction properties, and tags. |
@@ -58,6 +59,8 @@ The catalog never writes to registered datasets. Every other spec route returns 
 | `CATALOG_SQL_MEMORY_LIMIT_MB` | `512` | Per-query DataFusion memory pool. |
 | `CATALOG_SQL_MAX_CONCURRENT` | `2` | Concurrent SQL queries per instance; extra requests get 429 (Throttling). |
 | `CATALOG_CACHE_MEMORY_LIMIT_MB` | `256` | Lance session cache budget per instance (see [caching](ARCHITECTURE.md#current-version-and-caching)). |
+| `CATALOG_MEDIA_PREFIXES` | unset | Comma-separated `s3://` prefixes whose objects the media route may presign (e.g. `s3://research-datasets/`); unset disables it. |
+| `CATALOG_MEDIA_URL_TTL_MINUTES` | `60` | Lifetime of presigned media URLs. |
 | `RUST_LOG` | `info,lance=warn` | Log filter; logs are JSON. |
 
 Datasets on S3 or S3-compatible stores open with the standard `AWS_*` variables, including `AWS_ENDPOINT_URL`. On Cloud Run, credentials come from Secret Manager unless `AWS_ACCESS_KEY_ID` is already set. Credentials are never returned to clients.

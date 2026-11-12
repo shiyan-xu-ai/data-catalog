@@ -8,7 +8,7 @@
 //! the spec's Unsupported error.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Bytes};
 use axum::extract::{Path, Query, State};
@@ -80,6 +80,9 @@ struct Catalog {
     namespace: Arc<PostgresNamespace>,
     storage_pricing: Arc<StoragePricing>,
     sql: Arc<SqlConfig>,
+    /// URI prefixes the media route may sign; empty disables it.
+    media_prefixes: Arc<Vec<String>>,
+    media_url_ttl: Duration,
     /// Per-instance cap on concurrent SQL queries.
     sql_slots: Arc<Semaphore>,
 }
@@ -94,6 +97,7 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
         .route("/table/:id/version/:version/files", get(version_files))
         .route("/table/:id/refresh", post(refresh_table))
         .route("/table/:id/sql", post(run_sql))
+        .route("/media/presign", get(presign_media))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
         .with_state(Catalog {
@@ -101,7 +105,52 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
             storage_pricing: Arc::new(config.storage_pricing),
             sql_slots: Arc::new(Semaphore::new(config.sql.max_concurrent)),
             sql: Arc::new(config.sql),
+            media_prefixes: Arc::new(config.media_prefixes),
+            media_url_ttl: config.media_url_ttl,
         })
+}
+
+#[derive(Deserialize)]
+struct MediaQuery {
+    uri: String,
+}
+
+#[derive(Serialize)]
+struct PresignResponse {
+    url: String,
+    expires_in_secs: u64,
+}
+
+/// A short-lived presigned GET URL for an object under an allowed media prefix; the browser
+/// reads the object (with byte ranges) from object storage directly.
+async fn presign_media(
+    State(catalog): State<Catalog>,
+    Query(q): Query<MediaQuery>,
+) -> ApiResult<Json<PresignResponse>> {
+    let allowed = !q
+        .uri
+        .split('/')
+        .any(|segment| segment == ".." || segment == ".")
+        && catalog
+            .media_prefixes
+            .iter()
+            .any(|p| q.uri.starts_with(p.as_str()));
+    if !allowed {
+        return Err(ApiError(
+            NamespaceError::PermissionDenied {
+                message: format!("{} is not under an allowed media prefix", q.uri),
+            }
+            .into(),
+        ));
+    }
+    let url = catalog
+        .namespace
+        .presign_media(&q.uri, catalog.media_url_ttl)
+        .await?;
+    Ok(Json(PresignResponse {
+        url,
+        expires_in_secs: catalog.media_url_ttl.as_secs(),
+    }))
 }
 
 #[derive(Deserialize)]

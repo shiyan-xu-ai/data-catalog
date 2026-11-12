@@ -17,6 +17,8 @@ import {
   tableStorageResponseSchema,
   timelineResponseSchema,
   versionFilesResponseSchema,
+  mediaPresignResponseSchema,
+  type MediaPresignResponse,
   type TimelineEvent,
   type TimelineResponse,
   type VersionFilesResponse,
@@ -269,6 +271,12 @@ export function getVersionFiles(table: readonly string[], version: number): Prom
     `/catalog/v1/table/${idPathSegment(table)}/version/${version}/files`,
     versionFilesResponseSchema,
   );
+}
+
+/** Catalog route: a short-lived presigned https URL for a media object (`s3://…`), which the
+ *  browser then reads from object storage directly. */
+export function presignMedia(uri: string): Promise<MediaPresignResponse> {
+  return request("GET", `/catalog/v1/media/presign?uri=${encodeURIComponent(uri)}`, mediaPresignResponseSchema);
 }
 
 /** Catalog route: run one read-only SQL query. The plain table name reads `version` (the current

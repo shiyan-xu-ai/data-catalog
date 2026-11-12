@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultQuery, formatCell, isVideoUrl, quoteIdent, resultsToCsv, shortTypeName, versionRef } from "./sql";
+import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef, videoSource } from "./sql";
 
 describe("SQL pre-fill", () => {
   it("always double-quotes the table name and escapes embedded quotes", () => {
@@ -55,16 +55,24 @@ describe("resultsToCsv", () => {
   });
 });
 
-describe("isVideoUrl", () => {
-  it("accepts http(s) video file URLs, with a query string or surrounding space", () => {
-    expect(isVideoUrl("https://cdn.example.com/clips/a.mp4")).toBe(true);
-    expect(isVideoUrl("http://host/x/front.H265?X-Amz-Signature=abc&t=1")).toBe(true);
-    expect(isVideoUrl(" https://host/v.webm ")).toBe(true);
+describe("videoSource", () => {
+  it("accepts http(s) and s3 video URLs, with a query string or surrounding space", () => {
+    expect(videoSource("https://cdn.example.com/clips/a.mp4")).toEqual({
+      url: "https://cdn.example.com/clips/a.mp4",
+      rawHevc: false,
+      presign: false,
+    });
+    expect(videoSource("http://host/x/front.H265?X-Amz-Signature=abc&t=1")).toMatchObject({ rawHevc: true, presign: false });
+    expect(videoSource(" s3://bucket/media/pack_00000.h265 ")).toEqual({
+      url: "s3://bucket/media/pack_00000.h265",
+      rawHevc: true,
+      presign: true,
+    });
   });
   it("rejects other schemes, extensions, and non-strings", () => {
-    expect(isVideoUrl("s3://bucket/a.mp4")).toBe(false);
-    expect(isVideoUrl("https://host/a.mp4.json")).toBe(false);
-    expect(isVideoUrl("https://host/mp4")).toBe(false);
-    expect(isVideoUrl({ url: "https://host/a.mp4" })).toBe(false);
+    expect(videoSource("gs://bucket/a.mp4")).toBeNull();
+    expect(videoSource("https://host/a.mp4.json")).toBeNull();
+    expect(videoSource("https://host/mp4")).toBeNull();
+    expect(videoSource({ url: "https://host/a.mp4" })).toBeNull();
   });
 });

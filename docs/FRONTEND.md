@@ -139,11 +139,18 @@ Routes carry `$`-joined ids; names display dotted.
   arrows move) opens a row pane beside the results like the schema field pane:
   every column's name, type, and full value, nested values as a JSON tree, each
   with a copy button; a new run clears the selection. When some value in the
-  row is an http(s) URL ending in a video extension (`.mp4`, `.m4v`, `.mov`,
-  `.webm`, `.h265`, `.hevc`; a query string is allowed), the pane adds a
-  Playback tab with a native player per such column and an Open link; files the
-  browser cannot decode (raw H.265 streams in most browsers) show a note instead
-  of a player. The
+  row is an http(s) or `s3://` URL ending in a video extension (`.mp4`,
+  `.m4v`, `.mov`, `.webm`, `.h265`, `.hevc`; a query string is allowed), the
+  pane adds a Playback tab with a player per such column and an Open link.
+  `s3://` objects play from a presigned https URL
+  (`GET /catalog/v1/media/presign?uri=`), so the browser reads them from object
+  storage directly; the bucket's CORS rules must allow the UI's origin and the
+  `Range` header. Container formats play in a `<video>` element. Raw H.265
+  streams (`.h265`, `.hevc`) are read in 2 MiB byte ranges, split into
+  pictures, decoded with WebCodecs (where the browser and hardware support
+  H.265; otherwise the pane says so and stops reading), and drawn on a canvas
+  at a chosen frame rate, since raw streams carry no timing; reading pauses
+  while 30 frames are buffered. The
   editor loads when the tab first opens and then stays mounted, so the query and
   results survive switching tabs until the user leaves the table page; the other
   tabs stay usable while a query runs.

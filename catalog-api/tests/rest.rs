@@ -551,3 +551,45 @@ async fn rest_catalog_routes() {
         StatusCode::OK
     );
 }
+
+#[tokio::test]
+async fn media_presign_signs_allowed_s3_uris() {
+    let Some(pool) = support::pool("api_media").await else {
+        return;
+    };
+    let options = [
+        ("aws_access_key_id", "AKIDEXAMPLE"),
+        ("aws_secret_access_key", "secret"),
+        ("aws_region", "us-east-1"),
+        ("aws_endpoint", "https://objects.example.com"),
+    ]
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .into();
+    let ns = std::sync::Arc::new(catalog_store::PostgresNamespace::new(pool, options));
+    let catalog = catalog_api_lib::config::CatalogConfig {
+        media_prefixes: vec!["s3://media/clips/".into()],
+        ..Default::default()
+    };
+    let app = catalog_api_lib::app(ns, catalog, None);
+    let presign = |uri: &str| {
+        let path = format!("/catalog/v1/media/presign?uri={uri}");
+        let app = app.clone();
+        async move { get(&app, &path).await }
+    };
+
+    let (status, body) = presign("s3://media/clips/pack_00000.h265").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let url = body["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("https://objects.example.com/media/clips/pack_00000.h265?"),
+        "{url}"
+    );
+    assert!(
+        url.contains("X-Amz-Expires=3600") && url.contains("X-Amz-Signature="),
+        "{url}"
+    );
+    assert_eq!(body["expires_in_secs"], 3600);
+
+    error(StatusCode::FORBIDDEN, 15)(presign("s3://media/other/a.h265").await);
+    error(StatusCode::FORBIDDEN, 15)(presign("s3://media/clips/../other/a.h265").await);
+}

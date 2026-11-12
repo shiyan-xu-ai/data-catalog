@@ -1,6 +1,7 @@
 //! Postgres-backed Lance namespace: the catalog metastore and its migrations.
 
 mod cache;
+mod media;
 mod namespace;
 mod source;
 mod sql;

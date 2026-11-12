@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2, PanelLeftClose, PanelLeftOpen, Play, RotateCcw, Square } from "lucide-react";
-import { ApiError, runSql } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { ApiError, presignMedia, runSql } from "@/lib/api";
 import type { PagedVersions } from "@/lib/catalog-queries";
 import { formatCount, parseTime } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
 import { ErrorCode, type SqlResponse } from "@/lib/schemas";
-import { defaultQuery, formatCell, isVideoUrl, quoteIdent, resultsToCsv, shortTypeName, versionRef, type CellKind } from "@/lib/sql";
+import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef, videoSource, type CellKind, type VideoSource } from "@/lib/sql";
 import { versionStatus } from "@/lib/table-metadata";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { HelpTooltip } from "@/components/help-tooltip";
+import { HevcPlayer } from "@/components/hevc-player";
 import { JsonTree } from "@/components/json-tree";
 import { PaneTabs, SidePane, SidePaneLayout, usePaneSelection } from "@/components/side-pane";
 import { SqlEditor } from "@/components/sql-editor";
@@ -56,21 +59,36 @@ function copyText(value: unknown): string {
 
 type RowView = "values" | "playback";
 
-/** One playable column: a native video player, or a note and link when the browser cannot
- *  decode the file (raw H.265 streams, for example). */
-function VideoClip({ name, url }: { name: string; url: string }) {
+/** One playable column. `s3://` sources are presigned by the catalog and then read from object
+ *  storage directly; raw H.265 streams are decoded in the browser, other files use `<video>`. */
+function VideoClip({ name, source }: { name: string; source: VideoSource }) {
   const [failed, setFailed] = useState(false);
+  const signed = useQuery({
+    queryKey: ["media-url", source.url],
+    queryFn: () => presignMedia(source.url),
+    enabled: source.presign,
+    staleTime: 10 * 60_000,
+  });
+  const url = source.presign ? signed.data?.url : source.url;
   return (
     <section className="space-y-1.5 border-t px-4 py-3">
       <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate font-mono text-xs font-medium" title={name}>
+        <span className="truncate font-mono text-xs font-medium" title={source.url}>
           {name}
         </span>
-        <a href={url} target="_blank" rel="noreferrer" className="ml-auto shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
-          Open
-        </a>
+        {url && (
+          <a href={url} target="_blank" rel="noreferrer" className="ml-auto shrink-0 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">
+            Open
+          </a>
+        )}
       </div>
-      {failed ? (
+      {source.presign && signed.error ? (
+        <p className="text-xs text-destructive">Could not get a URL for this object: {signed.error.message}</p>
+      ) : !url ? (
+        <Skeleton className="aspect-video w-full" />
+      ) : source.rawHevc ? (
+        <HevcPlayer key={url} url={url} />
+      ) : failed ? (
         <p className="text-xs text-muted-foreground">This browser cannot play this file. Open it to download.</p>
       ) : (
         <video controls preload="metadata" src={url} onError={() => setFailed(true)} className="aspect-video w-full rounded bg-black" />
@@ -80,7 +98,7 @@ function VideoClip({ name, url }: { name: string; url: string }) {
 }
 
 /** Every column of one result row with its type and full value, nested values as a JSON tree.
- *  When some value is a video URL (see `isVideoUrl`), a Playback view shows a player per such
+ *  When some value is a video URL (see `videoSource`), a Playback view shows a player per such
  *  column. */
 function RowPane({
   result,
@@ -99,8 +117,8 @@ function RowPane({
 }) {
   const values = result.rows[row];
   const videos = result.columns.flatMap((c, i) => {
-    const value = values[i];
-    return isVideoUrl(value) ? [{ name: c.name, url: value.trim() }] : [];
+    const source = videoSource(values[i]);
+    return source ? [{ name: c.name, source }] : [];
   });
   const shown = videos.length > 0 ? view : "values";
   return (
@@ -131,7 +149,7 @@ function RowPane({
       }
     >
       {shown === "playback"
-        ? videos.map((v, i) => <VideoClip key={i} name={v.name} url={v.url} />)
+        ? videos.map((v, i) => <VideoClip key={i} name={v.name} source={v.source} />)
         : result.columns.map((c, i) => {
             const cell = formatCell(values[i], c.type);
             return (

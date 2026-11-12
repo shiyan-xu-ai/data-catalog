@@ -239,7 +239,7 @@ impl TableRow {
 /// are never returned to callers.
 pub struct PostgresNamespace {
     pool: PgPool,
-    storage_options: HashMap<String, String>,
+    pub(crate) storage_options: HashMap<String, String>,
     session: Arc<Session>,
     /// Names allowed for new top-level namespaces; empty allows any.
     top_level_allowlist: Vec<String>,
