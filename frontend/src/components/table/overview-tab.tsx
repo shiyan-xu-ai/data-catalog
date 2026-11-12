@@ -8,6 +8,7 @@ import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
+import { AboutSection } from "./about-section";
 import { LegendItem, StorageSplitChart, type StorageSlice } from "./charts";
 import { FragmentStatsTable, SmallFragmentShare } from "./fragment-charts";
 
@@ -64,11 +65,13 @@ function ChartSkeleton({ caption, height = "h-52" }: { caption?: string; height?
 }
 
 export function OverviewTab({
+  cheap,
   detail,
   indices,
   storage,
   stats,
 }: {
+  cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
   indices: UseQueryResult<IndexContent[]>;
   storage: UseQueryResult<TableStorageResponse>;
@@ -83,6 +86,7 @@ export function OverviewTab({
 
   return (
     <div className="@container space-y-6">
+      <AboutSection cheap={cheap} />
       {detail.error && <ErrorState message={`Lance metadata unavailable: ${detail.error.message}`} />}
       <div className="grid grid-cols-2 gap-3 @3xl:grid-cols-3">
         <Kpi

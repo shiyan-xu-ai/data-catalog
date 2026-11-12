@@ -36,7 +36,9 @@ page can fill; the table page puts its SQL panel there.
   (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
   docked at the bottom. The UI offers no deregistration.
-  - **Overview:** six tiles: rows (with fragment count), served-version data
+  - **Overview:** first a full-width About section (description, owner,
+    copyable location, registered and updated times), then six tiles: rows
+    (with fragment count), served-version data
     (the manifest's data-file size and count), deleted rows, served-version
     index size, total bytes on storage, and the estimated monthly storage cost
     (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption and
@@ -56,10 +58,8 @@ page can fill; the table page puts its SQL panel there.
 
     The storage listing and table stats are slow, so they are requested only
     after the rest of the page loaded; each shows its own skeleton and error.
-  - **Properties:** the About facts first (description, owner, copyable
-    location, registered and updated times), then client
-    properties, Lance table metadata (`table_metadata`), and Lance table
-    configuration (`config`).
+  - **Properties:** client properties, Lance table metadata
+    (`table_metadata`), and Lance table configuration (`config`).
   - **Timeline:** every retained version as a compact commit row, newest
     first, from `GET /catalog/v1/table/{id}/timeline`, 50 at a time with "Load
     earlier". Rows sit on a vertical rail under sticky `YYYY-MM-DD` day
