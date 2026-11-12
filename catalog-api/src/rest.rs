@@ -17,7 +17,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use catalog_store::{PostgresNamespace, StorageFootprint};
+use catalog_store::{PostgresNamespace, StorageBreakdown, StorageFootprint};
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
     DeregisterTableResponse, DescribeNamespaceRequest, DescribeNamespaceResponse,
@@ -443,10 +443,14 @@ struct StorageResponse {
     pricing: Pricing,
 }
 
+/// The current version: its data and index bytes, and the objects under the location it
+/// references, by category.
 #[derive(Serialize)]
 struct CurrentStorage {
     data_bytes: u64,
     index_bytes: u64,
+    #[serde(flatten)]
+    objects: OnStorage,
 }
 
 #[derive(Serialize)]
@@ -454,6 +458,24 @@ struct OnStorage {
     total_bytes: u64,
     total_objects: u64,
     categories: Vec<StorageCategoryResponse>,
+}
+
+impl From<StorageBreakdown> for OnStorage {
+    fn from(breakdown: StorageBreakdown) -> Self {
+        Self {
+            total_bytes: breakdown.total_bytes,
+            total_objects: breakdown.total_objects,
+            categories: breakdown
+                .categories
+                .into_iter()
+                .map(|c| StorageCategoryResponse {
+                    name: c.name,
+                    bytes: c.bytes,
+                    objects: c.objects,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -479,35 +501,25 @@ async fn table_storage(
         version,
         data_bytes,
         index_bytes,
-        total_bytes,
-        total_objects,
-        categories,
+        current,
+        all,
     } = catalog.namespace.storage_footprint(&parse_id(&id)).await?;
     let pricing = &catalog.storage_pricing;
+    // Decimal GB, matching the rate card.
+    let estimated_monthly_cost = all.total_bytes as f64 / 1e9 * pricing.price_per_gb_month;
     Ok(Json(StorageResponse {
         version,
         current: CurrentStorage {
             data_bytes,
             index_bytes,
+            objects: current.into(),
         },
-        on_storage: OnStorage {
-            total_bytes,
-            total_objects,
-            categories: categories
-                .into_iter()
-                .map(|c| StorageCategoryResponse {
-                    name: c.name,
-                    bytes: c.bytes,
-                    objects: c.objects,
-                })
-                .collect(),
-        },
+        on_storage: all.into(),
         pricing: Pricing {
             price_per_gb_month: pricing.price_per_gb_month,
             currency: "USD",
             tier: pricing.tier.clone(),
-            // Decimal GB, matching the rate card.
-            estimated_monthly_cost: total_bytes as f64 / 1e9 * pricing.price_per_gb_month,
+            estimated_monthly_cost,
         },
     }))
 }

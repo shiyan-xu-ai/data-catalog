@@ -46,11 +46,13 @@ page can fill; the table page puts its SQL panel there.
     (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption and
     a one-line (?) tooltip. Sections, each with a one-line (?) tooltip instead
     of a subtitle:
-    - *Storage composition* (full width): every object under the location.
-      With blob files, two donuts: blob files vs everything else, then the
-      non-blob files by category (data, index, deletion, manifests,
-      transactions, other). Without blob files, one donut by category. Each
-      legend row is the category and its share.
+    - *Storage: current version* (left) and *Storage: all versions* (right):
+      the objects under the location that the current version references,
+      and every object under it. With blob files, each shows two donuts:
+      blob files vs everything else, then the non-blob files by category
+      (data, index, deletion, manifests, transactions, other). Without blob
+      files, one donut by category. Each legend row is the category and its
+      share.
     - *Fragment distribution:* from the spec table stats
       (`POST /v1/table/{id}/stats`), a table of physical rows per fragment
       (min, p25, median, mean, p75, p99, max), beside the share of fragments

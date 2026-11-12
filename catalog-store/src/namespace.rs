@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -26,6 +26,7 @@ use lance_namespace::models::{
 };
 use lance_namespace::schema::arrow_schema_to_json;
 use lance_namespace::{Error, LanceNamespace, NamespaceError, Result};
+use lance_table::io::deletion::relative_deletion_file_path;
 use sqlx::types::Json;
 use sqlx::PgPool;
 
@@ -92,6 +93,34 @@ pub struct StorageCategory {
     pub objects: u64,
 }
 
+/// Bytes and objects of a set of stored objects, by category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageBreakdown {
+    pub total_bytes: u64,
+    pub total_objects: u64,
+    /// One entry per [`STORAGE_CATEGORIES`] name, in that order.
+    pub categories: Vec<StorageCategory>,
+}
+
+impl StorageBreakdown {
+    fn new(counts: &[(u64, u64)]) -> Self {
+        let categories: Vec<StorageCategory> = STORAGE_CATEGORIES
+            .iter()
+            .zip(counts)
+            .map(|(&name, &(bytes, objects))| StorageCategory {
+                name,
+                bytes,
+                objects,
+            })
+            .collect();
+        Self {
+            total_bytes: categories.iter().map(|c| c.bytes).sum(),
+            total_objects: categories.iter().map(|c| c.objects).sum(),
+            categories,
+        }
+    }
+}
+
 /// A table version's data next to everything stored under its location.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageFootprint {
@@ -100,10 +129,10 @@ pub struct StorageFootprint {
     pub data_bytes: u64,
     /// Files of the version's indices.
     pub index_bytes: u64,
-    pub total_bytes: u64,
-    pub total_objects: u64,
-    /// One entry per [`STORAGE_CATEGORIES`] name, in that order.
-    pub categories: Vec<StorageCategory>,
+    /// Objects under the location that the version references.
+    pub current: StorageBreakdown,
+    /// Every object under the location, all versions included.
+    pub all: StorageBreakdown,
 }
 
 /// Outcome of [`PostgresNamespace::refresh_table`].
@@ -189,7 +218,8 @@ impl OpenTable {
         Ok(deleted.0)
     }
 
-    /// Every object under the location, not just the version's files.
+    /// Every object under the location, bucketed once over all objects and once over the
+    /// objects this version references.
     async fn storage_listing(&self) -> Result<Arc<StorageListing>> {
         let (dataset, location) = (self.dataset.clone(), &self.location);
         self.cache
@@ -198,8 +228,12 @@ impl OpenTable {
                     .object_store(None)
                     .await
                     .map_err(lance_error(format!("open object store at {location}")))?;
+                let referenced = VersionFiles::of(&dataset)
+                    .await
+                    .map_err(lance_error(format!("load indices at {location}")))?;
                 let base = dataset.branch_location().path;
-                let mut categories = vec![(0u64, 0u64); STORAGE_CATEGORIES.len()];
+                let mut all = vec![(0u64, 0u64); STORAGE_CATEGORIES.len()];
+                let mut current = all.clone();
                 let mut objects = store.read_dir_all(&base, None);
                 while let Some(meta) = objects
                     .try_next()
@@ -210,11 +244,15 @@ impl OpenTable {
                     let relative = path
                         .strip_prefix(base.as_ref())
                         .map_or(path, |p| p.trim_start_matches('/'));
-                    let category = &mut categories[storage_category(relative)];
-                    category.0 += meta.size;
-                    category.1 += 1;
+                    let category = storage_category(relative);
+                    all[category].0 += meta.size;
+                    all[category].1 += 1;
+                    if referenced.contains(relative) {
+                        current[category].0 += meta.size;
+                        current[category].1 += 1;
+                    }
                 }
-                Ok(StorageListing(categories))
+                Ok(StorageListing { current, all })
             })
             .await
     }
@@ -345,9 +383,9 @@ impl PostgresNamespace {
     }
 
     /// Lists every object under the registered location (metadata only, never writes) once per
-    /// current version and instance, bucketed by path relative to that location. The prefix
-    /// match is per path segment, so sibling directories such as `<table>.lance_tags/` are
-    /// excluded.
+    /// current version and instance, bucketed by path relative to that location, both overall
+    /// and for the objects the current version references. The prefix match is per path
+    /// segment, so sibling directories such as `<table>.lance_tags/` are excluded.
     pub async fn storage_footprint(&self, id: &[String]) -> Result<StorageFootprint> {
         self.read_table(id, None, |table| async move {
             let location = &table.location;
@@ -366,22 +404,12 @@ impl PostgresNamespace {
                 )
             };
             let (index_bytes, listing) = futures::try_join!(index_bytes, table.storage_listing())?;
-            let categories: Vec<StorageCategory> = STORAGE_CATEGORIES
-                .iter()
-                .zip(&listing.0)
-                .map(|(&name, &(bytes, objects))| StorageCategory {
-                    name,
-                    bytes,
-                    objects,
-                })
-                .collect();
             Ok(StorageFootprint {
                 version: table.dataset.version_id(),
                 data_bytes: table.dataset.manifest().summary().total_files_size,
                 index_bytes,
-                total_bytes: categories.iter().map(|c| c.bytes).sum(),
-                total_objects: categories.iter().map(|c| c.objects).sum(),
-                categories,
+                current: StorageBreakdown::new(&listing.current),
+                all: StorageBreakdown::new(&listing.all),
             })
         })
         .await
@@ -1682,4 +1710,69 @@ fn storage_category(relative: &str) -> usize {
         .iter()
         .position(|&name| name == category)
         .expect("category is listed")
+}
+
+/// Paths, relative to the dataset location, of the objects one version references: its data
+/// files and their sidecar blob files, deletion files, index directories, manifest, and
+/// external transaction file. Files under other bases are not under the location and are left
+/// out.
+struct VersionFiles {
+    files: HashSet<String>,
+    /// Index UUIDs; each index's files live under `_indices/<uuid>/`.
+    indices: HashSet<String>,
+}
+
+impl VersionFiles {
+    async fn of(dataset: &Dataset) -> lance::Result<Self> {
+        let manifest = dataset.manifest();
+        let mut files = HashSet::new();
+        for fragment in manifest.fragments.iter() {
+            for file in fragment.files.iter().filter(|f| f.base_id.is_none()) {
+                files.insert(format!("data/{}", file.path));
+            }
+            if let Some(deletion) = &fragment.deletion_file {
+                files.insert(relative_deletion_file_path(fragment.id, deletion));
+            }
+        }
+        let base = dataset.branch_location().path;
+        let manifest_path = dataset.manifest_location().path.as_ref();
+        files.insert(
+            manifest_path
+                .strip_prefix(base.as_ref())
+                .map_or(manifest_path, |p| p.trim_start_matches('/'))
+                .to_string(),
+        );
+        if let Some(transaction) = manifest
+            .transaction_file
+            .as_deref()
+            .filter(|t| !t.is_empty())
+        {
+            files.insert(format!("_transactions/{transaction}"));
+        }
+        let indices = dataset
+            .load_indices()
+            .await?
+            .iter()
+            .map(|index| index.uuid.to_string())
+            .collect();
+        Ok(Self { files, indices })
+    }
+
+    fn contains(&self, relative: &str) -> bool {
+        if self.files.contains(relative) {
+            return true;
+        }
+        // Sidecar blobs of data file `data/<key>.lance` live at `data/<key>/<id>.blob`.
+        if let Some((key, _)) = relative
+            .strip_prefix("data/")
+            .and_then(|rest| rest.split_once('/'))
+            .filter(|(_, file)| file.ends_with(".blob"))
+        {
+            return self.files.contains(&format!("data/{key}.lance"));
+        }
+        relative
+            .strip_prefix("_indices/")
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(uuid, _)| self.indices.contains(uuid))
+    }
 }

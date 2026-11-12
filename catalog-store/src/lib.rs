@@ -12,8 +12,8 @@ use std::time::Duration;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
 pub use namespace::{
-    ColumnBytes, ColumnStorage, PostgresNamespace, Refresh, StorageCategory, StorageFootprint,
-    DEFAULT_CACHE_BUDGET_BYTES, STORAGE_CATEGORIES,
+    ColumnBytes, ColumnStorage, PostgresNamespace, Refresh, StorageBreakdown, StorageCategory,
+    StorageFootprint, DEFAULT_CACHE_BUDGET_BYTES, STORAGE_CATEGORIES,
 };
 pub use sql::{SqlColumn, SqlLimits, SqlResult};
 pub use timeline::Timeline;

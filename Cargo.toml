@@ -19,6 +19,7 @@ lance = { version = "=14.0.2", default-features = false, features = ["aws"] }
 lance-core = "=14.0.2"
 lance-namespace = "=14.0.2"
 lance-index = "=14.0.2"
+lance-table = "=14.0.2"
 futures = "0.3"
 arrow-array = "58.0.0"
 arrow-schema = "58.0.0"

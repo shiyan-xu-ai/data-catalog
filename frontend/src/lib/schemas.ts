@@ -184,15 +184,20 @@ export const columnStorageResponseSchema = z.object({
 });
 export type ColumnStorageResponse = z.infer<typeof columnStorageResponseSchema>;
 
-/** Catalog route `GET /catalog/v1/table/{id}/storage` (not a spec model). */
+/** Objects under the table location, by category. */
+const storageBreakdownSchema = z.object({
+  total_bytes: z.number(),
+  total_objects: z.number(),
+  categories: z.array(z.object({ name: z.string(), bytes: z.number(), objects: z.number() })),
+});
+export type StorageBreakdown = z.infer<typeof storageBreakdownSchema>;
+
+/** Catalog route `GET /catalog/v1/table/{id}/storage` (not a spec model). `current` breaks down
+ *  the objects the current version references; `on_storage` every object under the location. */
 export const tableStorageResponseSchema = z.object({
   version: z.number(),
-  current: z.object({ data_bytes: z.number(), index_bytes: z.number() }),
-  on_storage: z.object({
-    total_bytes: z.number(),
-    total_objects: z.number(),
-    categories: z.array(z.object({ name: z.string(), bytes: z.number(), objects: z.number() })),
-  }),
+  current: storageBreakdownSchema.extend({ data_bytes: z.number(), index_bytes: z.number() }),
+  on_storage: storageBreakdownSchema,
   pricing: z.object({
     price_per_gb_month: z.number(),
     currency: z.string(),

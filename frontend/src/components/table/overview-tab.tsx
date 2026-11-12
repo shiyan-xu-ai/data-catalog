@@ -3,7 +3,13 @@ import type { PagedVersions } from "@/lib/catalog-queries";
 import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
 import { formatBytes, formatCost, formatCount, formatCountOf, formatPercent, formatRate } from "@/lib/format";
 import { COMPACTION_TARGET_ROWS, compactionTargetOverride, parseManifestSummary, totalIndexBytes } from "@/lib/table-metadata";
-import type { DescribeTableResponse, IndexContent, TableStatsResponse, TableStorageResponse } from "@/lib/schemas";
+import type {
+  DescribeTableResponse,
+  IndexContent,
+  StorageBreakdown,
+  TableStatsResponse,
+  TableStorageResponse,
+} from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
@@ -153,15 +159,34 @@ export function OverviewTab({
         />
       </div>
 
-      <Section title="Storage composition" help="Every object under the table location, by file category.">
-        {storage.error ? (
-          <ErrorState message={storage.error.message} />
-        ) : !storage.data ? (
-          <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
-        ) : (
-          <StorageComposition onStorage={storage.data.on_storage} />
-        )}
-      </Section>
+      <div className="grid gap-6 @4xl:grid-cols-2">
+        <Section
+          title="Storage: current version"
+          help="Objects under the table location that the current version references, by file category."
+          className="@container"
+        >
+          {storage.error ? (
+            <ErrorState message={storage.error.message} />
+          ) : !storage.data ? (
+            <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
+          ) : (
+            <StorageComposition breakdown={storage.data.current} caption="current version" />
+          )}
+        </Section>
+        <Section
+          title="Storage: all versions"
+          help="Every object under the table location, all versions included, by file category."
+          className="@container"
+        >
+          {storage.error ? (
+            <ErrorState message={storage.error.message} />
+          ) : !storage.data ? (
+            <ChartSkeleton caption="Listing objects under the table location. Large tables take several seconds." />
+          ) : (
+            <StorageComposition breakdown={storage.data.on_storage} caption="all versions" />
+          )}
+        </Section>
+      </div>
 
       <Section
         title="Fragment distribution"
@@ -204,7 +229,7 @@ const CATEGORIES: Record<string, { label: string; color: string }> = {
 };
 const ORDER = Object.keys(CATEGORIES);
 
-type StorageCategory = TableStorageResponse["on_storage"]["categories"][number];
+type StorageCategory = StorageBreakdown["categories"][number];
 
 /** Donut plus legend for a set of categories; shares are against `total`. */
 function CategoryBreakdown({
@@ -241,18 +266,19 @@ function CategoryBreakdown({
 }
 
 /** With blob files: blob vs everything else, then the non-blob remainder by category, since
- *  blob payloads dwarf every other category. Without them: one donut by category. */
-function StorageComposition({ onStorage }: { onStorage: TableStorageResponse["on_storage"] }) {
-  if (onStorage.total_bytes === 0) {
+ *  blob payloads dwarf every other category. Without them: one donut by category. `caption`
+ *  names the set of objects under the first donut's total. */
+function StorageComposition({ breakdown, caption }: { breakdown: StorageBreakdown; caption: string }) {
+  if (breakdown.total_bytes === 0) {
     return <EmptyState icon={HardDrive} title="Nothing on storage" />;
   }
   const rank = (name: string) => (ORDER.includes(name) ? ORDER.indexOf(name) : ORDER.length);
-  const categories = [...onStorage.categories].sort((a, b) => rank(a.name) - rank(b.name));
+  const categories = [...breakdown.categories].sort((a, b) => rank(a.name) - rank(b.name));
   const blob = categories.find((c) => c.name === "blob");
   const rest = categories.filter((c) => c.name !== "blob");
 
   if (!blob || blob.bytes === 0) {
-    return <CategoryBreakdown title="All objects" categories={rest} total={onStorage.total_bytes} caption="on storage" />;
+    return <CategoryBreakdown title="All objects" categories={rest} total={breakdown.total_bytes} caption={caption} />;
   }
 
   const restBytes = rest.reduce((s, c) => s + c.bytes, 0);
@@ -262,8 +288,8 @@ function StorageComposition({ onStorage }: { onStorage: TableStorageResponse["on
       <CategoryBreakdown
         title="All objects"
         categories={[blob, { name: "others", bytes: restBytes, objects: restObjects }]}
-        total={onStorage.total_bytes}
-        caption="on storage"
+        total={breakdown.total_bytes}
+        caption={caption}
       />
       <CategoryBreakdown title="Excluding blob files" categories={rest} total={restBytes} caption="non-blob" />
     </div>

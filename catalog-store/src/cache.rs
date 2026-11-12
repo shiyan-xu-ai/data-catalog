@@ -58,9 +58,13 @@ impl VersionValue for DeletedRows {
     const NAME: &'static str = "catalog.DeletedRows";
 }
 
-/// `(bytes, objects)` per storage category, in `STORAGE_CATEGORIES` order.
+/// `(bytes, objects)` per storage category, in `STORAGE_CATEGORIES` order: for the objects the
+/// version references, and for every object under the location.
 #[derive(lance_core::deepsize::DeepSizeOf)]
-pub(crate) struct StorageListing(pub Vec<(u64, u64)>);
+pub(crate) struct StorageListing {
+    pub current: Vec<(u64, u64)>,
+    pub all: Vec<(u64, u64)>,
+}
 
 impl VersionValue for StorageListing {
     const NAME: &'static str = "catalog.StorageListing";

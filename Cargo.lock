@@ -1065,6 +1065,7 @@ dependencies = [
  "lance-core",
  "lance-index",
  "lance-namespace",
+ "lance-table",
  "prost",
  "prost-reflect",
  "protox",

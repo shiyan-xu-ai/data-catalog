@@ -327,6 +327,21 @@ async fn rest_catalog_routes() {
         category("index")["bytes"],
         footprint["current"]["index_bytes"]
     );
+    // The current version references every data and index file but only its own manifest.
+    let current = &footprint["current"]["categories"];
+    let current = |name: &str| {
+        current
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap()
+    };
+    assert_eq!(current("data"), category("data"));
+    assert_eq!(current("index"), category("index"));
+    assert_eq!(current("manifest")["objects"], 1);
+    assert!(category("manifest")["objects"].as_u64().unwrap() > 1);
+    assert!(footprint["current"]["total_bytes"].as_u64().unwrap() < total_bytes);
     let price = &footprint["pricing"];
     assert_eq!(price["price_per_gb_month"], pricing.price_per_gb_month);
     assert_eq!(price["tier"], pricing.tier);
