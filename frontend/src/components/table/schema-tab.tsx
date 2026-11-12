@@ -277,7 +277,8 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                       <th className="h-9 min-w-72 px-4">Field</th>
                       <th className="h-9 min-w-40 px-3">Type</th>
                       <th className="h-9 px-3">Nullable</th>
-                      <th className="h-9 px-3 whitespace-nowrap">
+                      <th className="h-9 px-3 whitespace-nowrap">Field metadata</th>
+                      <th className="h-9 px-3 pr-4 whitespace-nowrap">
                         <span className="inline-flex items-center gap-1">
                           Size on disk
                           <HelpTooltip label="About size on disk">
@@ -286,7 +287,6 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                           </HelpTooltip>
                         </span>
                       </th>
-                      <th className="h-9 px-3 pr-4 whitespace-nowrap">Field metadata</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -338,10 +338,7 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                         <td className="px-3 py-2">
                           <Badge variant="outline">{r.nullable ? "nullable" : "required"}</Badge>
                         </td>
-                        <td className="px-3 py-2">
-                          <SizeCell row={r} columns={columns} sizes={sizes} />
-                        </td>
-                        <td className="px-3 py-2 pr-4 whitespace-nowrap">
+                        <td className="px-3 py-2 whitespace-nowrap">
                           {r.metadata.length ? (
                             <Badge variant="secondary" className="font-normal">
                               {formatCountOf(r.metadata.length, "entry", "entries")}
@@ -349,6 +346,9 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                           ) : (
                             <Dash />
                           )}
+                        </td>
+                        <td className="px-3 py-2 pr-4">
+                          <SizeCell row={r} columns={columns} sizes={sizes} />
                         </td>
                       </tr>
                     ))}

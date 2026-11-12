@@ -106,8 +106,8 @@ page can fill; the table page puts its SQL panel there.
     Version, Created, Rows, and Data size.
   - **Schema:** schema-level metadata in its own section on top, then the
     field table: an expandable field tree with compact types (full type on
-    hover), nullability, size on disk, and a count of field metadata entries,
-    plus a raw JSON view. Size on disk is a bar per top-level column scaled to
+    hover), nullability, a count of field metadata entries, and size on disk
+    (last), plus a raw JSON view. Size on disk is a bar per top-level column scaled to
     the largest column, with the size written inside it, from the current
     version's bytes per column (`GET /catalog/v1/table/{id}/column-storage`,
     blob payloads and index files excluded); it loads on its own when the tab
