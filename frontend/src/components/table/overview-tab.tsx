@@ -1,15 +1,9 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { PagedVersions } from "@/lib/catalog-queries";
-import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
-import { formatBytes, formatCost, formatCount, formatCountOf, formatPercent, formatRate } from "@/lib/format";
-import { COMPACTION_TARGET_ROWS, compactionTargetOverride, parseManifestSummary, totalIndexBytes } from "@/lib/table-metadata";
-import type {
-  DescribeTableResponse,
-  IndexContent,
-  StorageBreakdown,
-  TableStatsResponse,
-  TableStorageResponse,
-} from "@/lib/schemas";
+import { BarChart3, CircleDollarSign, HardDrive, Rows3, Trash2 } from "lucide-react";
+import { formatCost, formatCount, formatCountOf, formatPercent, formatRate } from "@/lib/format";
+import { COMPACTION_TARGET_ROWS, compactionTargetOverride, parseManifestSummary } from "@/lib/table-metadata";
+import type { DescribeTableResponse, StorageBreakdown, TableStatsResponse, TableStorageResponse } from "@/lib/schemas";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HelpTooltip } from "@/components/help-tooltip";
 import { EmptyState } from "@/components/empty-state";
@@ -75,44 +69,31 @@ export function OverviewTab({
   cheap,
   detail,
   versions,
-  indices,
   storage,
   stats,
 }: {
   cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
   versions: PagedVersions;
-  indices: UseQueryResult<IndexContent[]>;
   storage: UseQueryResult<TableStorageResponse>;
   stats: UseQueryResult<TableStatsResponse>;
 }) {
   const s = parseManifestSummary(detail.data?.metadata);
-  const indexBytes = indices.data ? totalIndexBytes(indices.data) : null;
   // The storage listing is enabled lazily, so "not loaded yet" covers both idle and fetching.
   const storageLoading = !storage.data && !storage.error;
   const pricing = storage.data?.pricing;
-  const onStorage = storage.data?.on_storage;
 
   return (
     <div className="@container space-y-6">
       <AboutSection cheap={cheap} detail={detail} versions={versions} />
       {detail.error && <ErrorState message={`Lance metadata unavailable: ${detail.error.message}`} />}
-      <div className="grid grid-cols-2 gap-3 @3xl:grid-cols-3">
+      <div className="grid gap-3 @xl:grid-cols-3">
         <Kpi
           icon={Rows3}
           label="Rows"
           value={formatCount(s.rows)}
           sub={s.fragments != null ? formatCountOf(s.fragments, "fragment") : undefined}
           help="Live rows in the current version."
-          loading={detail.isPending}
-          failed={detail.error?.message}
-        />
-        <Kpi
-          icon={Database}
-          label="Current version data"
-          value={formatBytes(s.dataBytes)}
-          sub={s.dataFiles != null ? formatCountOf(s.dataFiles, "data file") : undefined}
-          help="Data files the current version references. Excludes blob and index files."
           loading={detail.isPending}
           failed={detail.error?.message}
         />
@@ -126,33 +107,14 @@ export function OverviewTab({
           failed={detail.error?.message}
         />
         <Kpi
-          icon={ListTree}
-          label="Index size"
-          // No indices is a measured zero; indices without reported sizes stay unknown.
-          value={formatBytes(indices.data?.length === 0 ? 0 : indexBytes)}
-          sub="current version"
-          help="Excludes index files kept only by older versions."
-          loading={indices.isPending}
-          failed={indices.error?.message}
-        />
-        <Kpi
-          icon={HardDrive}
-          label="Total on storage"
-          value={formatBytes(onStorage?.total_bytes)}
-          sub={onStorage ? formatCountOf(onStorage.total_objects, "object") : undefined}
-          help="All versions, including blob, index, and manifest files."
-          loading={storageLoading}
-          failed={storage.error?.message}
-        />
-        <Kpi
           icon={CircleDollarSign}
           label="Est. monthly cost"
           value={pricing ? formatCost(pricing.estimated_monthly_cost, pricing.currency) : "—"}
           sub="storage only, estimate"
           help={
             pricing
-              ? `Total on storage × ${formatRate(pricing.price_per_gb_month, pricing.currency)}.`
-              : "Total on storage × the configured rate."
+              ? `Every object under the table location × ${formatRate(pricing.price_per_gb_month, pricing.currency)}.`
+              : "Every object under the table location × the configured rate."
           }
           loading={storageLoading}
           failed={storage.error?.message}

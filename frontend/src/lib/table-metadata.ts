@@ -70,15 +70,6 @@ export function extraProperties(props: Metadata): [string, string][] {
     .sort(([a], [b]) => a.localeCompare(b));
 }
 
-/** Sum of index sizes, or null when no index reports a size. */
-export function totalIndexBytes(indexes: readonly IndexContent[]): number | null {
-  let total: number | null = null;
-  for (const ix of indexes) {
-    if (ix.size_bytes != null) total = (total ?? 0) + ix.size_bytes;
-  }
-  return total;
-}
-
 /** Indexed share of rows for an index, or null when counts are missing or both zero. */
 export function indexCoverage(ix: IndexContent): number | null {
   const indexed = ix.num_indexed_rows;

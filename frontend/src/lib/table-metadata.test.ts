@@ -6,7 +6,6 @@ import {
   indexCoverage,
   parseManifestSummary,
   storageFormatVersion,
-  totalIndexBytes,
   versionSeries,
   versionStatus,
 } from "./table-metadata";
@@ -79,11 +78,7 @@ describe("extraProperties", () => {
 
 const ix = (p: Partial<IndexContent>): IndexContent => ({ index_name: "i", columns: ["c"], ...p });
 
-describe("index helpers", () => {
-  it("sums only reported index sizes", () => {
-    expect(totalIndexBytes([])).toBeNull();
-    expect(totalIndexBytes([ix({}), ix({ size_bytes: 10 }), ix({ size_bytes: 5 })])).toBe(15);
-  });
+describe("indexCoverage", () => {
   it("computes coverage only from both counts", () => {
     expect(indexCoverage(ix({ num_indexed_rows: 75, num_unindexed_rows: 25 }))).toBe(0.75);
     expect(indexCoverage(ix({ num_indexed_rows: 75 }))).toBeNull();

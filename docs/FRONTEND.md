@@ -39,10 +39,9 @@ page can fill; the table page puts its SQL panel there.
   - **Overview:** first a full-width, untitled About card (description, owner,
     copyable location, registered and updated times, the current version's
     Lance file format, and the latest committed version with its age, noting
-    the current version when it is older), then six tiles: rows
-    (with fragment count), current-version data
-    (the manifest's data-file size and count), deleted rows, current-version
-    index size, total bytes on storage, and the estimated monthly storage cost
+    the current version when it is older), then three tiles: rows (with
+    fragment count), deleted rows (with deletion file count), and the
+    estimated monthly storage cost of every object under the location
     (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption and
     a one-line (?) tooltip. Sections, each with a one-line (?) tooltip instead
     of a subtitle:

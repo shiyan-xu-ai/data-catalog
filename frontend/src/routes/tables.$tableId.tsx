@@ -214,7 +214,6 @@ function TablePage({ tableId }: { tableId: string }) {
               cheap={cheap}
               detail={detail}
               versions={versions}
-              indices={indices}
               storage={storage}
               stats={stats}
             />
