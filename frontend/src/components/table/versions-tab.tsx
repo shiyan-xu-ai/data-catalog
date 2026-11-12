@@ -3,7 +3,7 @@ import { BarChart3, Layers } from "lucide-react";
 import type { PagedVersions } from "@/lib/catalog-queries";
 import { formatBytes, formatCount, formatRelative, parseTime } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
-import { parseManifestSummary, versionSeries } from "@/lib/table-metadata";
+import { parseManifestSummary, versionSeries, versionStatus } from "@/lib/table-metadata";
 import type { TableVersion } from "@/lib/schemas";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -69,7 +69,7 @@ function VersionHistory({ versions, currentVersion }: { versions: PagedVersions;
     <Section
       title="Version history"
       description={`${formatCount(all.length)} ${versions.hasNextPage ? "loaded, newest first" : "versions, newest first"}`}
-      help="Each version's figures come from its manifest summary. Δ Rows compares with the next older loaded version."
+      help="Each version's figures come from its manifest summary. Δ Rows compares with the next older loaded version. Current is the version the catalog serves to reads that name no version; newer versions become current after a catalog refresh."
       contentClassName="px-0 pb-0"
     >
       {/* A plain table (no scroll wrapper) so its header can stick below the Trends chart. */}
@@ -98,7 +98,8 @@ function VersionHistory({ versions, currentVersion }: { versions: PagedVersions;
                 <td className="pl-4">
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-medium">v{v.version}</span>
-                    {v.version === currentVersion && <Badge variant="secondary">current</Badge>}
+                    {versionStatus(v.version, currentVersion) === "served" && <Badge variant="secondary">current</Badge>}
+                    {versionStatus(v.version, currentVersion) === "newer" && <Badge variant="outline">newer than served</Badge>}
                   </div>
                 </td>
                 <td>

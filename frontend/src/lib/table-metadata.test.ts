@@ -10,6 +10,7 @@ import {
   topColumns,
   totalIndexBytes,
   versionSeries,
+  versionStatus,
 } from "./table-metadata";
 import type { IndexContent } from "./schemas";
 
@@ -131,5 +132,17 @@ describe("topColumns", () => {
       { name: "2 other columns", bytes: 5, other: true },
     ]);
     expect(topColumns(cols, 10)).toHaveLength(4);
+  });
+});
+
+describe("versionStatus", () => {
+  it("places a version relative to the served version", () => {
+    expect(versionStatus(10, 10)).toBe("served");
+    expect(versionStatus(11, 10)).toBe("newer");
+    expect(versionStatus(9, 10)).toBe("older");
+  });
+  it("marks nothing while the served version is unknown", () => {
+    expect(versionStatus(11, null)).toBeNull();
+    expect(versionStatus(11, undefined)).toBeNull();
   });
 });

@@ -156,3 +156,14 @@ export function compactionTargetOverride(meta: Metadata): number | null {
   const v = intOf(meta, "config.lance.compaction.target_rows_per_fragment");
   return v != null && v > 0 ? v : null;
 }
+
+/** Where a version sits relative to the served version (the one reads without a version
+ *  answer for), or null while the served version is unknown. */
+export function versionStatus(
+  version: number,
+  served: number | null | undefined,
+): "served" | "newer" | "older" | null {
+  if (served == null) return null;
+  if (version === served) return "served";
+  return version > served ? "newer" : "older";
+}
