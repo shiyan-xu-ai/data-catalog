@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { FolderTree, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
+import { FolderTree, PanelLeftClose, Search } from "lucide-react";
 import { ID_DELIMITER, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
 import { cn } from "@/lib/utils";
@@ -96,19 +96,11 @@ export function AppSidebar({
             <FolderTree className="h-4 w-4" />
           </Link>
         </div>
-        <div className="mt-auto flex flex-col items-center gap-1 border-t py-3">
-          <div className="flex cursor-default flex-col items-center gap-1" onClick={(e) => e.stopPropagation()}>
-            <PreferenceControls compact />
-          </div>
-          <button
-            type="button"
-            className={railButton}
-            onClick={() => setCollapsed(false)}
-            aria-label="Expand navigation"
-            title="Expand navigation"
-          >
-            <PanelLeftOpen className="h-4 w-4" />
-          </button>
+        <div
+          className="mt-auto flex cursor-default flex-col items-center gap-1 border-t py-3"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <PreferenceControls compact />
         </div>
       </aside>
     );
