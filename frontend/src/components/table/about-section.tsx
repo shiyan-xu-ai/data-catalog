@@ -24,6 +24,17 @@ const Unset = ({ children = "Not set" }: { children?: string }) => (
   <span className="text-muted-foreground/70 italic">{children}</span>
 );
 
+/** A text value with a copy button, or "Not set". */
+function Copyable({ value, label }: { value: string | undefined; label: string }) {
+  if (!value) return <Unset />;
+  return (
+    <span className="flex min-w-0 items-center gap-1">
+      <span className="min-w-0 break-all">{value}</span>
+      <CopyButton value={value} label={label} />
+    </span>
+  );
+}
+
 /** A Lance-derived field value: a short failure note on error, a skeleton while loading. */
 function Pending({ error, loading, children }: { error: Error | null; loading: boolean; children: React.ReactNode }) {
   if (error) {
@@ -124,8 +135,12 @@ function AboutBody({ segments, cheap, detail, versions }: AboutProps) {
           <CurrentVersion segments={segments} versions={versions} current={detail.data?.version} />
         </Pending>
       </Field>
-      <Field label="Business owner">{props[BUSINESS_OWNER] ?? <Unset />}</Field>
-      <Field label="Technical owner">{props[TECHNICAL_OWNER] ?? <Unset />}</Field>
+      <Field label="Business owner">
+        <Copyable value={props[BUSINESS_OWNER]} label="Copy business owner" />
+      </Field>
+      <Field label="Technical owner">
+        <Copyable value={props[TECHNICAL_OWNER]} label="Copy technical owner" />
+      </Field>
       <Field label="Location" className="col-span-full">
         {location ? (
           <div className="flex items-start gap-1">
