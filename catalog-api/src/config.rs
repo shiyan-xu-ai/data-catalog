@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use catalog_store::SqlLimits;
+use catalog_store::{SqlLimits, DEFAULT_CACHE_BUDGET_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -21,6 +21,9 @@ pub struct AppConfig {
     pub webui_dir: String,
     /// Allowed top-level namespace names (`CATALOG_VERTICALS`, comma-separated); empty allows any.
     pub verticals: Vec<String>,
+    /// Memory the Lance session may use for cached manifests, per-version results, and index
+    /// metadata (`CATALOG_CACHE_MEMORY_LIMIT_MB`, 256).
+    pub cache_budget_bytes: usize,
     /// Settings of the `/catalog/v1` routes.
     pub catalog: CatalogConfig,
 }
@@ -133,6 +136,10 @@ impl AppConfig {
             Ok(port) => format!("0.0.0.0:{port}"),
             Err(_) => env_or("CATALOG_BIND_ADDR", "0.0.0.0:8080"),
         };
+        let cache_budget_mb: usize = positive_env(
+            "CATALOG_CACHE_MEMORY_LIMIT_MB",
+            DEFAULT_CACHE_BUDGET_BYTES >> 20,
+        )?;
         Ok(Self {
             bind_addr,
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
@@ -141,6 +148,9 @@ impl AppConfig {
                 .filter(|s| !s.is_empty()),
             webui_dir: env_or("CATALOG_WEBUI_DIR", "frontend/dist"),
             verticals: parse_list(&std::env::var("CATALOG_VERTICALS").unwrap_or_default()),
+            cache_budget_bytes: cache_budget_mb
+                .checked_mul(1 << 20)
+                .context("CATALOG_CACHE_MEMORY_LIMIT_MB is too large")?,
             catalog: CatalogConfig::from_env()?,
         })
     }

@@ -82,12 +82,13 @@ struct Catalog {
     sql_slots: Arc<Semaphore>,
 }
 
-/// Router for the catalog's own read-only routes; nest it at `/catalog/v1`.
+/// Router for the catalog's own routes, read-only apart from refresh; nest it at `/catalog/v1`.
 pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) -> Router {
     Router::new()
         .route("/table/:id/column-storage", get(column_storage))
         .route("/table/:id/storage", get(table_storage))
         .route("/table/:id/timeline", get(table_timeline))
+        .route("/table/:id/refresh", post(refresh_table))
         .route("/table/:id/sql", post(run_sql))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
@@ -368,6 +369,24 @@ async fn column_storage(
                 bytes_on_disk: c.bytes_on_disk,
             })
             .collect(),
+    }))
+}
+
+#[derive(Serialize)]
+struct RefreshResponse {
+    previous_version: Option<u64>,
+    served_version: u64,
+}
+
+/// Advances the version unversioned reads answer for to the newest committed version.
+async fn refresh_table(
+    State(catalog): State<Catalog>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<RefreshResponse>> {
+    let refresh = catalog.namespace.refresh_table(&parse_id(&id)).await?;
+    Ok(Json(RefreshResponse {
+        previous_version: refresh.previous_version,
+        served_version: refresh.served_version,
     }))
 }
 

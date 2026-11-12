@@ -17,19 +17,22 @@ Identifiers in paths are segments joined by `$`; the root namespace is `$`. For 
 | POST | `/v1/namespace/:id/drop` | Drop an empty namespace; returns 409 if not empty. |
 | GET | `/v1/namespace/:id/table/list` | List tables in a namespace. |
 | GET | `/v1/table` | List all tables. |
-| POST | `/v1/table/:id/register` | Register an existing Lance dataset at `location`. The URI must open as Lance. Optional `owner` and `description` properties; `catalog.*` keys are reserved. |
-| POST | `/v1/table/:id/describe` | Return location and properties, including server-managed `catalog.registered_at` and `catalog.updated_at`. With `?load_detailed_metadata=true`, also return version, schema, stats, and `metadata` (manifest summary, `table_metadata.*` from Lance `Dataset::metadata`, `config.*` from Lance `Dataset::config`, `lance.data_storage_version`). |
+| POST | `/v1/table/:id/register` | Register an existing Lance dataset at `location`. The URI must open as Lance; its newest version becomes the served version. Optional `owner` and `description` properties; `catalog.*` keys are reserved. |
+| POST | `/v1/table/:id/describe` | Return location and properties, including server-managed `catalog.registered_at` and `catalog.updated_at`. With `?load_detailed_metadata=true`, also return the served version (or the requested `version`), schema, stats, and `metadata` (manifest summary, `table_metadata.*` from Lance `Dataset::metadata`, `config.*` from Lance `Dataset::config`, `lance.data_storage_version`). |
 | POST | `/v1/table/:id/exists` | Return 200 if the table exists, or 404. |
 | POST | `/v1/table/:id/deregister` | Remove the registration. Source data is not deleted. |
-| POST | `/v1/table/:id/stats` | Total bytes, rows, index count, and fragment length stats. Reads field statistics, so it is slow on large tables. |
-| POST | `/v1/table/:id/version/list`, `/version/describe` | Version history with each manifest's summary. |
+| POST | `/v1/table/:id/stats` | Total bytes, rows, index count, and fragment length stats of the served version. Field statistics are read once per version and instance. |
+| POST | `/v1/table/:id/version/list`, `/version/describe` | Version history with each manifest's summary, including versions newer than the served one. |
 | POST | `/v1/table/:id/index/list`, `/index/:name/stats` | Indices with type, columns, size, and coverage. |
 | POST | `/v1/table/:id/tags/list`, `/branches/list` | Tags and branches. |
-| GET | `/catalog/v1/table/:id/column-storage` | Bytes on disk per top-level column of the current version (catalog route; no spec model carries it). Excludes blob payload files. Slow on large tables. |
-| GET | `/catalog/v1/table/:id/storage` | Current-version data and index bytes, total bytes on object storage under the table location by category (data, blob, index, deletion, manifest, transaction, other), and an estimated monthly storage cost. Lists the dataset prefix, so it is slow on large tables. |
-| POST | `/catalog/v1/table/:id/sql` | Run a read-only SQL query (`{"sql": "...", "version": N}`) against the table, addressed by its table name. `version` (default latest) picks which version the plain name reads; `"<name>@v<N>"` reads version N inside the same query, for comparisons. DDL, DML, and `COPY` are rejected; results are capped at `CATALOG_SQL_MAX_ROWS` rows and flagged `truncated`. |
+| GET | `/catalog/v1/table/:id/column-storage` | Bytes on disk per top-level column of the served version (catalog route; no spec model carries it). Excludes blob payload files. Computed once per version and instance. |
+| GET | `/catalog/v1/table/:id/storage` | Served-version data and index bytes, total bytes on object storage under the table location by category (data, blob, index, deletion, manifest, transaction, other), and an estimated monthly storage cost. Lists the dataset prefix once per served version and instance. |
+| POST | `/catalog/v1/table/:id/refresh` | Advance the served version to the newest version at the table location; returns `previous_version` and `served_version`. |
+| POST | `/catalog/v1/table/:id/sql` | Run a read-only SQL query (`{"sql": "...", "version": N}`) against the table, addressed by its table name. `version` (default: the served version) picks which version the plain name reads; `"<name>@v<N>"` reads version N inside the same query, for comparisons. DDL, DML, and `COPY` are rejected; results are capped at `CATALOG_SQL_MAX_ROWS` rows and flagged `truncated`. |
 | GET | `/catalog/v1/table/:id/timeline` | One event per retained version, newest first (`page_token`, `limit` up to 200): the Lance operation (append, delete, update, overwrite, compaction, index build, schema or config change, restore), its recorded details, the manifest summary, the writer library version, transaction properties, and tags. Reads each version's transaction and manifest. |
 | GET | `/healthz`, `/readyz` | Liveness, and readiness (requires Postgres). |
+
+Every read that names no version answers for the table's served version, recorded in Postgres. Registration sets it to the newest version, and the refresh route or re-registration advances it; a commit made directly to Lance is not served until then. If cleanup deletes the served version, the next read that touches its files advances to the newest version.
 
 The catalog never writes to registered datasets. Other spec operations, including data operations, version/tag/branch/index writes, and transactions, return `Unsupported` (code 0, HTTP 406). Platform IAP protects deployed access, and the application performs no authentication itself.
 
@@ -50,6 +53,7 @@ The catalog never writes to registered datasets. Other spec operations, includin
 | `CATALOG_SQL_TIMEOUT_SECS` | `60` | Per-query time limit. |
 | `CATALOG_SQL_MEMORY_LIMIT_MB` | `512` | Per-query DataFusion memory pool. |
 | `CATALOG_SQL_MAX_CONCURRENT` | `2` | Concurrent SQL queries per instance; extra requests get 429 (Throttling). |
+| `CATALOG_CACHE_MEMORY_LIMIT_MB` | `256` | Memory the Lance session may use per instance for opened datasets, per-version results (column storage, stats, storage listing), and manifest and index metadata. Three quarters go to metadata, the rest to index metadata; full caches evict. |
 
 Datasets on S3 or S3-compatible stores are opened with the standard `AWS_*` variables, including `AWS_ENDPOINT_URL`. On Cloud Run, credentials come from Secret Manager unless they are already in the environment.
 

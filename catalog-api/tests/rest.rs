@@ -387,8 +387,8 @@ async fn rest_catalog_routes() {
     }
     assert!(!copied.exists());
 
-    // Time travel: version 3 appends a row; the plain name follows `version`, and
-    // `"<leaf>@v<N>"` pins a version inside any query.
+    // Time travel: version 3 appends a row. Until a refresh, the plain name keeps reading the
+    // served version; `version` and `"<leaf>@v<N>"` pin any version inside a query.
     support::append_row(&users).await;
     let count = |body: Value| async {
         let (status, body) = post(&app, "/catalog/v1/table/prod%24users/sql", body).await;
@@ -398,6 +398,24 @@ async fn rest_catalog_routes() {
     assert_eq!(
         count(json!({"sql": "SELECT count(*) FROM users", "version": 1})).await,
         (json!(1), json!([[3]]))
+    );
+    assert_eq!(
+        count(json!({"sql": "SELECT count(*) FROM users"})).await,
+        (json!(2), json!([[3]]))
+    );
+    assert_eq!(
+        count(json!({"sql": "SELECT count(*) FROM users", "version": 3})).await,
+        (json!(3), json!([[4]]))
+    );
+    assert_eq!(
+        post(&app, "/catalog/v1/table/prod%24users/refresh", json!({})).await,
+        (
+            StatusCode::OK,
+            json!({"previous_version": 2, "served_version": 3})
+        )
+    );
+    error(StatusCode::NOT_FOUND, 4)(
+        post(&app, "/catalog/v1/table/prod%24nope/refresh", json!({})).await,
     );
     assert_eq!(
         count(json!({"sql": "SELECT count(*) FROM users"})).await,
