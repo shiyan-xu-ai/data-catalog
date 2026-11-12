@@ -103,12 +103,16 @@ storage-derived registrations into the vertical layout:
 cat > /tmp/vertical-moves.txt <<'EOF'
 scenario_dataset_export/1stage_scenario_dataset_v2/2026-11-07_06-46-14 automotive/scenarios/1stage_scenario_dataset_v2
 world_foundation_model/datasets/silver/metadata/abc_130k robotics/episodes/abc_130k
-vlm/corpus/video_embeddings automotive/vlm/video_embeddings
+vlm/corpus/video_embeddings automotive/curation/video_embeddings
 EOF
 export CATALOG_URL=$URL CATALOG_TOKEN=$(apps-platform auth token)
 scripts/move-tables.sh /tmp/vertical-moves.txt           # dry run: prints the calls
 scripts/move-tables.sh /tmp/vertical-moves.txt --apply   # safe to rerun
 ```
+
+A catalog that already holds `automotive/vlm/video_embeddings` moves it with the
+mapping line `automotive/vlm/video_embeddings automotive/curation/video_embeddings`;
+the emptied `automotive/vlm` namespace is dropped.
 
 ## Networking note (static egress IP)
 
