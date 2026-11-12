@@ -322,12 +322,36 @@ async fn served_version_advances_when_cleaned_up() {
         (2, 10.into())
     );
 
-    // A cold instance meets the missing manifest on open and serves the recorded version.
+    // A cold instance meets the missing manifest on open. A read pinned to the served version
+    // is not found and moves nothing; an unversioned read advances.
     overwrite(&uri).await;
     delete_version(&uri, 2).await;
     let cold = PostgresNamespace::new(pool.clone(), HashMap::new());
+    let err = cold
+        .describe_table(DescribeTableRequest {
+            version: Some(2),
+            ..detailed(&table)
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), TABLE_VERSION_NOT_FOUND);
     assert_eq!(served(&cold, &table).await, 3);
     assert_eq!(served(&ns, &table).await, 3);
+
+    // A dataset recreated at the same location restarts at version 1 with a new e-tag; an
+    // instance without it cached advances to the new incarnation instead of serving it as v3.
+    std::fs::remove_dir_all(&uri).unwrap();
+    let recreated = support::write_dataset(dir.path(), "t.lance").await;
+    support::append_row(&recreated).await;
+    support::append_row(&recreated).await;
+    let stats = PostgresNamespace::new(pool, HashMap::new())
+        .get_table_stats(GetTableStatsRequest {
+            id: id(&table),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(stats.num_rows, 5);
 }
 
 #[tokio::test]

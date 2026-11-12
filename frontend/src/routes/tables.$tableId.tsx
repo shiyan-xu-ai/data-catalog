@@ -237,7 +237,7 @@ function TablePage({ tableId }: { tableId: string }) {
             <TimelineTab segments={segments} />
           </TabsContent>
           <TabsContent value="versions">
-            <VersionsTab versions={versions} currentVersion={detail.data?.version} />
+            <VersionsTab versions={versions} servedVersion={detail.data?.version} />
           </TabsContent>
           <TabsContent value="schema">
             <SchemaTab detail={detail} />

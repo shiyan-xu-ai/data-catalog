@@ -24,7 +24,6 @@ pub(crate) trait VersionValue: DeepSizeOf + Send + Sync + 'static {
 /// Fixed weight added to an opened dataset beyond its manifest, for its handles and caches.
 const DATASET_OVERHEAD_BYTES: usize = 16 * 1024;
 
-/// An opened dataset, weighed by its manifest.
 pub(crate) struct OpenedDataset(pub Arc<Dataset>);
 
 impl DeepSizeOf for OpenedDataset {
@@ -37,7 +36,6 @@ impl VersionValue for OpenedDataset {
     const NAME: &'static str = "catalog.OpenedDataset";
 }
 
-/// Bytes on disk per field id.
 #[derive(lance_core::deepsize::DeepSizeOf)]
 pub(crate) struct FieldBytes(pub Vec<(u32, u64)>);
 
@@ -53,9 +51,8 @@ impl VersionValue for FragmentRows {
     const NAME: &'static str = "catalog.FragmentRows";
 }
 
-/// Deleted rows across all fragments.
 #[derive(lance_core::deepsize::DeepSizeOf)]
-pub(crate) struct DeletedRows(pub u64);
+pub(crate) struct DeletedRows(pub usize);
 
 impl VersionValue for DeletedRows {
     const NAME: &'static str = "catalog.DeletedRows";

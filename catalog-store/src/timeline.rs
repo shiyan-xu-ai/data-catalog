@@ -10,7 +10,7 @@ use lance_index::registry::display_type_from_url;
 use lance_namespace::Result;
 use serde_json::{json, Map, Value};
 
-use crate::namespace::{internal, invalid_input, PostgresNamespace, READ_CONCURRENCY};
+use crate::namespace::{internal, invalid_input, OpenTable, PostgresNamespace, READ_CONCURRENCY};
 
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 200;
@@ -42,7 +42,7 @@ impl PostgresNamespace {
             ),
             None => None,
         };
-        let crate::namespace::OpenTable {
+        let OpenTable {
             location, dataset, ..
         } = self.open_table(id, None).await?;
         let read_error = |what: &str| {

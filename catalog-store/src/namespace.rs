@@ -49,7 +49,7 @@ const TABLE_COLUMNS: &str = r#"location, properties, owner, description, served_
     to_char(registered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS registered_at,
     to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at"#;
 
-/// Default Lance session budget; three quarters go to the metadata cache, the rest to indices.
+/// Default total budget of the Lance session's caches.
 pub const DEFAULT_CACHE_BUDGET_BYTES: usize = 256 << 20;
 
 /// Fragments below the compaction target row count, as upstream `get_table_stats` counts them.
@@ -138,7 +138,7 @@ impl OpenTable {
         self.dataset.manifest_location().e_tag.as_deref()
     }
 
-    /// Bytes on disk per field id. Reads every data file's metadata on a miss.
+    /// Reads every data file's metadata on a miss.
     async fn field_bytes(&self) -> Result<Arc<FieldBytes>> {
         let (dataset, location) = (self.dataset.clone(), &self.location);
         self.cache
@@ -158,7 +158,6 @@ impl OpenTable {
             .await
     }
 
-    /// Physical rows per fragment, sorted ascending.
     async fn fragment_rows(&self) -> Result<Arc<FragmentRows>> {
         let (dataset, location) = (self.dataset.clone(), &self.location);
         self.cache
@@ -175,7 +174,7 @@ impl OpenTable {
             .await
     }
 
-    async fn deleted_rows(&self) -> Result<u64> {
+    async fn deleted_rows(&self) -> Result<usize> {
         let (dataset, location) = (self.dataset.clone(), &self.location);
         let deleted = self
             .cache
@@ -184,13 +183,13 @@ impl OpenTable {
                     .count_deleted_rows()
                     .await
                     .map_err(lance_error(format!("count deleted rows at {location}")))?;
-                Ok(DeletedRows(rows as u64))
+                Ok(DeletedRows(rows))
             })
             .await?;
         Ok(deleted.0)
     }
 
-    /// `(bytes, objects)` per [`STORAGE_CATEGORIES`] entry of every object under the location.
+    /// Every object under the location, not just the version's files.
     async fn storage_listing(&self) -> Result<Arc<StorageListing>> {
         let (dataset, location) = (self.dataset.clone(), &self.location);
         self.cache
@@ -303,6 +302,13 @@ impl PostgresNamespace {
         builder.load().await
     }
 
+    /// The newest version, reopened by number so its manifest e-tag comes from the same lookup
+    /// later versioned opens make; resolving "latest" can report the e-tag differently.
+    async fn open_newest(&self, location: &str) -> lance::Result<Dataset> {
+        let latest = self.open_dataset(location, None).await?;
+        self.open_dataset(location, Some(latest.version_id())).await
+    }
+
     /// Per top-level column bytes on disk of the served version; nested fields roll up into
     /// their top-level column. Reads every data file's metadata once per version and instance.
     pub async fn column_storage(&self, id: &[String]) -> Result<ColumnStorage> {
@@ -345,16 +351,21 @@ impl PostgresNamespace {
     pub async fn storage_footprint(&self, id: &[String]) -> Result<StorageFootprint> {
         self.read_table(id, None, |table| async move {
             let location = &table.location;
-            let index_bytes = table
-                .dataset
-                .describe_indices(None)
-                .await
-                .map_err(lance_error(format!("describe indices at {location}")))?
-                .iter()
-                .filter(|d| d.metadata().first().is_some_and(|m| !is_system_index(m)))
-                .filter_map(|d| d.total_size_bytes())
-                .sum();
-            let listing = table.storage_listing().await?;
+            let index_bytes = async {
+                let descriptions = table
+                    .dataset
+                    .describe_indices(None)
+                    .await
+                    .map_err(lance_error(format!("describe indices at {location}")))?;
+                Ok::<u64, Error>(
+                    descriptions
+                        .iter()
+                        .filter(|d| d.metadata().first().is_some_and(|m| !is_system_index(m)))
+                        .filter_map(|d| d.total_size_bytes())
+                        .sum(),
+                )
+            };
+            let (index_bytes, listing) = futures::try_join!(index_bytes, table.storage_listing())?;
             let categories: Vec<StorageCategory> = STORAGE_CATEGORIES
                 .iter()
                 .zip(&listing.0)
@@ -424,12 +435,32 @@ impl PostgresNamespace {
         version: Option<u64>,
     ) -> Result<OpenTable> {
         let row = self.table_row(id).await?;
-        match version {
-            Some(version) if row.served_version != Some(version as i64) => {
-                self.open_version(&row.location, version).await
-            }
-            _ => self.open_served(id, &row).await,
+        Ok(self.open_row(id, &row, version).await?.0)
+    }
+
+    /// The table at `version`, or at its served version when unset; also whether this is an
+    /// unversioned read of the served version, the only kind that may advance it.
+    async fn open_row(
+        &self,
+        id: &[String],
+        row: &TableRow,
+        version: Option<u64>,
+    ) -> Result<(OpenTable, bool)> {
+        let Some(version) = version else {
+            return Ok((self.open_served(id, row).await?, true));
+        };
+        if row.served_version != Some(version as i64) {
+            return Ok((self.open_version(&row.location, version).await?, false));
         }
+        // A pinned read of the served version still uses the cache, but never advances.
+        let table = self
+            .open_cached(&row.location, version, row.served_e_tag.as_deref())
+            .await
+            .map_err(lance_error(format!(
+                "cannot open Lance dataset at {}",
+                row.location
+            )))?;
+        Ok((table, false))
     }
 
     /// Runs `read` on the table at `version`, or at its served version when unset.
@@ -450,7 +481,6 @@ impl PostgresNamespace {
         self.read_row(id, &row, version, read).await
     }
 
-    /// [`Self::read_table`] for a row the caller already read.
     async fn read_row<T, F, Fut>(
         &self,
         id: &[String],
@@ -462,15 +492,14 @@ impl PostgresNamespace {
         F: Fn(OpenTable) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        if let Some(version) = version {
-            if row.served_version != Some(version as i64) {
-                return read(self.open_version(&row.location, version).await?).await;
-            }
-        }
-        let table = self.open_served(id, row).await?;
+        let (table, served) = self.open_row(id, row, version).await?;
         let opened_version = table.dataset.version_id();
         match read(table).await {
-            Err(e) if is_version_missing(&e) && self.version_gone(row, opened_version).await => {
+            Err(e)
+                if served
+                    && is_version_missing(&e)
+                    && self.version_gone(row, opened_version).await =>
+            {
                 let row = self.table_row(id).await?;
                 read(self.advance(id, &row).await?).await
             }
@@ -490,7 +519,10 @@ impl PostgresNamespace {
         {
             Ok(table) => Ok(table),
             Err(e) if is_missing(&e) => self.advance(id, row).await,
-            Err(e) => Err(open_error(&row.location, e)),
+            Err(e) => Err(lance_error(format!(
+                "cannot open Lance dataset at {}",
+                row.location
+            ))(e)),
         }
     }
 
@@ -523,7 +555,10 @@ impl PostgresNamespace {
             Some(version) => self
                 .open_cached(&current.location, version, current.served_e_tag.as_deref())
                 .await
-                .map_err(|e| open_error(&current.location, e)),
+                .map_err(lance_error(format!(
+                    "cannot open Lance dataset at {}",
+                    current.location
+                ))),
             None => Err(concurrent_registration(id)),
         }
     }
@@ -540,7 +575,7 @@ impl PostgresNamespace {
     /// The newest version, cached under its own e-tag. A dataset with no manifest at all is
     /// TableNotFound, so callers can tell a vanished dataset from a failing one.
     async fn open_latest(&self, location: &str) -> Result<OpenTable> {
-        let dataset = self.open_dataset(location, None).await.map_err(|e| {
+        let dataset = self.open_newest(location).await.map_err(|e| {
             let message = format!("cannot open Lance dataset at {location}: {e}");
             if is_missing(&e) {
                 NamespaceError::TableNotFound { message }.into()
@@ -560,17 +595,17 @@ impl PostgresNamespace {
         Ok(table)
     }
 
-    /// An explicitly requested version; a missing one is TableVersionNotFound.
     async fn open_version(&self, location: &str, version: u64) -> Result<OpenTable> {
         let dataset = self
             .open_dataset(location, Some(version))
             .await
-            .map_err(|e| open_error(location, e))?;
+            .map_err(lance_error(format!(
+                "cannot open Lance dataset at {location}"
+            )))?;
         Ok(self.table_handle(location, dataset))
     }
 
-    /// `version` from this instance's cache, opened and cached on a miss. A hit makes no
-    /// object-store request.
+    /// `version` from this instance's cache, opened and cached on a miss.
     async fn open_cached(
         &self,
         location: &str,
@@ -582,6 +617,16 @@ impl PostgresNamespace {
             Some(opened) => opened.0.clone(),
             None => {
                 let dataset = Arc::new(self.open_dataset(location, Some(version)).await?);
+                // A dataset recreated at the same location reuses version numbers; a different
+                // e-tag means the recorded version no longer exists.
+                let opened = dataset.manifest_location().e_tag.as_deref();
+                if let (Some(expected), Some(opened)) = (e_tag, opened) {
+                    if expected != opened {
+                        return Err(lance::Error::not_found(format!(
+                            "{location} version {version} with e-tag {expected}"
+                        )));
+                    }
+                }
                 cache
                     .insert(version, e_tag, OpenedDataset(dataset.clone()))
                     .await;
@@ -912,7 +957,7 @@ impl LanceNamespace for PostgresNamespace {
             response.version = Some(lance_version.version as i64);
             response.schema = Some(Box::new(arrow_schema_to_json(&arrow_schema)?));
             response.stats = Some(Box::new(TableBasicStats::new(
-                saturating_i32(num_deleted_rows as usize),
+                saturating_i32(num_deleted_rows),
                 saturating_i32(dataset.count_fragments()),
             )));
             response.metadata = Some(metadata);
@@ -950,15 +995,12 @@ impl LanceNamespace for PostgresNamespace {
         if !overwrite && self.table_row_exists(namespace, name).await? {
             return Err(table_already_exists(&id));
         }
-        let dataset = self
-            .open_dataset(&request.location, None)
-            .await
-            .map_err(|e| {
-                invalid_input(format!(
-                    "cannot open Lance dataset at {}: {e}",
-                    request.location
-                ))
-            })?;
+        let dataset = self.open_newest(&request.location).await.map_err(|e| {
+            invalid_input(format!(
+                "cannot open Lance dataset at {}: {e}",
+                request.location
+            ))
+        })?;
         let served_version = dataset.version_id() as i64;
         let served_e_tag = dataset.manifest_location().e_tag.clone();
 
@@ -1065,8 +1107,17 @@ impl LanceNamespace for PostgresNamespace {
         reject_branch(request.branch.as_deref())?;
         let id = request.id.unwrap_or_default();
         self.read_table(&id, None, |table| async move {
-            let total_bytes: u64 = table.field_bytes().await?.0.iter().map(|f| f.1).sum();
-            let rows = table.fragment_rows().await?;
+            let location = &table.location;
+            let indices = async {
+                table
+                    .dataset
+                    .load_indices()
+                    .await
+                    .map_err(lance_error(format!("load indices at {location}")))
+            };
+            let (field_bytes, rows, indices) =
+                futures::try_join!(table.field_bytes(), table.fragment_rows(), indices)?;
+            let total_bytes: u64 = field_bytes.0.iter().map(|f| f.1).sum();
             let lengths = &rows.0;
             let num_rows: u64 = lengths.iter().sum();
             let num_small_fragments = lengths.iter().filter(|&&n| n < SMALL_FRAGMENT_ROWS).count();
@@ -1085,12 +1136,6 @@ impl LanceNamespace for PostgresNamespace {
                 }
                 _ => FragmentSummary::new(0, 0, 0, 0, 0, 0, 0),
             };
-            let location = &table.location;
-            let indices = table
-                .dataset
-                .load_indices()
-                .await
-                .map_err(lance_error(format!("load indices at {location}")))?;
             let num_indices = indices.iter().filter(|m| !is_system_index(m)).count();
             Ok(GetTableStatsResponse::new(
                 total_bytes as i64,
@@ -1554,7 +1599,7 @@ pub(crate) fn lance_error(context: String) -> impl FnOnce(lance::Error) -> Error
     }
 }
 
-/// Lance's errors for an object, version, or dataset that does not exist.
+/// Lance's errors for a missing object, version, or dataset.
 pub(crate) fn is_missing(e: &lance::Error) -> bool {
     matches!(
         e.find_root(),
@@ -1566,16 +1611,6 @@ fn is_version_missing(e: &Error) -> bool {
     matches!(e, Error::Namespace { source, .. } if source
         .downcast_ref::<NamespaceError>()
         .is_some_and(|e| matches!(e, NamespaceError::TableVersionNotFound { .. })))
-}
-
-/// A version that fails to open is TableVersionNotFound when it does not exist.
-fn open_error(location: &str, e: lance::Error) -> Error {
-    let message = format!("cannot open Lance dataset at {location}: {e}");
-    if is_missing(&e) {
-        NamespaceError::TableVersionNotFound { message }.into()
-    } else {
-        internal(message)
-    }
 }
 
 /// The row changed location or vanished between reading it and updating it.

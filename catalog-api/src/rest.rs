@@ -378,7 +378,6 @@ struct RefreshResponse {
     served_version: u64,
 }
 
-/// Advances the version unversioned reads answer for to the newest committed version.
 async fn refresh_table(
     State(catalog): State<Catalog>,
     Path(id): Path<String>,

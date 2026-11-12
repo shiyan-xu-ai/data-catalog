@@ -62,7 +62,7 @@ function TrendsSection({ loaded, complete }: { loaded: readonly TableVersion[]; 
 const HEAD = "sticky top-[calc(var(--trends-h)-1px)] z-10 h-10 bg-muted px-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground shadow-[inset_0_-1px_0_hsl(var(--border))]";
 
 /** Loaded versions, newest first, with "Load earlier" for the next page. */
-function VersionHistory({ versions, currentVersion }: { versions: PagedVersions; currentVersion: number | null | undefined }) {
+function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; servedVersion: number | null | undefined }) {
   const formatDateTime = useDateTimeFormatter();
   const all = versions.versions;
   return (
@@ -93,13 +93,14 @@ function VersionHistory({ versions, currentVersion }: { versions: PagedVersions;
             const prevRows = prev ? parseManifestSummary(prev.metadata).rows : null;
             const delta = s.rows != null && prevRows != null ? s.rows - prevRows : null;
             const date = parseTime(v.timestamp_millis);
+            const status = versionStatus(v.version, servedVersion);
             return (
               <tr key={v.version} className="transition-colors hover:bg-muted/50">
                 <td className="pl-4">
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-medium">v{v.version}</span>
-                    {versionStatus(v.version, currentVersion) === "served" && <Badge variant="secondary">current</Badge>}
-                    {versionStatus(v.version, currentVersion) === "newer" && <Badge variant="outline">newer than served</Badge>}
+                    {status === "served" && <Badge variant="secondary">current</Badge>}
+                    {status === "newer" && <Badge variant="outline">newer than served</Badge>}
                   </div>
                 </td>
                 <td>
@@ -146,10 +147,10 @@ function VersionHistory({ versions, currentVersion }: { versions: PagedVersions;
 /** Trends over the loaded versions (sticky while the table scrolls), then the version table. */
 export function VersionsTab({
   versions,
-  currentVersion,
+  servedVersion,
 }: {
   versions: PagedVersions;
-  currentVersion: number | null | undefined;
+  servedVersion: number | null | undefined;
 }) {
   const trends = useRef<HTMLDivElement>(null);
   const [trendsHeight, setTrendsHeight] = useState(0);
@@ -184,7 +185,7 @@ export function VersionsTab({
       <div ref={trends} className="sticky top-0 z-20 -mx-1 bg-background px-1 pt-1 pb-4">
         <TrendsSection loaded={versions.versions} complete={!versions.hasNextPage} />
       </div>
-      <VersionHistory versions={versions} currentVersion={currentVersion} />
+      <VersionHistory versions={versions} servedVersion={servedVersion} />
     </div>
   );
 }
