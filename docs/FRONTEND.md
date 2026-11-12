@@ -61,7 +61,7 @@ page can fill; the table page puts its SQL panel there.
     requested only after the rest of the page loaded; each shows its own
     skeleton and error.
   - **Properties:** the About facts first (description, owner, copyable
-    location, registered and updated times, tags, branches), then client
+    location, registered and updated times), then client
     properties, Lance table metadata (`table_metadata`), and Lance table
     configuration (`config`).
   - **Timeline:** every retained version as a compact commit row, newest
@@ -85,10 +85,11 @@ page can fill; the table page puts its SQL panel there.
   - **Versions:** versions load newest first, 50 at a time
     (`POST /v1/table/{id}/version/list?descending=true`), with "Load earlier"
     for the next page; nothing reads every manifest up front. A Trends chart of
-    rows and current-version data size covers exactly the loaded versions (its
-    caption names the range, e.g. `v240–v289 (50 loaded)`) and stays pinned at
-    the top while the version table scrolls under it, with the table header
-    pinned just below. The table lists the loaded versions with timestamp,
+    rows and current-version data size covers exactly the loaded versions and
+    stays pinned at the top while the version table scrolls under it, with the
+    table header pinned just below. Below Trends, Tags (name → version) and
+    Branches (name, parent branch and version, manifest size) tiles. The table
+    lists the loaded versions with timestamp,
     rows and row change against the next older loaded version ("—" for the
     oldest loaded one), data size, data files, and deletions. The served
     version carries a "current" badge; versions committed after it carry

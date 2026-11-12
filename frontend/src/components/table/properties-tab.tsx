@@ -1,6 +1,4 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import { useTableBranches, useTableTags } from "@/lib/catalog-queries";
-import { formatBytes } from "@/lib/format";
 import type { DescribeTableResponse } from "@/lib/schemas";
 import {
   DESCRIPTION,
@@ -31,13 +29,6 @@ const Unset = ({ children = "Not set" }: { children?: string }) => (
   <span className="text-muted-foreground/70 italic">{children}</span>
 );
 
-/** Lance-derived value: skeleton while loading, a short failure note on error (R19). */
-function Lance<T>({ query, children }: { query: UseQueryResult<T>; children: (data: T) => React.ReactNode }) {
-  if (query.error) return <span className="text-xs text-destructive" title={query.error.message}>Unavailable</span>;
-  if (query.isPending) return <Skeleton className="h-4 w-20" />;
-  return <>{children(query.data)}</>;
-}
-
 /** Lance-derived section body: skeleton while loading, an error of its own on failure. */
 function LanceBody({
   detail,
@@ -51,15 +42,7 @@ function LanceBody({
   return <>{children(detail.data)}</>;
 }
 
-function About({
-  segments,
-  cheap,
-}: {
-  segments: readonly string[];
-  cheap: UseQueryResult<DescribeTableResponse>;
-}) {
-  const tags = useTableTags(segments);
-  const branches = useTableBranches(segments);
+function About({ cheap }: { cheap: UseQueryResult<DescribeTableResponse> }) {
   const props = cheap.data?.properties ?? {};
   const location = cheap.data?.location ?? cheap.data?.table_uri ?? null;
 
@@ -94,72 +77,27 @@ function About({
       <Field label="Updated">
         <Timestamp value={props[UPDATED_AT]} stacked />
       </Field>
-      <Field label="Tags">
-        <Lance query={tags}>
-          {(t) => {
-            const entries = Object.entries(t.tags).sort(([a], [b]) => a.localeCompare(b));
-            if (entries.length === 0) return <Unset>No tags</Unset>;
-            return (
-              <ul className="space-y-0.5">
-                {entries.map(([name, tag]) => (
-                  <li key={name} className="font-mono text-xs">
-                    {name}{" "}
-                    <span className="text-muted-foreground tabular-nums">
-                      → {tag.branch ? `${tag.branch}@` : ""}v{tag.version}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            );
-          }}
-        </Lance>
-      </Field>
-      <Field label="Branches">
-        <Lance query={branches}>
-          {(b) => {
-            const entries = Object.entries(b.branches).sort(([x], [y]) => x.localeCompare(y));
-            if (entries.length === 0) return <Unset>No branches</Unset>;
-            return (
-              <ul className="space-y-0.5">
-                {entries.map(([name, br]) => (
-                  <li key={name} className="font-mono text-xs">
-                    {name}{" "}
-                    <span className="text-muted-foreground tabular-nums">
-                      from {br.parentBranch ?? "main"}
-                      {br.parentVersion != null ? ` v${br.parentVersion}` : ""}
-                      {br.manifestSize != null ? ` · ${formatBytes(br.manifestSize)}` : ""}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            );
-          }}
-        </Lance>
-      </Field>
     </dl>
   );
 }
 
-/** About facts first (catalog-recorded from the cheap describe, tags and branches from their
- *  routes), then client properties and the two Lance manifest maps (`table_metadata`, `config`).
- *  Storage format and current version live in the page header; schema metadata lives on the
- *  Schema tab. Each Lance-derived part loads and fails on its own. */
+/** About facts first (catalog-recorded, from the cheap describe), then client properties and the
+ *  two Lance manifest maps (`table_metadata`, `config`). Storage format and served version live
+ *  in the page header, tags and branches on the Versions tab, schema metadata on the Schema tab. */
 export function PropertiesTab({
-  segments,
   cheap,
   detail,
 }: {
-  segments: readonly string[];
   cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
 }) {
   return (
     <div className="@container space-y-6">
       <Section title="About">
-        <About segments={segments} cheap={cheap} />
+        <About cheap={cheap} />
       </Section>
 
-      <Section title="Catalog properties" description="Client properties recorded at registration">
+      <Section title="Catalog properties" help="Client properties set at registration.">
         {cheap.error ? (
           <ErrorState message={cheap.error.message} />
         ) : cheap.isPending ? (
@@ -169,21 +107,13 @@ export function PropertiesTab({
         )}
       </Section>
 
-      <Section
-        title="Lance table metadata"
-        description="Manifest table_metadata, current version"
-        help="Read with Dataset::metadata."
-      >
+      <Section title="Lance table metadata" help="Manifest table_metadata of the served version.">
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={tableMetadataEntries(d.metadata)} empty="No Lance table metadata." />}
         </LanceBody>
       </Section>
 
-      <Section
-        title="Lance table configuration"
-        description="Manifest config, current version"
-        help="Read with Dataset::config."
-      >
+      <Section title="Lance table configuration" help="Manifest config of the served version.">
         <LanceBody detail={detail}>
           {(d) => <PropertiesList entries={configEntries(d.metadata)} empty="No Lance table configuration." />}
         </LanceBody>

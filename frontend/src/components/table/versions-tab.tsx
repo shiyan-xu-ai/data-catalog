@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import type { UseQueryResult } from "@tanstack/react-query";
 import { BarChart3, Layers } from "lucide-react";
-import type { PagedVersions } from "@/lib/catalog-queries";
+import { useTableBranches, useTableTags, type PagedVersions } from "@/lib/catalog-queries";
 import { formatBytes, formatCount, formatRelative, parseTime } from "@/lib/format";
 import { useDateTimeFormatter } from "@/lib/preferences";
 import { parseManifestSummary, versionSeries, versionStatus } from "@/lib/table-metadata";
@@ -25,17 +26,12 @@ function Delta({ value }: { value: number | null }) {
 }
 
 /** Rows and data size across the loaded versions. */
-function TrendsSection({ loaded, complete }: { loaded: readonly TableVersion[]; complete: boolean }) {
+function TrendsSection({ loaded }: { loaded: readonly TableVersion[] }) {
   const series = versionSeries(loaded);
-  const first = series[0]?.version;
-  const last = series[series.length - 1]?.version;
-  const range = first === last ? `v${first}` : `v${first}–v${last}`;
-  const count = complete ? `all ${formatCount(series.length)} versions` : `${formatCount(series.length)} loaded`;
   return (
     <Section
       title="Trends"
-      description={`Rows and data size, ${range} (${count})`}
-      help="Loaded versions only. Data size counts each version's referenced data files."
+      help="Rows and data size of the loaded versions."
       actions={
         <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
@@ -58,6 +54,71 @@ function TrendsSection({ loaded, complete }: { loaded: readonly TableVersion[]; 
   );
 }
 
+/** Named list of refs: one `name  detail` line each, or an empty note. */
+function RefsSection<T>({
+  title,
+  help,
+  query,
+  entries,
+  empty,
+}: {
+  title: string;
+  help: string;
+  query: UseQueryResult<T>;
+  entries: (data: T) => [string, string][];
+  empty: string;
+}) {
+  return (
+    <Section title={title} help={help}>
+      {query.error ? (
+        <ErrorState message={query.error.message} />
+      ) : query.isPending ? (
+        <Skeleton className="h-4 w-32" />
+      ) : entries(query.data).length === 0 ? (
+        <p className="text-sm text-muted-foreground/70 italic">{empty}</p>
+      ) : (
+        <ul className="space-y-1">
+          {entries(query.data).map(([name, detail]) => (
+            <li key={name} className="flex items-baseline justify-between gap-3 font-mono text-xs">
+              <span className="truncate">{name}</span>
+              <span className="shrink-0 text-muted-foreground tabular-nums">{detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function RefsTiles({ segments }: { segments: readonly string[] }) {
+  const tags = useTableTags(segments);
+  const branches = useTableBranches(segments);
+  const byName = <V,>(m: Record<string, V>) => Object.entries(m).sort(([a], [b]) => a.localeCompare(b));
+  return (
+    <div className="mb-6 grid gap-6 @3xl:grid-cols-2">
+      <RefsSection
+        title="Tags"
+        help="Named versions."
+        query={tags}
+        empty="No tags"
+        entries={(t) => byName(t.tags).map(([name, tag]) => [name, `${tag.branch ? `${tag.branch}@` : ""}v${tag.version}`])}
+      />
+      <RefsSection
+        title="Branches"
+        help="Branches and the version each started from."
+        query={branches}
+        empty="No branches"
+        entries={(b) =>
+          byName(b.branches).map(([name, br]) => [
+            name,
+            `from ${br.parentBranch ?? "main"}${br.parentVersion != null ? ` v${br.parentVersion}` : ""}${br.manifestSize != null ? ` · ${formatBytes(br.manifestSize)}` : ""}`,
+          ])
+        }
+      />
+    </div>
+  );
+}
+
 // Sticky just under the Trends chart; the 1px overlap hides sub-pixel seams at fractional zoom.
 const HEAD = "sticky top-[calc(var(--trends-h)-1px)] z-10 h-10 bg-muted px-2 text-left align-middle font-medium whitespace-nowrap text-muted-foreground shadow-[inset_0_-1px_0_hsl(var(--border))]";
 
@@ -68,8 +129,8 @@ function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; 
   return (
     <Section
       title="Version history"
-      description={`${formatCount(all.length)} ${versions.hasNextPage ? "loaded, newest first" : "versions, newest first"}`}
-      help="Figures come from each version's manifest summary. Current marks the served version; newer versions need a catalog refresh."
+      description={versions.hasNextPage ? `${formatCount(all.length)} loaded` : undefined}
+      help="Current marks the served version; newer versions need a catalog refresh."
     >
       {/* A plain table (no scroll wrapper) so its header can stick below the Trends chart. */}
       <table className="w-full text-sm">
@@ -143,11 +204,14 @@ function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; 
   );
 }
 
-/** Trends over the loaded versions (sticky while the table scrolls), then the version table. */
+/** Trends over the loaded versions (sticky while the table scrolls), then tags and branches, then
+ *  the version table. */
 export function VersionsTab({
+  segments,
   versions,
   servedVersion,
 }: {
+  segments: readonly string[];
   versions: PagedVersions;
   servedVersion: number | null | undefined;
 }) {
@@ -180,10 +244,11 @@ export function VersionsTab({
     return <EmptyState icon={Layers} title="No versions">The table reports no versions.</EmptyState>;
   }
   return (
-    <div style={{ "--trends-h": `${trendsHeight}px` } as React.CSSProperties}>
+    <div className="@container" style={{ "--trends-h": `${trendsHeight}px` } as React.CSSProperties}>
       <div ref={trends} className="sticky top-0 z-20 -mx-1 bg-background px-1 pt-1 pb-4">
-        <TrendsSection loaded={versions.versions} complete={!versions.hasNextPage} />
+        <TrendsSection loaded={versions.versions} />
       </div>
+      <RefsTiles segments={segments} />
       <VersionHistory versions={versions} servedVersion={servedVersion} />
     </div>
   );

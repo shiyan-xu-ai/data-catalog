@@ -231,13 +231,13 @@ function TablePage({ tableId }: { tableId: string }) {
             />
           </TabsContent>
           <TabsContent value="properties">
-            <PropertiesTab segments={segments} cheap={cheap} detail={detail} />
+            <PropertiesTab cheap={cheap} detail={detail} />
           </TabsContent>
           <TabsContent value="timeline">
             <TimelineTab segments={segments} />
           </TabsContent>
           <TabsContent value="versions">
-            <VersionsTab versions={versions} servedVersion={detail.data?.version} />
+            <VersionsTab segments={segments} versions={versions} servedVersion={detail.data?.version} />
           </TabsContent>
           <TabsContent value="schema">
             <SchemaTab detail={detail} />

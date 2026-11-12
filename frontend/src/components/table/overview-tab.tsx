@@ -128,7 +128,7 @@ export function OverviewTab({
           // No indices is a measured zero; indices without reported sizes stay unknown.
           value={formatBytes(indices.data?.length === 0 ? 0 : indexBytes)}
           sub="served version"
-          help="Index files of the served version."
+          help="Excludes index files kept only by older versions."
           loading={indices.isPending}
           failed={indices.error?.message}
         />
@@ -137,7 +137,7 @@ export function OverviewTab({
           label="Total on storage"
           value={formatBytes(onStorage?.total_bytes)}
           sub={onStorage ? formatCountOf(onStorage.total_objects, "object") : undefined}
-          help="Every object under the table location, all versions included."
+          help="All versions, including blob, index, and manifest files."
           loading={storageLoading}
           failed={storage.error?.message}
         />
@@ -148,8 +148,8 @@ export function OverviewTab({
           sub="storage only, estimate"
           help={
             pricing
-              ? `Total on storage × ${formatRate(pricing.price_per_gb_month, pricing.currency)}. Excludes requests and egress.`
-              : "Total on storage × the configured rate. Excludes requests and egress."
+              ? `Total on storage × ${formatRate(pricing.price_per_gb_month, pricing.currency)}.`
+              : "Total on storage × the configured rate."
           }
           loading={storageLoading}
           failed={storage.error?.message}
