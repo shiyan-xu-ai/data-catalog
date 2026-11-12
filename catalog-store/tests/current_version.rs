@@ -178,6 +178,46 @@ async fn current_version_lifecycle() {
 }
 
 #[tokio::test]
+async fn concurrent_refreshes_write_once() {
+    let Some(pool) = support::pool("store_refresh_race").await else {
+        return;
+    };
+    let ns = PostgresNamespace::new(pool.clone(), HashMap::new());
+    let dir = tempfile::tempdir().unwrap();
+    let uri = support::write_dataset(dir.path(), "t.lance").await;
+    register_in_prod(&ns, &uri).await;
+    support::append_row(&uri).await;
+    support::append_row(&uri).await;
+    // Every write to a table row lands in `row_writes`.
+    for statement in [
+        "CREATE TABLE row_writes (version bigint)",
+        "CREATE FUNCTION log_row_write() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN INSERT INTO row_writes VALUES (NEW.current_version); RETURN NEW; END $$",
+        "CREATE TRIGGER log_row_write AFTER UPDATE ON tables
+         FOR EACH ROW EXECUTE FUNCTION log_row_write()",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
+
+    // One namespace per request, as on separate instances.
+    let instances: Vec<_> = (0..8)
+        .map(|_| PostgresNamespace::new(pool.clone(), HashMap::new()))
+        .collect();
+    let table = id(&TABLE).unwrap();
+    let refreshes =
+        futures::future::join_all(instances.iter().map(|ns| ns.refresh_table(&table))).await;
+    for refresh in refreshes {
+        assert_eq!(refresh.unwrap().current_version, 3);
+    }
+    let writes: Vec<Option<i64>> = sqlx::query_scalar("SELECT version FROM row_writes")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(writes, [Some(3)]);
+    assert_eq!(current(&ns, &TABLE).await, 3);
+}
+
+#[tokio::test]
 async fn warm_reads_skip_object_storage() {
     let Some(pool) = support::pool("store_warm").await else {
         return;

@@ -55,7 +55,11 @@ and SQL.
 Every read that names no version, on spec and catalog routes alike, answers for
 the table's current version. Registration records the newest version and its
 manifest e-tag; the refresh route or re-registration advances them. A commit
-made directly to Lance does not become current until then. Each request reads
+made directly to Lance does not become current until then. Refresh writes the
+row only when it moves the current version forward (one conditional `UPDATE`),
+so concurrent refreshes of a table make one write, the rest report the version
+already recorded, and a slower refresh never moves it back; a dataset recreated
+at the same location with lower version numbers needs re-registration. Each request reads
 the current version from the table row, so every instance answers with the same
 version. When the current version's files are gone (cleanup), the next read that
 touches them advances it to the newest version with a compare-and-set, so

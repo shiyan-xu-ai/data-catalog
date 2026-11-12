@@ -124,6 +124,16 @@ pub struct Refresh {
     pub current_version: u64,
 }
 
+/// When [`PostgresNamespace::set_current`] may write the current version.
+#[derive(Clone, Copy)]
+enum Advance {
+    /// Only while the row still holds the version and e-tag it was read with.
+    IfUnchanged,
+    /// Only when the new version is later than the recorded one, so concurrent refreshes write
+    /// once and a slower one never moves the version back.
+    IfNewer,
+}
+
 #[derive(sqlx::FromRow)]
 struct TableRow {
     location: String,
@@ -364,46 +374,67 @@ impl PostgresNamespace {
     }
 
     /// Advances the current version to the newest version at the registered location and
-    /// returns the previous and new current versions.
+    /// returns the previous and new current versions. Postgres makes concurrent refreshes of one
+    /// table write once: the `UPDATE` applies only when it moves the version forward, and the
+    /// others, re-checking that condition after the first commits, change nothing and report
+    /// the version it recorded.
     pub async fn refresh_table(&self, id: &[String]) -> Result<Refresh> {
         let row = self.table_row(id).await?;
         let latest = self.open_latest(&row.location).await?;
-        if !self.set_current(id, &row, &latest, false).await? {
-            return Err(concurrent_registration(id));
-        }
+        let current_version = if self
+            .set_current(id, &row, &latest, Advance::IfNewer)
+            .await?
+        {
+            latest.dataset.version_id()
+        } else {
+            let (namespace, name) = split_table_id(id)?;
+            let recorded: Option<i64> = sqlx::query_scalar(
+                "SELECT current_version FROM tables
+                 WHERE namespace_path = $1 AND name = $2 AND location = $3 AND current_version >= $4",
+            )
+            .bind(namespace)
+            .bind(name)
+            .bind(&row.location)
+            .bind(latest.dataset.version_id() as i64)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_error)?;
+            recorded.ok_or_else(|| concurrent_registration(id))? as u64
+        };
         Ok(Refresh {
             previous_version: row.current_version(),
-            current_version: latest.dataset.version_id(),
+            current_version,
         })
     }
 
-    /// Records `latest` as the current version of `row`'s registration and returns whether a row
-    /// matched. With `guarded`, only while the row still holds the current version `row` read.
+    /// Records `latest` as the current version of `row`'s registration when `when` allows it,
+    /// and returns whether it was written.
     async fn set_current(
         &self,
         id: &[String],
         row: &TableRow,
         latest: &OpenTable,
-        guarded: bool,
+        when: Advance,
     ) -> Result<bool> {
         let (namespace, name) = split_table_id(id)?;
         let mut sql = String::from(
             "UPDATE tables SET current_version = $4, current_e_tag = $5
              WHERE namespace_path = $1 AND name = $2 AND location = $3",
         );
-        if guarded {
-            sql.push_str(
+        sql.push_str(match when {
+            Advance::IfUnchanged => {
                 " AND current_version IS NOT DISTINCT FROM $6
-                  AND current_e_tag IS NOT DISTINCT FROM $7",
-            );
-        }
+                  AND current_e_tag IS NOT DISTINCT FROM $7"
+            }
+            Advance::IfNewer => " AND (current_version IS NULL OR current_version < $4)",
+        });
         let mut query = sqlx::query(&sql)
             .bind(namespace)
             .bind(name)
             .bind(&row.location)
             .bind(latest.dataset.version_id() as i64)
             .bind(latest.e_tag());
-        if guarded {
+        if matches!(when, Advance::IfUnchanged) {
             query = query.bind(row.current_version).bind(&row.current_e_tag);
         }
         let updated = query.execute(&self.pool).await.map_err(db_error)?;
@@ -507,7 +538,10 @@ impl PostgresNamespace {
     /// version past what `row` holds; then serves what that request recorded.
     async fn advance(&self, id: &[String], row: &TableRow) -> Result<OpenTable> {
         let latest = self.open_latest(&row.location).await?;
-        if self.set_current(id, row, &latest, true).await? {
+        if self
+            .set_current(id, row, &latest, Advance::IfUnchanged)
+            .await?
+        {
             return Ok(latest);
         }
         let current = self.table_row(id).await?;
