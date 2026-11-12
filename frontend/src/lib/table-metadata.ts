@@ -10,6 +10,7 @@ export const DESCRIPTION = "description";
 
 const CONFIG_PREFIX = "config.";
 const TABLE_METADATA_PREFIX = "table_metadata.";
+const STORAGE_VERSION = "lance.data_storage_version";
 
 /** Lance manifest summary for one version. Fields are null when the key is absent or not a
  *  non-negative integer, so the UI never shows a fabricated zero. */
@@ -54,6 +55,11 @@ export function configEntries(meta: Metadata): [string, string][] {
 /** Lance table metadata entries (`table_metadata.<key>` in describe metadata), sorted by key. */
 export function tableMetadataEntries(meta: Metadata): [string, string][] {
   return prefixedEntries(meta, TABLE_METADATA_PREFIX);
+}
+
+/** The Lance data storage (file format) version from detailed describe metadata. */
+export function storageFormatVersion(meta: Metadata): string | null {
+  return meta?.[STORAGE_VERSION] || null;
 }
 
 /** Properties shown under "Properties": everything except the fields the details sidebar

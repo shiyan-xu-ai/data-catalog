@@ -1,4 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
+import type { PagedVersions } from "@/lib/catalog-queries";
 import { BarChart3, CircleDollarSign, Database, HardDrive, ListTree, Rows3, Trash2 } from "lucide-react";
 import { formatBytes, formatCost, formatCount, formatCountOf, formatPercent, formatRate } from "@/lib/format";
 import { COMPACTION_TARGET_ROWS, compactionTargetOverride, parseManifestSummary, totalIndexBytes } from "@/lib/table-metadata";
@@ -67,12 +68,14 @@ function ChartSkeleton({ caption, height = "h-52" }: { caption?: string; height?
 export function OverviewTab({
   cheap,
   detail,
+  versions,
   indices,
   storage,
   stats,
 }: {
   cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
+  versions: PagedVersions;
   indices: UseQueryResult<IndexContent[]>;
   storage: UseQueryResult<TableStorageResponse>;
   stats: UseQueryResult<TableStatsResponse>;
@@ -86,7 +89,7 @@ export function OverviewTab({
 
   return (
     <div className="@container space-y-6">
-      <AboutSection cheap={cheap} />
+      <AboutSection cheap={cheap} detail={detail} versions={versions} />
       {detail.error && <ErrorState message={`Lance metadata unavailable: ${detail.error.message}`} />}
       <div className="grid grid-cols-2 gap-3 @3xl:grid-cols-3">
         <Kpi

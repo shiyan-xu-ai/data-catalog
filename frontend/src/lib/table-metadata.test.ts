@@ -5,6 +5,7 @@ import {
   extraProperties,
   indexCoverage,
   parseManifestSummary,
+  storageFormatVersion,
   totalIndexBytes,
   versionSeries,
   versionStatus,
@@ -43,7 +44,7 @@ describe("parseManifestSummary", () => {
   });
 });
 
-describe("configEntries / tableMetadataEntries", () => {
+describe("configEntries / tableMetadataEntries / storageFormatVersion", () => {
   it("splits the two manifest maps by prefix and sorts", () => {
     expect(configEntries(META)).toEqual([
       ["a", "1"],
@@ -51,6 +52,10 @@ describe("configEntries / tableMetadataEntries", () => {
     ]);
     expect(tableMetadataEntries(META)).toEqual([["producer", "export"]]);
     expect(configEntries(null)).toEqual([]);
+  });
+  it("reads the data storage version", () => {
+    expect(storageFormatVersion(META)).toBe("2.2");
+    expect(storageFormatVersion({})).toBeNull();
   });
 });
 
