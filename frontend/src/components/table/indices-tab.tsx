@@ -12,7 +12,7 @@ import { ErrorState } from "@/components/error-state";
 import { Section } from "@/components/section";
 import { Timestamp } from "@/components/timestamp";
 import { Identifier } from "@/components/identifier";
-import { STICKY_HEAD } from "./sticky-head";
+import { HEAD_CELL, ScrollTable } from "./scroll-table";
 
 function Coverage({ ix }: { ix: IndexContent }) {
   const fraction = indexCoverage(ix);
@@ -67,16 +67,18 @@ export function IndicesTab({ indices }: { indices: UseQueryResult<IndexContent[]
       help="Coverage is indexed rows out of indexed plus unindexed rows."
       contentClassName="px-0 pb-0"
     >
-      <table className="w-full text-sm">
-        <thead>
+      <ScrollTable
+        className="w-full text-sm"
+        head={
           <tr>
-            <th className={cn(STICKY_HEAD, "min-w-48 pl-4")}>Name</th>
-            <th className={STICKY_HEAD}>Type</th>
-            <th className={STICKY_HEAD}>Columns</th>
-            <th className={cn(STICKY_HEAD, "text-right")}>Size</th>
-            <th className={cn(STICKY_HEAD, "w-48 pr-4")}>Coverage</th>
+            <th className={cn(HEAD_CELL, "min-w-48 pl-4")}>Name</th>
+            <th className={HEAD_CELL}>Type</th>
+            <th className={HEAD_CELL}>Columns</th>
+            <th className={cn(HEAD_CELL, "text-right")}>Size</th>
+            <th className={cn(HEAD_CELL, "w-48 pr-4")}>Coverage</th>
           </tr>
-        </thead>
+        }
+      >
         <TableBody className="tabular-nums [&_td]:px-2 [&_td]:py-2 [&_td]:align-top">
           {list.map((ix) => (
             <TableRow key={ix.index_uuid ?? ix.index_name}>
@@ -109,7 +111,7 @@ export function IndicesTab({ indices }: { indices: UseQueryResult<IndexContent[]
             </TableRow>
           ))}
         </TableBody>
-      </table>
+      </ScrollTable>
     </Section>
   );
 }

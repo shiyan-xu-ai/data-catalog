@@ -131,7 +131,6 @@ function RowPane({
       top={top}
       onClose={onClose}
       bodyKey={`${row}:${shown}`}
-      wide={shown === "playback"}
       className="xl:mt-3 xl:mr-3"
       header={
         <>

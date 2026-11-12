@@ -84,7 +84,7 @@ Routes carry `$`-joined ids; names display dotted.
     oldest loaded one), all operation details (delete predicate, built indices,
     set and removed keys with values, compaction counts), the manifest totals
     at that version, the writer, and the transaction id and properties. The
-    pane's wider Source files view shows the files the entry was read from
+    pane's Source files view shows the files the entry was read from
     (`GET /catalog/v1/table/{id}/version/{version}/files`): the manifest file
     and, from older writers, the transaction file, each section as a
     collapsible JSON tree with a copy button.
@@ -101,8 +101,7 @@ Routes carry `$`-joined ids; names display dotted.
     Clicking a row opens the Timeline's pane below the Trends chart, with the
     version's event fetched as a one-event page
     (`?page_token=<version + 1>&limit=1`) and changes measured against the next
-    older loaded version. While the pane is open, the table shows only Version,
-    Created, Rows, and Data size.
+    older loaded version.
   - **Schema:** schema-level metadata on top, then an expandable field tree
     with compact types (full type on hover), nullability, a count of field
     metadata entries, and size on disk (last), plus a raw JSON view. Size on
@@ -116,7 +115,12 @@ Routes carry `$`-joined ids; names display dotted.
   - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
 
   The version, field, and index tables pin their header row below the tab bar
-  (the version table's below the Trends chart).
+  (the version table's below the Trends chart) and scroll sideways with the
+  header following when wider than their column.
+
+  The timeline, version, field, and SQL row panes are one shared side pane.
+  On wide screens it and its list split the width evenly, with every list
+  column kept; on narrow screens it opens as an overlay.
 
   The **SQL** tab (labeled read-only) runs one query at a time against this
   table (`POST /catalog/v1/table/{id}/sql`). A version picker lists the loaded

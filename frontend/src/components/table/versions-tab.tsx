@@ -17,7 +17,7 @@ import { QueryBody } from "@/components/query-body";
 import { Section } from "@/components/section";
 import { SidePaneLayout, usePaneSelection, type PaneRowProps } from "@/components/side-pane";
 import { GrowthChart } from "./charts";
-import { STICKY_HEAD } from "./sticky-head";
+import { HEAD_CELL, ScrollTable } from "./scroll-table";
 import { VersionDetailPane, type PaneView } from "./version-pane";
 
 const versionOf = (v: TableVersion) => v.version;
@@ -140,7 +140,6 @@ function VersionHistory({
   const formatDateTime = useDateTimeFormatter();
   const all = versions.versions;
   const summaries = useMemo(() => all.map((v) => parseManifestSummary(v.metadata)), [all]);
-  const full = active == null;
   return (
     <Section
       title="Version history"
@@ -148,18 +147,20 @@ function VersionHistory({
       help="The Current badge marks this version; newer versions need a catalog refresh."
       contentClassName="px-0 pb-0"
     >
-      <table className="w-full text-sm">
-        <thead>
+      <ScrollTable
+        className="w-full text-sm"
+        head={
           <tr>
-            <th className={cn(STICKY_HEAD, "pl-4")}>Version</th>
-            <th className={STICKY_HEAD}>Created</th>
-            <th className={cn(STICKY_HEAD, "text-right")}>Rows</th>
-            {full && <th className={cn(STICKY_HEAD, "text-right")}>Δ Rows</th>}
-            <th className={cn(STICKY_HEAD, "text-right", !full && "pr-4")}>Data size</th>
-            {full && <th className={cn(STICKY_HEAD, "text-right")}>Data files</th>}
-            {full && <th className={cn(STICKY_HEAD, "pr-4 text-right")}>Deletions</th>}
+            <th className={cn(HEAD_CELL, "pl-4")}>Version</th>
+            <th className={HEAD_CELL}>Created</th>
+            <th className={cn(HEAD_CELL, "text-right")}>Rows</th>
+            <th className={cn(HEAD_CELL, "text-right")}>Δ Rows</th>
+            <th className={cn(HEAD_CELL, "text-right")}>Data size</th>
+            <th className={cn(HEAD_CELL, "text-right")}>Data files</th>
+            <th className={cn(HEAD_CELL, "pr-4 text-right")}>Deletions</th>
           </tr>
-        </thead>
+        }
+      >
         <tbody className="tabular-nums [&_td]:p-2 [&_td]:align-middle [&_td]:whitespace-nowrap [&_tr]:border-b [&_tr:last-child]:border-0">
           {all.map((v, i) => {
             const s = summaries[i];
@@ -190,30 +191,26 @@ function VersionHistory({
                   <div className="text-xs text-muted-foreground">{formatDateTime(date)}</div>
                 </td>
                 <td className="text-right">{formatCount(s.rows)}</td>
-                {full && (
-                  <td className="text-right">
-                    <Delta value={delta} />
-                  </td>
-                )}
-                <td className={cn("text-right", !full && "pr-4")}>{formatBytes(s.dataBytes)}</td>
-                {full && <td className="text-right">{formatCount(s.dataFiles)}</td>}
-                {full && (
-                  <td className="pr-4 text-right">
-                    {s.deletionFiles ? (
-                      <>
-                        {formatCount(s.deletedRows)} rows
-                        <div className="text-xs text-muted-foreground">{formatCount(s.deletionFiles)} files</div>
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground/60">{s.deletionFiles === 0 ? "none" : "—"}</span>
-                    )}
-                  </td>
-                )}
+                <td className="text-right">
+                  <Delta value={delta} />
+                </td>
+                <td className="text-right">{formatBytes(s.dataBytes)}</td>
+                <td className="text-right">{formatCount(s.dataFiles)}</td>
+                <td className="pr-4 text-right">
+                  {s.deletionFiles ? (
+                    <>
+                      {formatCount(s.deletedRows)} rows
+                      <div className="text-xs text-muted-foreground">{formatCount(s.deletionFiles)} files</div>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground/60">{s.deletionFiles === 0 ? "none" : "—"}</span>
+                  )}
+                </td>
               </tr>
             );
           })}
         </tbody>
-      </table>
+      </ScrollTable>
       {(versions.hasNextPage || versions.error) && (
         <div className="space-y-2 border-t px-4 py-3">
           {versions.error && <ErrorState message={`Could not load earlier versions: ${versions.error.message}`} />}

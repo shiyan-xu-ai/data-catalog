@@ -19,7 +19,7 @@ import { JsonTree } from "@/components/json-tree";
 import { PropertiesList } from "@/components/properties-list";
 import { Section } from "@/components/section";
 import { Fact, Mono, PaneSection, SidePane, SidePaneLayout, usePaneSelection } from "@/components/side-pane";
-import { STICKY_HEAD } from "./sticky-head";
+import { HEAD_CELL, ScrollTable } from "./scroll-table";
 
 /** Schema-level metadata, then the field table; selecting a field opens its details beside the
  *  table. Per-column size on disk loads once the schema is known. */
@@ -247,14 +247,15 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
               <EmptyState icon={ListTree} title="No fields">The schema has no columns.</EmptyState>
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
+            <ScrollTable
+              className="w-full text-sm"
+              head={
                 <tr>
-                  <th className={cn(STICKY_HEAD, "min-w-48 pl-4")}>Field</th>
-                  <th className={cn(STICKY_HEAD, "min-w-32")}>Type</th>
-                  {!current && <th className={STICKY_HEAD}>Nullable</th>}
-                  {!current && <th className={STICKY_HEAD}>Field metadata</th>}
-                  <th className={cn(STICKY_HEAD, "pr-4")}>
+                  <th className={cn(HEAD_CELL, "min-w-48 pl-4")}>Field</th>
+                  <th className={cn(HEAD_CELL, "min-w-32")}>Type</th>
+                  <th className={HEAD_CELL}>Nullable</th>
+                  <th className={HEAD_CELL}>Field metadata</th>
+                  <th className={cn(HEAD_CELL, "pr-4")}>
                     <span className="inline-flex items-center gap-1">
                       Size on disk
                       <HelpTooltip label="About size on disk">
@@ -264,7 +265,8 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                     </span>
                   </th>
                 </tr>
-              </thead>
+              }
+            >
               <tbody>
                 {rows.map((r) => (
                   <tr
@@ -300,29 +302,25 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                     <td className="px-3 py-2 font-mono text-xs break-words text-muted-foreground" title={r.fullType}>
                       {r.type}
                     </td>
-                    {!current && (
-                      <td className="px-3 py-2">
-                        <Badge variant="outline">{r.nullable ? "nullable" : "required"}</Badge>
-                      </td>
-                    )}
-                    {!current && (
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        {r.metadata.length ? (
-                          <Badge variant="secondary" className="font-normal">
-                            {formatCountOf(r.metadata.length, "entry", "entries")}
-                          </Badge>
-                        ) : (
-                          <Dash />
-                        )}
-                      </td>
-                    )}
+                    <td className="px-3 py-2">
+                      <Badge variant="outline">{r.nullable ? "nullable" : "required"}</Badge>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {r.metadata.length ? (
+                        <Badge variant="secondary" className="font-normal">
+                          {formatCountOf(r.metadata.length, "entry", "entries")}
+                        </Badge>
+                      ) : (
+                        <Dash />
+                      )}
+                    </td>
                     <td className="px-3 py-2 pr-4">
                       <SizeCell row={r} columns={columns} sizes={sizes} />
                     </td>
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </ScrollTable>
           )}
         </Section>
       </SidePaneLayout>

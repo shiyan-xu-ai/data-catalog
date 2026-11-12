@@ -553,7 +553,6 @@ export function VersionDetailPane({
     <SidePane
       label={`Version ${version} details`}
       header={<EventHeader version={version} event={shown} />}
-      wide={view === "source"}
       onClose={onClose}
       top={top}
       bodyKey={version}

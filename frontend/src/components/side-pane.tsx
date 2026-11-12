@@ -124,7 +124,8 @@ export function usePaneSelection<T, K>(items: readonly T[], keyOf: (item: T) => 
   return { current, index, close, rowProps };
 }
 
-/** A list with its side pane beside it; `pane` is null while nothing is selected. */
+/** A list with its side pane beside it, splitting the width evenly on wide screens; `pane` is
+ *  null while nothing is selected. The list keeps its own horizontal scroll. */
 export function SidePaneLayout({
   pane,
   className,
@@ -136,21 +137,19 @@ export function SidePaneLayout({
 }) {
   return (
     <div className="flex items-start gap-4">
-      <div className={cn("min-w-0 flex-1", className)}>{children}</div>
+      <div className={cn("min-w-0 flex-1 basis-0", className)}>{children}</div>
       {pane}
     </div>
   );
 }
 
-/** Detail pane beside a list: sticky on wide screens (`top` px below the scroll area's top), an
- *  overlay on narrow ones. `toolbar` sits under the header; `wide` doubles as room for raw
- *  content. A new `bodyKey` remounts the body, resetting its scroll and state, without
- *  remounting the pane. */
+/** Detail pane beside a list: half the width and sticky on wide screens (`top` px below the
+ *  scroll area's top), an overlay on narrow ones. `toolbar` sits under the header. A new
+ *  `bodyKey` remounts the body, resetting its scroll and state, without remounting the pane. */
 export function SidePane({
   label,
   header,
   toolbar,
-  wide = false,
   onClose,
   top = 0,
   bodyKey,
@@ -160,7 +159,6 @@ export function SidePane({
   label: string;
   header: React.ReactNode;
   toolbar?: React.ReactNode;
-  wide?: boolean;
   onClose: () => void;
   top?: number;
   bodyKey: React.Key;
@@ -191,8 +189,7 @@ export function SidePane({
           } as React.CSSProperties
         }
         className={cn(
-          "fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-hidden border-l bg-background shadow-xl xl:sticky xl:top-[calc(var(--tabs-h,0px)+var(--pane-top))] xl:z-10 xl:max-h-[calc(var(--pane-max)-var(--tabs-h,0px))] xl:shrink-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm",
-          wide ? "max-w-[720px] xl:w-[720px]" : "max-w-[420px] xl:w-[420px]",
+          "fixed inset-y-0 right-0 z-50 flex w-full max-w-[720px] flex-col overflow-hidden border-l bg-background shadow-xl xl:sticky xl:top-[calc(var(--tabs-h,0px)+var(--pane-top))] xl:z-10 xl:max-h-[calc(var(--pane-max)-var(--tabs-h,0px))] xl:max-w-none xl:min-w-0 xl:flex-1 xl:basis-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm",
           className,
         )}
       >
