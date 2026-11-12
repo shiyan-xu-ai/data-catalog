@@ -42,7 +42,9 @@ impl PostgresNamespace {
             ),
             None => None,
         };
-        let (location, dataset) = self.open_table(id, None).await?;
+        let crate::namespace::OpenTable {
+            location, dataset, ..
+        } = self.open_table(id, None).await?;
         let read_error = |what: &str| {
             let context = format!("{what} at {location}");
             move |e: lance::Error| internal(format!("{context}: {e}"))

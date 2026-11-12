@@ -412,9 +412,10 @@ async fn tables_lifecycle() {
 
 #[tokio::test]
 async fn table_details() {
-    let Some(ns) = support::namespace("store_details").await else {
+    let Some(pool) = support::pool("store_details").await else {
         return;
     };
+    let ns = PostgresNamespace::new(pool.clone(), HashMap::new());
     let dir = tempfile::tempdir().unwrap();
     // Version 1 writes three rows; version 2 adds the `id_idx` scalar index.
     let metrics = support::write_dataset(dir.path(), "metrics.lance").await;
@@ -707,22 +708,24 @@ async fn table_details() {
     let err = ns.timeline(&history_id, Some("x"), None).await.unwrap_err();
     assert_eq!(code(err), INVALID_INPUT);
 
-    // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found.
+    // AE4: with the dataset gone, catalog facts still describe; Lance reads are not found on an
+    // instance that has not cached the served version (a warm instance never re-checks storage).
     std::fs::remove_dir_all(&metrics).unwrap();
-    let cheap = ns.describe_table(describe(false)).await.unwrap();
+    let cold = PostgresNamespace::new(pool, HashMap::new());
+    let cheap = cold.describe_table(describe(false)).await.unwrap();
     assert_eq!(cheap.properties.unwrap()["owner"], "bob");
     assert_eq!(
-        code(ns.describe_table(describe(true)).await.unwrap_err()),
+        code(cold.describe_table(describe(true)).await.unwrap_err()),
         TABLE_NOT_FOUND
     );
-    let err = ns
+    let err = cold
         .list_table_versions(list_versions(None, None, None))
         .await
         .unwrap_err();
     assert_eq!(code(err), TABLE_NOT_FOUND);
-    let err = ns.column_storage(&table().unwrap()).await.unwrap_err();
+    let err = cold.column_storage(&table().unwrap()).await.unwrap_err();
     assert_eq!(code(err), TABLE_NOT_FOUND);
-    let err = ns
+    let err = cold
         .timeline(&table().unwrap(), None, None)
         .await
         .unwrap_err();

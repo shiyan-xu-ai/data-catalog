@@ -1,4 +1,4 @@
-//! Read-only DataFusion SQL over one registered table, at its latest or a chosen version.
+//! Read-only DataFusion SQL over one registered table, at its served or a chosen version.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,7 @@ use lance::Dataset;
 use lance_namespace::{Error, NamespaceError, Result};
 use serde_json::Value;
 
-use crate::namespace::{internal, invalid_input, split_table_id};
+use crate::namespace::{internal, invalid_input, is_missing, split_table_id, OpenTable};
 use crate::PostgresNamespace;
 
 /// Bounds applied to every query.
@@ -54,8 +54,8 @@ pub struct SqlResult {
 }
 
 impl PostgresNamespace {
-    /// Runs one read-only query against the table. Its leaf name resolves to `version` (latest
-    /// when unset); `"<leaf>@v<N>"` resolves to version N, opened on demand.
+    /// Runs one read-only query against the table. Its leaf name resolves to `version` (the
+    /// served version when unset); `"<leaf>@v<N>"` resolves to version N, opened on demand.
     ///
     /// DDL, DML (including `COPY`), and other statements are rejected at planning; spilling is
     /// disabled so nothing touches the local disk; blob columns read as their descriptors, so
@@ -88,7 +88,20 @@ impl PostgresNamespace {
         limits: &SqlLimits,
     ) -> Result<SqlResult> {
         let (_, name) = split_table_id(id)?;
-        let (location, dataset) = self.open_table(id, version).await?;
+        self.read_table(id, version, |table| self.run_on(table, name, sql, limits))
+            .await
+    }
+
+    async fn run_on(
+        &self,
+        table: OpenTable,
+        name: &str,
+        sql: &str,
+        limits: &SqlLimits,
+    ) -> Result<SqlResult> {
+        let OpenTable {
+            location, dataset, ..
+        } = table;
         let version = dataset.version_id();
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_limit(limits.memory_limit_bytes, 1.0)
@@ -159,11 +172,11 @@ struct VersionedTable {
 }
 
 impl VersionedTable {
-    fn new(name: &str, location: String, dataset: Dataset) -> Self {
+    fn new(name: &str, location: String, dataset: Arc<Dataset>) -> Self {
         Self {
             name: name.to_string(),
             location,
-            dataset: Arc::new(dataset),
+            dataset,
             versions: Mutex::default(),
             open_error: Mutex::default(),
         }
@@ -297,17 +310,31 @@ fn encode_rows(schema: &Schema, batches: &[RecordBatch]) -> Result<Vec<Vec<Value
         .collect())
 }
 
-/// Query mistakes and exceeded limits are invalid input carrying DataFusion's message; storage
-/// and engine faults are internal.
+/// Query mistakes and exceeded limits are invalid input carrying DataFusion's message; a file
+/// that no longer exists is TableVersionNotFound; other storage and engine faults are internal.
 fn sql_error(e: DataFusionError) -> Error {
+    let message = format!("query failed: {e}");
     match e.find_root() {
         DataFusionError::ResourcesExhausted(message) => {
             invalid_input(format!("query exceeded the memory limit: {message}"))
         }
+        DataFusionError::ObjectStore(err)
+            if matches!(
+                **err,
+                lance::deps::datafusion::object_store::Error::NotFound { .. }
+            ) =>
+        {
+            NamespaceError::TableVersionNotFound { message }.into()
+        }
+        DataFusionError::External(err)
+            if err.downcast_ref::<lance::Error>().is_some_and(is_missing) =>
+        {
+            NamespaceError::TableVersionNotFound { message }.into()
+        }
         DataFusionError::ObjectStore(_)
         | DataFusionError::IoError(_)
         | DataFusionError::External(_)
-        | DataFusionError::Internal(_) => internal(format!("query failed: {e}")),
+        | DataFusionError::Internal(_) => internal(message),
         _ => invalid_input(e.to_string()),
     }
 }

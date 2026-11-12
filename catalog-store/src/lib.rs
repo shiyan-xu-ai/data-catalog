@@ -1,5 +1,6 @@
 //! Postgres-backed Lance namespace: the catalog metastore and its migrations.
 
+mod cache;
 mod namespace;
 mod sql;
 mod timeline;
@@ -10,8 +11,8 @@ use std::time::Duration;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
 pub use namespace::{
-    ColumnBytes, ColumnStorage, PostgresNamespace, StorageCategory, StorageFootprint,
-    STORAGE_CATEGORIES,
+    ColumnBytes, ColumnStorage, PostgresNamespace, Refresh, StorageCategory, StorageFootprint,
+    DEFAULT_CACHE_BUDGET_BYTES, STORAGE_CATEGORIES,
 };
 pub use sql::{SqlColumn, SqlLimits, SqlResult};
 pub use timeline::Timeline;
