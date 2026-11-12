@@ -127,11 +127,15 @@ Routes carry `$`-joined ids; names display dotted.
   Ctrl/Cmd+Enter. Results show column names and types, nested values as JSON,
   binary values as hex, row count, the queried version, elapsed time, a
   truncation notice past the server's row cap, and the server's error message.
-  Cancel stops waiting; the server's time limit ends the query. The panel fills
-  the tab with a collapsible editor on the left and scrollable results on the
-  right (stacked on narrow screens). Drag the divider to resize the editor, or a
-  column header edge to resize that column. Download CSV exports the returned
-  rows with full values; truncated results omit rows past the server's cap. The
+  Cancel stops waiting; the server's time limit ends the query. The results
+  scroll with the page like the other tables: the toolbar and the result
+  header pin below the tab bar, and wide results scroll sideways with the header
+  following. Side by side (wide screens), the collapsible editor stays pinned on
+  the left at the viewport's height; hidden, the results take the full width;
+  stacked (narrow screens), the editor sits above them. Drag the divider to
+  resize the editor, or a column header edge to resize that column. Download
+  CSV exports the returned rows with full values; truncated results omit rows
+  past the server's cap. The
   editor loads when the tab first opens and then stays mounted, so the query and
   results survive switching tabs until the user leaves the table page; the other
   tabs stay usable while a query runs.

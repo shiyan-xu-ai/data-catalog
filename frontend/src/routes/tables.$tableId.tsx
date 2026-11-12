@@ -147,8 +147,9 @@ function TablePage({ tableId }: { tableId: string }) {
         </TabsContent>
         {sqlOpened && (
           <TabsContent value="sql" forceMount className="data-[state=inactive]:hidden">
-            <div className="h-[calc(100dvh-14rem)] min-h-[28rem] overflow-hidden rounded-lg border bg-card shadow-xs">
-              <Suspense fallback={<Skeleton className="h-full w-full rounded-none" />}>
+            {/* `overflow-clip` rounds the corners without becoming the toolbar's sticky scroll box. */}
+            <div className="overflow-clip rounded-lg border bg-card shadow-xs">
+              <Suspense fallback={<Skeleton className="h-96 w-full rounded-none" />}>
                 <SqlPanel segments={segments} columns={columnNames} versions={versions} currentVersion={detail.data?.version} />
               </Suspense>
             </div>

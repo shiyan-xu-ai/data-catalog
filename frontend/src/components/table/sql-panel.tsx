@@ -38,8 +38,18 @@ function formatElapsed(ms: number): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
 }
 
+// Side by side, the editor and its divider stay in view below the toolbar while the results
+// scroll with the page; they fill the rest of the viewport below the 3.5rem top bar, the tab bar,
+// and the toolbar, above the page's 1.5rem bottom padding.
+const PINNED =
+  "md:sticky md:top-[calc(var(--tabs-h,0px)+var(--sticky-top,0px))] md:h-[calc(100dvh-5rem-var(--tabs-h,0px)-var(--sticky-top,0px))] md:self-start";
+
+/** Results with a header that pins below the tab bar and the toolbar (`--sticky-top`) while the
+ *  page scrolls. Wide results scroll sideways in the body; the header, a separate table with the
+ *  same column widths, follows that scroll. */
 function ResultGrid({ result }: { result: SqlResponse }) {
   const [widths, setWidths] = useState<number[]>([]);
+  const head = useRef<HTMLDivElement>(null);
   const widthAt = (index: number) => widths[index] ?? 220;
 
   function resizeColumn(index: number, width: number) {
@@ -70,61 +80,80 @@ function ResultGrid({ result }: { result: SqlResponse }) {
   if (result.columns.length === 0) {
     return <p className="p-4 text-xs text-muted-foreground">The query returned no columns.</p>;
   }
+  const width = 48 + result.columns.reduce((sum, _, i) => sum + widthAt(i), 0);
+  const columns = (
+    <colgroup>
+      <col style={{ width: 48 }} />
+      {result.columns.map((_, i) => <col key={i} style={{ width: widthAt(i) }} />)}
+    </colgroup>
+  );
+  const tableClass = "table-fixed border-separate border-spacing-0 font-mono text-xs";
   return (
-    <table className="table-fixed border-separate border-spacing-0 font-mono text-xs" style={{ width: 48 + result.columns.reduce((sum, _, i) => sum + widthAt(i), 0) }}>
-      <colgroup>
-        <col style={{ width: 48 }} />
-        {result.columns.map((_, i) => <col key={i} style={{ width: widthAt(i) }} />)}
-      </colgroup>
-      <thead className="sticky top-0 z-10">
-        <tr>
-          <th className="border-b bg-muted px-2 py-1.5 text-right font-normal text-muted-foreground">#</th>
-          {result.columns.map((c, i) => (
-            <th key={i} className="relative overflow-hidden border-b border-l bg-muted px-2 py-1.5 text-left align-bottom" title={`${c.name}: ${c.type}`}>
-              <div className="truncate font-sans text-xs font-semibold text-foreground">{c.name}</div>
-              <div className="truncate text-[10px] font-normal text-muted-foreground">{shortTypeName(c.type)}</div>
-              <div
-                role="separator"
-                aria-label={`Resize column ${c.name}`}
-                aria-orientation="vertical"
-                aria-valuenow={widthAt(i)}
-                aria-valuemin={80}
-                aria-valuemax={10000}
-                aria-valuetext={`${widthAt(i)} pixels`}
-                tabIndex={0}
-                onPointerDown={(e) => startColumnResize(e, i)}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-                    e.preventDefault();
-                    resizeColumn(i, widthAt(i) + (e.key === "ArrowLeft" ? -20 : 20));
-                  }
-                }}
-                className="absolute inset-y-0 right-0 w-2 cursor-col-resize touch-none hover:bg-primary/20 focus-visible:bg-primary/20"
-              />
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {result.rows.map((row, r) => (
-          <tr key={r} className="hover:bg-muted/40">
-            <td className="border-b px-2 py-1 text-right text-muted-foreground/70 tabular-nums">{r + 1}</td>
-            {result.columns.map((c, i) => {
-              const cell = formatCell(row[i], c.type);
-              return (
-                <td
-                  key={i}
-                  title={cell.title ?? cell.text}
-                  className={cn("truncate border-b border-l px-2 py-1 whitespace-nowrap", cellClass[cell.kind])}
-                >
-                  {cell.text}
-                </td>
-              );
-            })}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      <div ref={head} className="sticky top-[calc(var(--tabs-h,0px)+var(--sticky-top,0px)-1px)] z-10 overflow-hidden">
+        <table className={tableClass} style={{ width, minWidth: "100%" }}>
+          {columns}
+          <thead>
+            <tr>
+              <th className="border-b bg-muted px-2 py-1.5 text-right font-normal text-muted-foreground">#</th>
+              {result.columns.map((c, i) => (
+                <th key={i} className="relative overflow-hidden border-b border-l bg-muted px-2 py-1.5 text-left align-bottom" title={`${c.name}: ${c.type}`}>
+                  <div className="truncate font-sans text-xs font-semibold text-foreground">{c.name}</div>
+                  <div className="truncate text-[10px] font-normal text-muted-foreground">{shortTypeName(c.type)}</div>
+                  <div
+                    role="separator"
+                    aria-label={`Resize column ${c.name}`}
+                    aria-orientation="vertical"
+                    aria-valuenow={widthAt(i)}
+                    aria-valuemin={80}
+                    aria-valuemax={10000}
+                    aria-valuetext={`${widthAt(i)} pixels`}
+                    tabIndex={0}
+                    onPointerDown={(e) => startColumnResize(e, i)}
+                    onKeyDown={(e) => {
+                      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+                        e.preventDefault();
+                        resizeColumn(i, widthAt(i) + (e.key === "ArrowLeft" ? -20 : 20));
+                      }
+                    }}
+                    className="absolute inset-y-0 right-0 w-2 cursor-col-resize touch-none hover:bg-primary/20 focus-visible:bg-primary/20"
+                  />
+                </th>
+              ))}
+            </tr>
+          </thead>
+        </table>
+      </div>
+      <div
+        className="overflow-x-auto"
+        onScroll={(e) => {
+          if (head.current) head.current.scrollLeft = e.currentTarget.scrollLeft;
+        }}
+      >
+        <table className={tableClass} style={{ width, minWidth: "100%" }}>
+          {columns}
+          <tbody>
+            {result.rows.map((row, r) => (
+              <tr key={r} className="hover:bg-muted/40">
+                <td className="border-b px-2 py-1 text-right text-muted-foreground/70 tabular-nums">{r + 1}</td>
+                {result.columns.map((c, i) => {
+                  const cell = formatCell(row[i], c.type);
+                  return (
+                    <td
+                      key={i}
+                      title={cell.title ?? cell.text}
+                      className={cn("truncate border-b border-l px-2 py-1 whitespace-nowrap", cellClass[cell.kind])}
+                    >
+                      {cell.text}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -158,6 +187,8 @@ export function SqlPanel({
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [editorSize, setEditorSize] = useState(40);
   const panes = useRef<HTMLDivElement>(null);
+  const toolbar = useRef<HTMLDivElement>(null);
+  const [toolbarHeight, setToolbarHeight] = useState(0);
   const controller = useRef<AbortController | null>(null);
   const running = startedAt != null;
   const schema = useMemo(() => ({ [tableName]: columns }), [tableName, columns]);
@@ -174,6 +205,15 @@ export function SqlPanel({
 
   // Leaving the page stops waiting for an in-flight query.
   useEffect(() => () => controller.current?.abort(), []);
+
+  // The editor and result header pin below the toolbar, which wraps on narrow widths.
+  useEffect(() => {
+    const el = toolbar.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => setToolbarHeight(el.offsetHeight));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   async function run() {
     if (running || !query.trim()) return;
@@ -210,8 +250,9 @@ export function SqlPanel({
     if (!bounds) return;
     handle.setPointerCapture(event.pointerId);
     const onMove = (e: PointerEvent) => {
+      // Stacked panes size the editor by viewport height; side by side, by the panes' width.
       const percent = vertical
-        ? ((e.clientY - bounds.top) / bounds.height) * 100
+        ? ((e.clientY - bounds.top) / window.innerHeight) * 100
         : ((e.clientX - bounds.left) / bounds.width) * 100;
       setEditorSize(Math.max(15, Math.min(80, percent)));
     };
@@ -236,8 +277,11 @@ export function SqlPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col text-card-foreground">
-      <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b px-4 py-1.5">
+    <div className="text-card-foreground" style={{ "--sticky-top": `${toolbarHeight}px` } as React.CSSProperties}>
+      <div
+        ref={toolbar}
+        className="sticky top-(--tabs-h,0px) z-20 flex min-h-10 flex-wrap items-center gap-2 rounded-t-lg border-b bg-card px-4 py-1.5"
+      >
         <Badge variant="outline">Read-only</Badge>
         <Button
           size="sm"
@@ -304,11 +348,11 @@ export function SqlPanel({
         </div>
       </div>
 
-      <div ref={panes} className="flex min-h-0 flex-1 flex-col md:flex-row">
+      <div ref={panes} className="flex flex-col md:flex-row">
         <div
           hidden={editorCollapsed}
-          className="h-[var(--editor-size)] min-h-0 min-w-0 shrink-0 md:h-auto md:w-[var(--editor-size)]"
-          style={{ "--editor-size": `${editorSize}%` } as React.CSSProperties}
+          className={cn("h-[calc(var(--editor-size)*1vh)] min-w-0 shrink-0 md:w-[calc(var(--editor-size)*1%)]", PINNED)}
+          style={{ "--editor-size": editorSize } as React.CSSProperties}
         >
           <SqlEditor value={query} onChange={setQuery} onRun={run} schema={schema} className="h-full w-full" />
         </div>
@@ -333,49 +377,46 @@ export function SqlPanel({
             }}
             className={vertical
               ? "h-2 shrink-0 cursor-row-resize touch-none border-y hover:bg-muted focus-visible:bg-muted md:hidden"
-              : "hidden w-2 shrink-0 cursor-col-resize touch-none border-x hover:bg-muted focus-visible:bg-muted md:block"}
+              : cn("hidden w-2 shrink-0 cursor-col-resize touch-none border-x hover:bg-muted focus-visible:bg-muted md:block", PINNED)}
           />
         ))}
 
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className={cn("min-h-0 flex-1 overflow-auto", running && "opacity-60")}>
-            {error ? (
-              <div className="m-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
-                <p className="text-sm font-medium">{errorTitle(error)}</p>
-                <pre className="mt-1.5 font-mono text-xs whitespace-pre-wrap break-words">{error.message}</pre>
-              </div>
-            ) : result ? (
-              <ResultGrid result={result} />
-            ) : (
-              <div className="space-y-2 p-4 text-xs text-muted-foreground">
-                <p>
-                  Run a query to see results. The server runs only <span className="font-mono">SELECT</span> queries
-                  against this table and returns at most 1,000 rows.
-                </p>
-                <p>
-                  The version picker sets the version the table name reads. Reference another version as{" "}
-                  <code className="rounded bg-muted px-1 font-mono text-foreground">{exampleRef}</code>, e.g. to compare
-                  versions.
-                </p>
-              </div>
-            )}
-          </div>
-
+        <div className={cn("min-w-0 flex-1", running && "opacity-60")}>
           {result && !error && (
-            <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1.5 text-[11px] text-muted-foreground tabular-nums">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-1.5 text-[11px] text-muted-foreground tabular-nums">
               <span>
                 {formatCount(result.row_count)} row{result.row_count === 1 ? "" : "s"}
               </span>
               {result.version != null && <span>v{result.version}</span>}
               <span>{formatElapsed(result.elapsed_ms)}</span>
-              <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={downloadCsv} disabled={running}>
-                <Download /> Download CSV
-              </Button>
               {result.truncated && (
                 <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
                   Truncated: showing the first {formatCount(result.rows.length)} rows
                 </span>
               )}
+              <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={downloadCsv} disabled={running}>
+                <Download /> Download CSV
+              </Button>
+            </div>
+          )}
+          {error ? (
+            <div className="m-3 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-destructive">
+              <p className="text-sm font-medium">{errorTitle(error)}</p>
+              <pre className="mt-1.5 font-mono text-xs whitespace-pre-wrap break-words">{error.message}</pre>
+            </div>
+          ) : result ? (
+            <ResultGrid result={result} />
+          ) : (
+            <div className="space-y-2 p-4 text-xs text-muted-foreground">
+              <p>
+                Run a query to see results. The server runs only <span className="font-mono">SELECT</span> queries
+                against this table and returns at most 1,000 rows.
+              </p>
+              <p>
+                The version picker sets the version the table name reads. Reference another version as{" "}
+                <code className="rounded bg-muted px-1 font-mono text-foreground">{exampleRef}</code>, e.g. to compare
+                versions.
+              </p>
             </div>
           )}
         </div>
