@@ -6,7 +6,6 @@ import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT, storageFormatVersion } f
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
-import { Section } from "@/components/section";
 import { Timestamp } from "@/components/timestamp";
 
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
@@ -105,9 +104,9 @@ function AboutBody({
   );
 }
 
-/** Catalog-recorded facts from the cheap describe (description, location, owner, registration
- *  and update times), the Lance file format of the served version, and the newest committed
- *  version. Place it inside an `@container`. */
+/** Untitled card of catalog-recorded facts from the cheap describe (description, location,
+ *  owner, registration and update times), the Lance file format of the served version, and the
+ *  newest committed version. Place it inside an `@container`. */
 export function AboutSection({
   cheap,
   detail,
@@ -118,8 +117,8 @@ export function AboutSection({
   versions: PagedVersions;
 }) {
   return (
-    <Section title="About">
+    <section aria-label="About" className="rounded-lg border bg-card p-4 text-card-foreground shadow-xs">
       <AboutBody cheap={cheap} detail={detail} versions={versions} />
-    </Section>
+    </section>
   );
 }

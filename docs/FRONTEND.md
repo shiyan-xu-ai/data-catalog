@@ -36,7 +36,7 @@ page can fill; the table page puts its SQL panel there.
   (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
   docked at the bottom. The UI offers no deregistration.
-  - **Overview:** first a full-width About section (description, owner,
+  - **Overview:** first a full-width, untitled About card (description, owner,
     copyable location, registered and updated times, the served version's
     Lance file format, and the latest committed version with its age, noting
     the served version when it is older), then six tiles: rows
