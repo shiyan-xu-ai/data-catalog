@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo } from "react";
+import { Suspense, lazy, useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   BarChart3,
@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import {
-  type PagedVersions,
   useTableCheap,
   useTableDetail,
   useFragmentMeasures,
@@ -23,32 +22,24 @@ import {
 } from "@/lib/catalog-queries";
 import { formatCount } from "@/lib/format";
 import { displayName, splitId } from "@/lib/ids";
-import { useStoredState } from "@/lib/preferences";
 import { ErrorCode } from "@/lib/schemas";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { BottomDock } from "@/components/bottom-dock";
 import { EmptyState } from "@/components/empty-state";
 import { ErrorState } from "@/components/error-state";
 import { IndicesTab } from "@/components/table/indices-tab";
 import { OverviewTab } from "@/components/table/overview-tab";
 import { PropertiesTab } from "@/components/table/properties-tab";
 import { SchemaTab } from "@/components/table/schema-tab";
-import { SqlDockBar } from "@/components/table/sql-dock-bar";
 import { TimelineTab } from "@/components/table/timeline-tab";
 import { VersionsTab } from "@/components/table/versions-tab";
 
-// The editor (CodeMirror) is the heaviest part of the page; load it after the tabs.
+// The editor (CodeMirror) is the heaviest part of the page; load it when the SQL tab first opens.
 const SqlPanel = lazy(() => import("@/components/table/sql-panel").then((m) => ({ default: m.SqlPanel })));
 
-const TABS = ["overview", "properties", "timeline", "versions", "schema", "indices"] as const;
+const TABS = ["overview", "properties", "timeline", "versions", "schema", "indices", "sql"] as const;
 type Tab = (typeof TABS)[number];
-
-const DOCK_MIN_HEIGHT = 180;
-const DOCK_DEFAULT_HEIGHT = 340;
-// Leave the page content at least this much height when growing the SQL dock.
-const CONTENT_MIN_HEIGHT = 160;
+const TAB_LABEL: Partial<Record<Tab, string>> = { sql: "SQL" };
 
 export const Route = createFileRoute("/tables/$tableId")({
   validateSearch: (search: Record<string, unknown>): { tab?: Tab } =>
@@ -62,87 +53,14 @@ function RouteComponent() {
   return <TablePage key={tableId} tableId={tableId} />;
 }
 
-/** SQL panel docked under the page content, beside the left nav. It grows by dragging its top
- *  edge and collapses to a slim bar; height and collapsed state persist. */
-function SqlDock({
-  segments,
-  columns,
-  versions,
-  currentVersion,
-}: {
-  segments: readonly string[];
-  columns: readonly string[];
-  versions: PagedVersions;
-  currentVersion: number | null | undefined;
-}) {
-  const [collapsed, setCollapsed] = useStoredState("sql-dock-collapsed", false);
-  const [height, setHeight] = useStoredState("sql-dock-height", DOCK_DEFAULT_HEIGHT);
-
-  function startResize(e: React.PointerEvent<HTMLDivElement>) {
-    e.preventDefault();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
-    const startY = e.clientY;
-    const startHeight = height;
-    // handle → dock → dock slot → page column (top bar, scrolling content, dock).
-    const column = handle.parentElement?.parentElement?.parentElement;
-    const max = Math.max(DOCK_MIN_HEIGHT, (column?.clientHeight ?? window.innerHeight) - 56 - CONTENT_MIN_HEIGHT);
-    const onMove = (ev: PointerEvent) =>
-      setHeight(Math.round(Math.min(max, Math.max(DOCK_MIN_HEIGHT, startHeight + startY - ev.clientY))));
-    const onUp = () => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-  }
-
-  return (
-    <>
-      {collapsed && (
-        <SqlDockBar
-          expanded={false}
-          onToggle={() => setCollapsed(false)}
-          className="border-t bg-card"
-          left={
-            <>
-              <TerminalSquare className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="text-sm font-semibold tracking-tight">SQL</span>
-              <Badge variant="outline">Read-only</Badge>
-              <span className="text-xs text-muted-foreground">Queries against this table</span>
-            </>
-          }
-        />
-      )}
-
-      <div hidden={collapsed} className="relative border-t bg-card" style={{ height }}>
-        <div
-          role="separator"
-          aria-orientation="horizontal"
-          aria-label="Resize SQL panel"
-          title="Drag to resize"
-          onPointerDown={startResize}
-          className="absolute inset-x-0 -top-1.5 z-10 h-3 cursor-row-resize after:absolute after:top-1 after:left-1/2 after:h-1 after:w-12 after:-translate-x-1/2 after:rounded-full after:bg-border hover:after:bg-muted-foreground/50"
-        />
-        <Suspense fallback={<Skeleton className="h-full w-full rounded-none" />}>
-          <SqlPanel
-            segments={segments}
-            columns={columns}
-            versions={versions}
-            currentVersion={currentVersion}
-            onCollapse={() => setCollapsed(true)}
-          />
-        </Suspense>
-      </div>
-    </>
-  );
-}
-
 function TablePage({ tableId }: { tableId: string }) {
   const segments = useMemo(() => splitId(tableId), [tableId]);
   const { tab = "overview" } = Route.useSearch();
   const navigate = useNavigate();
-
+  // The SQL tab mounts on first visit and then stays mounted, so its query and results survive
+  // switching tabs.
+  const [sqlOpened, setSqlOpened] = useState(tab === "sql");
+  if (tab === "sql" && !sqlOpened) setSqlOpened(true);
   const cheap = useTableCheap(segments);
   const detail = useTableDetail(segments);
   const versions = useTableVersions(segments);
@@ -171,6 +89,7 @@ function TablePage({ tableId }: { tableId: string }) {
     versions: History,
     schema: TableProperties,
     indices: ListTree,
+    sql: TerminalSquare,
   };
   const counts: Partial<Record<Tab, number | undefined>> = {
     schema: detail.data?.schema?.fields.length,
@@ -178,75 +97,64 @@ function TablePage({ tableId }: { tableId: string }) {
   };
 
   return (
-    <>
-      <div className="space-y-6">
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
-            <Table2 className="h-5 w-5 text-muted-foreground" />
-          </div>
-          <h1 className="min-w-0 truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
+    <div className="space-y-6">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50">
+          <Table2 className="h-5 w-5 text-muted-foreground" />
         </div>
-
-        {cheap.error && <ErrorState message={cheap.error.message} />}
-
-        <Tabs
-          value={tab}
-          onValueChange={(v) =>
-            navigate({ to: ".", search: v === "overview" ? {} : { tab: v as Tab }, replace: true })
-          }
-          className="min-w-0 [--tabs-h:2.25rem]"
-        >
-          <TabsList className="sticky top-0 z-30 h-(--tabs-h) bg-background">
-            {TABS.map((t) => {
-              const Icon = tabIcon[t];
-              return (
-                <TabsTrigger key={t} value={t} className="capitalize">
-                  <Icon /> {t}
-                  {counts[t] != null && (
-                    <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground tabular-nums">
-                      {formatCount(counts[t])}
-                    </span>
-                  )}
-                </TabsTrigger>
-              );
-            })}
-          </TabsList>
-          <TabsContent value="overview">
-            <OverviewTab
-              cheap={cheap}
-              detail={detail}
-              versions={versions}
-              storage={storage}
-              stats={stats}
-              measures={measures}
-            />
-          </TabsContent>
-          <TabsContent value="properties">
-            <PropertiesTab cheap={cheap} detail={detail} />
-          </TabsContent>
-          <TabsContent value="timeline">
-            <TimelineTab segments={segments} />
-          </TabsContent>
-          <TabsContent value="versions">
-            <VersionsTab segments={segments} versions={versions} currentVersion={detail.data?.version} />
-          </TabsContent>
-          <TabsContent value="schema">
-            <SchemaTab segments={segments} detail={detail} />
-          </TabsContent>
-          <TabsContent value="indices">
-            <IndicesTab indices={indices} />
-          </TabsContent>
-        </Tabs>
+        <h1 className="min-w-0 truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
       </div>
 
-      <BottomDock>
-        <SqlDock
-          segments={segments}
-          columns={columnNames}
-          versions={versions}
-          currentVersion={detail.data?.version}
-        />
-      </BottomDock>
-    </>
+      {cheap.error && <ErrorState message={cheap.error.message} />}
+
+      <Tabs
+        value={tab}
+        onValueChange={(v) => navigate({ to: ".", search: v === "overview" ? {} : { tab: v as Tab }, replace: true })}
+        className="min-w-0 [--tabs-h:2.25rem]"
+      >
+        <TabsList className="sticky top-0 z-30 h-(--tabs-h) bg-background">
+          {TABS.map((t) => {
+            const Icon = tabIcon[t];
+            return (
+              <TabsTrigger key={t} value={t} className="capitalize">
+                <Icon /> {TAB_LABEL[t] ?? t}
+                {counts[t] != null && (
+                  <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground tabular-nums">
+                    {formatCount(counts[t])}
+                  </span>
+                )}
+              </TabsTrigger>
+            );
+          })}
+        </TabsList>
+        <TabsContent value="overview">
+          <OverviewTab cheap={cheap} detail={detail} versions={versions} storage={storage} stats={stats} measures={measures} />
+        </TabsContent>
+        <TabsContent value="properties">
+          <PropertiesTab cheap={cheap} detail={detail} />
+        </TabsContent>
+        <TabsContent value="timeline">
+          <TimelineTab segments={segments} />
+        </TabsContent>
+        <TabsContent value="versions">
+          <VersionsTab segments={segments} versions={versions} currentVersion={detail.data?.version} />
+        </TabsContent>
+        <TabsContent value="schema">
+          <SchemaTab segments={segments} detail={detail} />
+        </TabsContent>
+        <TabsContent value="indices">
+          <IndicesTab indices={indices} />
+        </TabsContent>
+        {sqlOpened && (
+          <TabsContent value="sql" forceMount className="data-[state=inactive]:hidden">
+            <div className="h-[calc(100dvh-14rem)] min-h-[28rem] overflow-hidden rounded-lg border bg-card shadow-xs">
+              <Suspense fallback={<Skeleton className="h-full w-full rounded-none" />}>
+                <SqlPanel segments={segments} columns={columnNames} versions={versions} currentVersion={detail.data?.version} />
+              </Suspense>
+            </div>
+          </TabsContent>
+        )}
+      </Tabs>
+    </div>
   );
 }

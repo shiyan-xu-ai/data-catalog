@@ -14,7 +14,7 @@ theme (light, dark, system) and timezone (UTC, local) controls. It collapses to
 an icon rail (search, namespaces, theme, timezone). The collapsed state, theme,
 and timezone persist in `localStorage`, and every absolute timestamp renders in
 the chosen timezone. The top bar shows a breadcrumb. Page content scrolls on its
-own above an optional bottom dock; the table page puts its SQL panel there.
+own.
 
 - **Namespace tree.** Expands lazily, one list request per opened namespace,
   with tables as leaves. The current namespace or table is highlighted and its
@@ -34,10 +34,10 @@ Routes carry `$`-joined ids; names display dotted.
   registered and updated times. Each row fills from a cheap describe (Postgres
   only) once it scrolls into view, at most six at a time, so listing never opens
   a dataset.
-- **Table page.** The table name (namespace path in the breadcrumb), six tabs in a
-  tab bar pinned to the top while content scrolls (Overview, Properties,
-  Timeline, Versions, Schema, Indices; the active tab is in `?tab=`; Schema and
-  Indices show their counts), and the SQL panel docked at the bottom.
+- **Table page.** The table name (namespace path in the breadcrumb) and seven
+  tabs in a tab bar pinned to the top while content scrolls (Overview,
+  Properties, Timeline, Versions, Schema, Indices, SQL; the active tab is in
+  `?tab=`; Schema and Indices show their counts).
   - **Overview:** a full-width, untitled About card (description, owner,
     copyable location, registered and updated times, the current version's
     Lance file format, and the latest committed version with its age, noting
@@ -117,7 +117,7 @@ Routes carry `$`-joined ids; names display dotted.
   The version, field, and index tables pin their header row below the tab bar
   (the version table's below the Trends chart).
 
-  The **SQL panel** (labeled read-only) runs one query at a time against this
+  The **SQL** tab (labeled read-only) runs one query at a time against this
   table (`POST /catalog/v1/table/{id}/sql`). A version picker lists the loaded
   versions newest first (its last option loads earlier ones; it shares the
   Versions tab's pages) and sets which version the table name reads: the
@@ -127,17 +127,14 @@ Routes carry `$`-joined ids; names display dotted.
   Ctrl/Cmd+Enter. Results show column names and types, nested values as JSON,
   binary values as hex, row count, the queried version, elapsed time, a
   truncation notice past the server's row cap, and the server's error message.
-  Cancel stops waiting; the server's time limit ends the query. The dock spans
-  the content width with a collapsible editor on the left and scrollable
-  results on the right (stacked on narrow screens). Drag the divider to resize
-  the editor, a column header edge to resize that column, or the dock's top
-  edge to resize the dock. Download CSV exports the returned rows with full
-  values; truncated results omit rows past the server's cap. Clicking an empty
-  part of the header bar, or the toggle at its right end, collapses or expands
-  the dock (controls in the bar keep their own behavior); its height and
-  collapsed state persist.
-  Results remain until the user leaves the table page, and the tabs stay usable
-  while a query runs.
+  Cancel stops waiting; the server's time limit ends the query. The panel fills
+  the tab with a collapsible editor on the left and scrollable results on the
+  right (stacked on narrow screens). Drag the divider to resize the editor, or a
+  column header edge to resize that column. Download CSV exports the returned
+  rows with full values; truncated results omit rows past the server's cap. The
+  editor loads when the tab first opens and then stays mounted, so the query and
+  results survive switching tabs until the user leaves the table page; the other
+  tabs stay usable while a query runs.
 
 Catalog-recorded facts come from the cheap describe; Lance-derived sections come
 from the detailed describe and the version, index, tag, and branch routes. Each

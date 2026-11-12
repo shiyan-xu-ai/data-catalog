@@ -136,7 +136,7 @@ export function SidePane({
 }) {
   const ref = useRef<HTMLElement>(null);
   const [maxHeight, setMaxHeight] = useState<number>();
-  // Fit the sticky pane to the page's scroll area, which shrinks as the SQL dock grows.
+  // Fit the sticky pane to the page's scroll area, which changes with the window.
   useEffect(() => {
     const main = ref.current?.closest("main");
     if (!main) return;
