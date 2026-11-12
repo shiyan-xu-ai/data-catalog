@@ -136,16 +136,13 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
       {!isRoot && (
         <Section
           title="Tables"
-          description="Catalog-recorded fields only"
           help="Open a table to see its Lance details."
           contentClassName="px-0 pb-0"
         >
           <ListStatus query={tables}>
             {tables.names.length === 0 ? (
               <div className="px-4 pb-4">
-                <EmptyState icon={Table2} title="No tables">
-                  No tables are registered in this namespace.
-                </EmptyState>
+                <EmptyState icon={Table2} title="No tables" />
               </div>
             ) : (
               <Table>
@@ -173,9 +170,7 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
       <Section title={isRoot ? "Namespaces" : "Child namespaces"}>
         <ListStatus query={children}>
           {children.names.length === 0 ? (
-            <EmptyState icon={Folder} title="No namespaces">
-              {isRoot ? "No namespaces exist yet." : "This namespace has no children."}
-            </EmptyState>
+            <EmptyState icon={Folder} title={isRoot ? "No namespaces" : "No child namespaces"} />
           ) : (
             <ul className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-2">
               {children.names.map((child) => (
