@@ -123,6 +123,7 @@ export function SidePane({
   onClose,
   top = 0,
   bodyKey,
+  className,
   children,
 }: {
   label: string;
@@ -132,6 +133,7 @@ export function SidePane({
   onClose: () => void;
   top?: number;
   bodyKey: React.Key;
+  className?: string;
   children: React.ReactNode;
 }) {
   const ref = useRef<HTMLElement>(null);
@@ -160,6 +162,7 @@ export function SidePane({
         className={cn(
           "fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-hidden border-l bg-background shadow-xl xl:sticky xl:top-[calc(var(--tabs-h,0px)+var(--pane-top))] xl:z-10 xl:max-h-[calc(var(--pane-max)-var(--tabs-h,0px))] xl:shrink-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm",
           wide ? "max-w-[720px] xl:w-[720px]" : "max-w-[420px] xl:w-[420px]",
+          className,
         )}
       >
         <div className="flex items-start gap-3 px-4 pt-3 pb-2">

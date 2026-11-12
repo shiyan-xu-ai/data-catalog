@@ -10,7 +10,10 @@ import { versionStatus } from "@/lib/table-metadata";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CopyButton } from "@/components/copy-button";
 import { HelpTooltip } from "@/components/help-tooltip";
+import { JsonTree } from "@/components/json-tree";
+import { SidePane, SidePaneLayout, usePaneSelection } from "@/components/side-pane";
 import { SqlEditor } from "@/components/sql-editor";
 
 // Value of the picker's trailing "load earlier versions" option.
@@ -44,12 +47,70 @@ function formatElapsed(ms: number): string {
 const PINNED =
   "md:sticky md:top-[calc(var(--tabs-h,0px)+var(--sticky-top,0px))] md:h-[calc(100dvh-5rem-var(--tabs-h,0px)-var(--sticky-top,0px))] md:self-start";
 
+const rowIndex = (i: number) => i;
+
+function copyText(value: unknown): string {
+  if (value == null) return "";
+  return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+}
+
+/** Every column of one result row with its type and full value; nested values as a JSON tree. */
+function RowPane({ result, row, top, onClose }: { result: SqlResponse; row: number; top: number; onClose: () => void }) {
+  const values = result.rows[row];
+  return (
+    <SidePane
+      label={`Row ${row + 1} details`}
+      top={top}
+      onClose={onClose}
+      bodyKey={row}
+      className="xl:mt-3 xl:mr-3"
+      header={
+        <>
+          <div className="font-medium">Row {formatCount(row + 1)}</div>
+          <div className="text-xs text-muted-foreground">of {formatCount(result.rows.length)} returned</div>
+        </>
+      }
+    >
+      {result.columns.map((c, i) => {
+        const cell = formatCell(values[i], c.type);
+        return (
+          <section key={i} className="space-y-1 border-t px-4 py-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate font-mono text-xs font-medium" title={c.name}>
+                {c.name}
+              </span>
+              <span className="truncate text-[10px] text-muted-foreground" title={c.type}>
+                {shortTypeName(c.type)}
+              </span>
+              <span className="ml-auto">
+                <CopyButton value={() => copyText(values[i])} label={`Copy ${c.name}`} />
+              </span>
+            </div>
+            {cell.kind === "nested" ? (
+              <div className="overflow-x-auto">
+                <JsonTree name={c.name} value={values[i]} />
+              </div>
+            ) : (
+              <div className={cn("font-mono text-xs break-all whitespace-pre-wrap", cellClass[cell.kind], "text-left")}>
+                {cell.text}
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </SidePane>
+  );
+}
+
 /** Results with a header that pins below the tab bar and the toolbar (`--sticky-top`) while the
  *  page scrolls. Wide results scroll sideways in the body; the header, a separate table with the
- *  same column widths, follows that scroll. */
-function ResultGrid({ result }: { result: SqlResponse }) {
+ *  same column widths, follows that scroll. Selecting a row opens its values beside the grid,
+ *  pinned `paneTop` px below the tab bar. */
+function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number }) {
   const [widths, setWidths] = useState<number[]>([]);
   const head = useRef<HTMLDivElement>(null);
+  const indices = useMemo(() => result.rows.map((_, i) => i), [result]);
+  const { current, close, rowProps } = usePaneSelection(indices, rowIndex);
   const widthAt = (index: number) => widths[index] ?? 220;
 
   function resizeColumn(index: number, width: number) {
@@ -89,7 +150,9 @@ function ResultGrid({ result }: { result: SqlResponse }) {
   );
   const tableClass = "table-fixed border-separate border-spacing-0 font-mono text-xs";
   return (
-    <>
+    <SidePaneLayout
+      pane={current != null && <RowPane result={result} row={current} top={paneTop} onClose={close} />}
+    >
       <div ref={head} className="sticky top-[calc(var(--tabs-h,0px)+var(--sticky-top,0px)-1px)] z-10 overflow-hidden">
         <table className={tableClass} style={{ width, minWidth: "100%" }}>
           {columns}
@@ -134,7 +197,15 @@ function ResultGrid({ result }: { result: SqlResponse }) {
           {columns}
           <tbody>
             {result.rows.map((row, r) => (
-              <tr key={r} className="hover:bg-muted/40">
+              <tr
+                key={r}
+                {...rowProps(r)}
+                aria-selected={r === current}
+                className={cn(
+                  "cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                  r === current ? "bg-accent" : "hover:bg-muted/40",
+                )}
+              >
                 <td className="border-b px-2 py-1 text-right text-muted-foreground/70 tabular-nums">{r + 1}</td>
                 {result.columns.map((c, i) => {
                   const cell = formatCell(row[i], c.type);
@@ -153,7 +224,7 @@ function ResultGrid({ result }: { result: SqlResponse }) {
           </tbody>
         </table>
       </div>
-    </>
+    </SidePaneLayout>
   );
 }
 
@@ -181,6 +252,7 @@ export function SqlPanel({
   // null reads the current version (the request omits `version`).
   const [version, setVersion] = useState<number | null>(null);
   const [result, setResult] = useState<SqlResponse | null>(null);
+  const [runs, setRuns] = useState(0);
   const [error, setError] = useState<Error | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(0);
@@ -223,7 +295,10 @@ export function SqlPanel({
     setError(null);
     try {
       const r = await runSql(segments, query, version, c.signal);
-      if (controller.current === c) setResult(r);
+      if (controller.current === c) {
+        setResult(r);
+        setRuns((n) => n + 1);
+      }
     } catch (e) {
       if (controller.current === c && !c.signal.aborted) {
         setResult(null);
@@ -405,7 +480,8 @@ export function SqlPanel({
               <pre className="mt-1.5 font-mono text-xs whitespace-pre-wrap break-words">{error.message}</pre>
             </div>
           ) : result ? (
-            <ResultGrid result={result} />
+            // Keyed per run: a new result starts with no row selected and default column widths.
+            <ResultGrid key={runs} result={result} paneTop={toolbarHeight} />
           ) : (
             <div className="space-y-2 p-4 text-xs text-muted-foreground">
               <p>

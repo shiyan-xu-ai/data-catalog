@@ -135,7 +135,10 @@ Routes carry `$`-joined ids; names display dotted.
   stacked (narrow screens), the editor sits above them. Drag the divider to
   resize the editor, or a column header edge to resize that column. Download
   CSV exports the returned rows with full values; truncated results omit rows
-  past the server's cap. The
+  past the server's cap. Clicking a result row (or Enter/Space; Esc closes,
+  arrows move) opens a row pane beside the results like the schema field pane:
+  every column's name, type, and full value, nested values as a JSON tree, each
+  with a copy button; a new run clears the selection. The
   editor loads when the tab first opens and then stays mounted, so the query and
   results survive switching tabs until the user leaves the table page; the other
   tabs stay usable while a query runs.
