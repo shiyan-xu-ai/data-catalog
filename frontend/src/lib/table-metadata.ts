@@ -134,22 +134,6 @@ export const COMPACTION_TARGET_ROWS = 1_048_576;
 
 export type FragmentLengths = TableStatsResponse["fragment_stats"]["lengths"];
 
-/** Axis from 0 with at most 4 equal intervals of a "nice" step (1, 2, 2.5, or 5 × 10^k, at
- *  least 1 since rows are whole), using the smallest such step that covers `max`. */
-export function niceAxis(max: number): { axisMax: number; ticks: number[] } {
-  const target = Math.max(max, 1);
-  let magnitude = 10 ** Math.max(0, Math.floor(Math.log10(target / 4)));
-  for (;;) {
-    for (const m of [1, 2, 2.5, 5]) {
-      const step = m * magnitude;
-      if (!Number.isInteger(step)) continue;
-      const intervals = Math.max(1, Math.ceil(target / step));
-      if (intervals <= 4) return { axisMax: step * intervals, ticks: Array.from({ length: intervals + 1 }, (_, i) => i * step) };
-    }
-    magnitude *= 10;
-  }
-}
-
 /** The table's `lance.compaction.target_rows_per_fragment` override from describe metadata
  *  (`config.` prefixed), or null when unset or not a positive integer. */
 export function compactionTargetOverride(meta: Metadata): number | null {

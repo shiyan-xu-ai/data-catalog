@@ -4,7 +4,6 @@ import {
   tableMetadataEntries,
   extraProperties,
   indexCoverage,
-  niceAxis,
   parseManifestSummary,
   storageFormatVersion,
   topColumns,
@@ -13,17 +12,6 @@ import {
   versionStatus,
 } from "./table-metadata";
 import type { IndexContent } from "./schemas";
-
-describe("nice axis", () => {
-  it("rounds the axis up to at most 4 nice intervals", () => {
-    expect(niceAxis(2038)).toEqual({ axisMax: 3000, ticks: [0, 1000, 2000, 3000] });
-    expect(niceAxis(2000)).toEqual({ axisMax: 2000, ticks: [0, 500, 1000, 1500, 2000] });
-    expect(niceAxis(1_048_576).axisMax).toBe(1_500_000);
-    expect(niceAxis(7)).toEqual({ axisMax: 8, ticks: [0, 2, 4, 6, 8] });
-    expect(niceAxis(3)).toEqual({ axisMax: 3, ticks: [0, 1, 2, 3] });
-    expect(niceAxis(0)).toEqual({ axisMax: 1, ticks: [0, 1] });
-  });
-});
 
 const META = {
   total_rows: "8047929",

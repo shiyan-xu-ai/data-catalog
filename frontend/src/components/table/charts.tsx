@@ -181,17 +181,12 @@ export function GrowthChart({ points }: { points: VersionPoint[] }) {
 }
 
 /** Inline legend swatch row used under charts. */
-export function LegendItem({ color, label, value, note }: { color: string; label: string; value: string; note?: string }) {
+export function LegendItem({ color, label, value }: { color: string; label: string; value: string }) {
   return (
-    <div className="flex items-start gap-2 text-xs">
-      <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-[2px]" style={{ background: color }} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="text-muted-foreground">{label}</span>
-          <span className="font-medium tabular-nums">{value}</span>
-        </div>
-        {note && <div className="text-[11px] text-muted-foreground/80">{note}</div>}
-      </div>
+    <div className="flex items-center gap-2 text-xs">
+      <span className="h-2.5 w-2.5 shrink-0 rounded-[2px]" style={{ background: color }} />
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
     </div>
   );
 }

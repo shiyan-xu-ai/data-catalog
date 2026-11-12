@@ -165,7 +165,7 @@ export function SqlPanel({
   const running = startedAt != null;
   const schema = useMemo(() => ({ [tableName]: columns }), [tableName, columns]);
   const exampleRef = versionRef(tableName, Math.max(1, (servedVersion ?? 2) - 1));
-  const versionHint = `The version picker sets which version ${quoteIdent(tableName)} reads. Reference any other version in SQL as ${exampleRef}, e.g. to compare versions.`;
+  const versionHint = `The picker sets which version ${quoteIdent(tableName)} reads. Query other versions as ${exampleRef}.`;
 
   // Tick a live elapsed counter while a query is in flight.
   useEffect(() => {

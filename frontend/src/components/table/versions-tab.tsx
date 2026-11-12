@@ -35,7 +35,7 @@ function TrendsSection({ loaded, complete }: { loaded: readonly TableVersion[]; 
     <Section
       title="Trends"
       description={`Rows and data size, ${range} (${count})`}
-      help="Covers the loaded versions only; load earlier versions below to extend it. Data size counts the data files each version references, the same measure as Current version data."
+      help="Loaded versions only. Data size counts each version's referenced data files."
       actions={
         <div className="flex flex-col items-end gap-0.5 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
@@ -69,8 +69,7 @@ function VersionHistory({ versions, servedVersion }: { versions: PagedVersions; 
     <Section
       title="Version history"
       description={`${formatCount(all.length)} ${versions.hasNextPage ? "loaded, newest first" : "versions, newest first"}`}
-      help="Each version's figures come from its manifest summary. Δ Rows compares with the next older loaded version. Current is the version the catalog serves to reads that name no version; newer versions become current after a catalog refresh."
-      contentClassName="px-0 pb-0"
+      help="Figures come from each version's manifest summary. Current marks the served version; newer versions need a catalog refresh."
     >
       {/* A plain table (no scroll wrapper) so its header can stick below the Trends chart. */}
       <table className="w-full text-sm">

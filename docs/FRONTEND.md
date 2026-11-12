@@ -36,29 +36,26 @@ page can fill; the table page puts its SQL panel there.
   (Overview, Properties, Timeline, Versions, Schema, Indices; the active tab is
   in the `?tab=` query; Schema and Indices show their counts), and a SQL panel
   docked at the bottom. The UI offers no deregistration.
-  - **Overview:** six tiles: rows (with fragment count), current-version data
-    (the manifest's data-file size and count), deleted rows, current index size,
-    total bytes on storage, and the estimated monthly storage cost
-    (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption; a
-    (?) tooltip explains what the figure measures and excludes (for example
-    blob payloads, index files kept by older versions, the rate and tier, and
-    that the cost is an upper bound excluding requests and egress). Sections:
-    - *Storage by column:* current-version inline column bytes per top-level
-      column (`GET /catalog/v1/table/{id}/column-storage`); blob payload files
-      and index files are excluded, as its (?) help explains.
-    - *Storage composition:* every object under the location. With blob files,
-      two donuts: blob files vs everything else, then the non-blob files by
-      category (data, index, deletion, manifests, transactions, other) with
-      shares of the non-blob total. Without blob files, one donut by category.
+  - **Overview:** six tiles: rows (with fragment count), served-version data
+    (the manifest's data-file size and count), deleted rows, served-version
+    index size, total bytes on storage, and the estimated monthly storage cost
+    (`GET /catalog/v1/table/{id}/storage`). Each tile keeps a short caption and
+    a one-line (?) tooltip. Sections, each with a one-line (?) tooltip instead
+    of a subtitle:
+    - *Storage composition* (left): every object under the location. With blob
+      files, two donuts: blob files vs everything else, then the non-blob files
+      by category (data, index, deletion, manifests, transactions, other).
+      Without blob files, one donut by category. Each legend row is the
+      category and its share.
+    - *Storage by column* (right): served-version inline column bytes per
+      top-level column (`GET /catalog/v1/table/{id}/column-storage`); blob
+      payload files and index files are excluded.
     - *Fragment distribution:* from the spec table stats
-      (`POST /v1/table/{id}/stats`), horizontal bars of physical rows per
-      fragment for min, p25, median, mean, p75, p99, and max, ordered by value
-      with the mean in its own color (styled like Storage by column; hover a
-      bar for its value), beside
-      the share of fragments with fewer than 1,048,576 rows (Lance's default
-      compaction target; fragments below it are compaction candidates). A
-      table's `lance.compaction.target_rows_per_fragment` override is shown
-      but not used, since the stats count against the fixed default.
+      (`POST /v1/table/{id}/stats`), a table of physical rows per fragment
+      (min, p25, median, mean, p75, p99, max), beside the share of fragments
+      with fewer than 1,048,576 rows (Lance's default compaction target). A
+      table's `lance.compaction.target_rows_per_fragment` override is shown but
+      not used, since the stats count against the fixed default.
 
     Column storage, the storage listing, and table stats are slow, so they are
     requested only after the rest of the page loaded; each shows its own

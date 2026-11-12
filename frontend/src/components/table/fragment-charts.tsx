@@ -1,14 +1,6 @@
-import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
-import { formatCompact, formatCount, formatPercent } from "@/lib/format";
-import { COMPACTION_TARGET_ROWS, niceAxis, type FragmentLengths } from "@/lib/table-metadata";
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
-
-// Same chart config/styling as ColumnStorageChart so the Overview bars read alike; the mean
-// gets its own color because it is not a percentile.
-const rowsConfig = {
-  rows: { label: "Rows per fragment", color: "hsl(var(--chart-1))" },
-  mean: { label: "Mean", color: "hsl(var(--chart-2))" },
-} satisfies ChartConfig;
+import { formatCount, formatPercent } from "@/lib/format";
+import { COMPACTION_TARGET_ROWS, type FragmentLengths } from "@/lib/table-metadata";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 const STATS = [
   ["Min", "min"],
@@ -20,50 +12,29 @@ const STATS = [
   ["Max", "max"],
 ] as const;
 
-/** Rows-per-fragment distribution: one horizontal bar per statistic, ordered by value
- *  (ties keep percentile order), with the mean highlighted. */
-export function FragmentDistributionChart({ lengths }: { lengths: FragmentLengths }) {
-  const { axisMax, ticks } = niceAxis(lengths.max);
-  const data = STATS.map(([name, key]) => ({ name, rows: lengths[key], isMean: key === "mean" })).sort(
-    (a, b) => a.rows - b.rows,
-  );
+/** Rows-per-fragment statistics, one column each. */
+export function FragmentStatsTable({ lengths }: { lengths: FragmentLengths }) {
   return (
-    <figure className="min-w-0" aria-label="Rows per fragment">
-      <ChartContainer config={rowsConfig} className="aspect-auto w-full" style={{ height: data.length * 30 + 24 }}>
-        <BarChart data={data} layout="vertical" margin={{ left: 4, right: 56, top: 0, bottom: 0 }}>
-          <CartesianGrid horizontal={false} />
-          <XAxis
-            type="number"
-            dataKey="rows"
-            domain={[0, axisMax]}
-            ticks={ticks}
-            tickFormatter={formatCompact}
-            tickLine={false}
-            axisLine={false}
-            fontSize={11}
-          />
-          <YAxis type="category" dataKey="name" width={56} tickLine={false} axisLine={false} interval={0} fontSize={11} />
-          <ChartTooltip cursor={false} content={<ChartTooltipContent valueFormatter={(v) => `${formatCount(Number(v))} rows`} />} />
-          <Bar
-            dataKey="rows"
-            fill="var(--color-rows)"
-            radius={3}
-            barSize={18}
-            isAnimationActive={false}
-            label={{
-              position: "right",
-              fontSize: 11,
-              className: "fill-muted-foreground tabular-nums",
-              formatter: (v: unknown) => formatCount(Number(v)),
-            }}
-          >
-            {data.map((d) => (
-              <Cell key={d.name} fill={d.isMean ? "var(--color-mean)" : "var(--color-rows)"} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ChartContainer>
-    </figure>
+    <Table aria-label="Rows per fragment">
+      <TableHeader>
+        <TableRow className="hover:bg-transparent">
+          {STATS.map(([label]) => (
+            <TableHead key={label} className="text-right">
+              {label}
+            </TableHead>
+          ))}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        <TableRow className="hover:bg-transparent">
+          {STATS.map(([label, key]) => (
+            <TableCell key={label} className="text-right tabular-nums">
+              {formatCount(lengths[key])}
+            </TableCell>
+          ))}
+        </TableRow>
+      </TableBody>
+    </Table>
   );
 }
 
@@ -113,13 +84,9 @@ export function SmallFragmentShare({
           fewer than{" "}
           <span className="tabular-nums">{formatCount(COMPACTION_TARGET_ROWS)}</span> rows
         </p>
-        <p className="text-xs text-muted-foreground">
-          Lance&apos;s default compaction target. Fragments below it are compaction candidates.
-        </p>
         {targetOverride != null && (
           <p className="text-xs text-muted-foreground">
-            This table overrides the target to <span className="tabular-nums">{formatCount(targetOverride)}</span> rows.
-            The count above uses the default.
+            Table target: <span className="tabular-nums">{formatCount(targetOverride)}</span> rows.
           </p>
         )}
       </div>
