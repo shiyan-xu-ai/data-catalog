@@ -104,6 +104,7 @@ const FRAGMENT_MEASURES: [label: string, key: "data_files" | "data_bytes" | "del
 ];
 
 export function OverviewTab({
+  segments,
   cheap,
   detail,
   versions,
@@ -111,6 +112,7 @@ export function OverviewTab({
   stats,
   measures,
 }: {
+  segments: readonly string[];
   cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
   versions: PagedVersions;
@@ -125,7 +127,7 @@ export function OverviewTab({
 
   return (
     <div className="@container space-y-6">
-      <AboutSection cheap={cheap} detail={detail} versions={versions} />
+      <AboutSection segments={segments} cheap={cheap} detail={detail} versions={versions} />
       {detail.error && <ErrorState message={`Lance metadata unavailable: ${detail.error.message}`} />}
       <div className="grid gap-3 @xl:grid-cols-3">
         <Kpi

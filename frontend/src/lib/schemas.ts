@@ -301,3 +301,10 @@ export type VersionFilesResponse = z.infer<typeof versionFilesResponseSchema>;
  *  it (`url`) or save it (`download_url`). */
 export const mediaPresignResponseSchema = z.object({ url: z.string(), download_url: z.string(), expires_in_secs: z.number() });
 export type MediaPresignResponse = z.infer<typeof mediaPresignResponseSchema>;
+
+/** Catalog `POST /catalog/v1/table/{id}/refresh`: the current version before and after. */
+export const refreshTableResponseSchema = z.object({
+  previous_version: z.number().nullish(),
+  current_version: z.number(),
+});
+export type RefreshTableResponse = z.infer<typeof refreshTableResponseSchema>;

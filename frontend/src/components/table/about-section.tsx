@@ -1,8 +1,12 @@
-import type { UseQueryResult } from "@tanstack/react-query";
-import type { PagedVersions } from "@/lib/catalog-queries";
+import { useMutation, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { Loader2, RefreshCw } from "lucide-react";
+import { refreshTable } from "@/lib/api";
+import { keys, type PagedVersions } from "@/lib/catalog-queries";
 import { formatRelative, parseTime } from "@/lib/format";
+import { joinId } from "@/lib/ids";
 import type { DescribeTableResponse } from "@/lib/schemas";
 import { BUSINESS_OWNER, TECHNICAL_OWNER, tableFormat } from "@/lib/table-metadata";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { ErrorState } from "@/components/error-state";
@@ -33,9 +37,23 @@ function Pending({ error, loading, children }: { error: Error | null; loading: b
   return <>{children}</>;
 }
 
-/** The version the catalog considers current, with its commit age, and the newest committed
- *  version when that is later (a catalog refresh advances to it). */
-function CurrentVersion({ versions, current }: { versions: PagedVersions; current: number | null | undefined }) {
+/** The version the catalog considers current, with its commit age. When a later version is
+ *  committed, names it and offers a refresh that makes it current; every cached read of the
+ *  table is then refetched. */
+function CurrentVersion({
+  segments,
+  versions,
+  current,
+}: {
+  segments: readonly string[];
+  versions: PagedVersions;
+  current: number | null | undefined;
+}) {
+  const queryClient = useQueryClient();
+  const refresh = useMutation({
+    mutationFn: () => refreshTable(segments),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: keys.table(joinId(segments)) }),
+  });
   if (current == null) {
     return (
       <Pending error={versions.error} loading={versions.isPending}>
@@ -44,26 +62,44 @@ function CurrentVersion({ versions, current }: { versions: PagedVersions; curren
     );
   }
   const latest = versions.versions[0];
+  const behind = latest != null && latest.version > current;
   const committed = versions.versions.find((v) => v.version === current);
   return (
     <>
-      <div className="font-mono">v{current}</div>
+      <div className="flex items-center gap-2">
+        <span className="font-mono">v{current}</span>
+        {behind && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 gap-1 px-2 text-xs"
+            disabled={refresh.isPending}
+            onClick={() => refresh.mutate()}
+            title={`Make the newest committed version (v${latest.version}) current`}
+          >
+            {refresh.isPending ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            Refresh
+          </Button>
+        )}
+      </div>
       <div className="text-xs text-muted-foreground">
         {committed && formatRelative(parseTime(committed.timestamp_millis))}
-        {committed && latest && latest.version > current && " · "}
-        {latest && latest.version > current && `latest v${latest.version}`}
+        {committed && behind && " · "}
+        {behind && `latest v${latest.version}`}
       </div>
+      {refresh.error && <div className="text-xs text-destructive">Refresh failed: {refresh.error.message}</div>}
     </>
   );
 }
 
 interface AboutProps {
+  segments: readonly string[];
   cheap: UseQueryResult<DescribeTableResponse>;
   detail: UseQueryResult<DescribeTableResponse>;
   versions: PagedVersions;
 }
 
-function AboutBody({ cheap, detail, versions }: AboutProps) {
+function AboutBody({ segments, cheap, detail, versions }: AboutProps) {
   const props = cheap.data?.properties ?? {};
   const location = cheap.data?.location ?? cheap.data?.table_uri ?? null;
 
@@ -85,7 +121,7 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
       </Field>
       <Field label="Current version">
         <Pending error={detail.error} loading={!detail.data}>
-          <CurrentVersion versions={versions} current={detail.data?.version} />
+          <CurrentVersion segments={segments} versions={versions} current={detail.data?.version} />
         </Pending>
       </Field>
       <Field label="Business owner">{props[BUSINESS_OWNER] ?? <Unset />}</Field>
@@ -107,10 +143,10 @@ function AboutBody({ cheap, detail, versions }: AboutProps) {
 /** Untitled card: the current version's table format, the current version, the business and
  *  technical owners (`business_owner` / `technical_owner` table properties), then the location.
  *  Place it inside an `@container`. */
-export function AboutSection({ cheap, detail, versions }: AboutProps) {
+export function AboutSection({ segments, cheap, detail, versions }: AboutProps) {
   return (
     <section aria-label="About" className="rounded-lg border bg-card p-4 text-card-foreground shadow-xs">
-      <AboutBody cheap={cheap} detail={detail} versions={versions} />
+      <AboutBody segments={segments} cheap={cheap} detail={detail} versions={versions} />
     </section>
   );
 }

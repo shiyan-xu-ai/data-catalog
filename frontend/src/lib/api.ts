@@ -19,6 +19,8 @@ import {
   versionFilesResponseSchema,
   mediaPresignResponseSchema,
   type MediaPresignResponse,
+  refreshTableResponseSchema,
+  type RefreshTableResponse,
   type TimelineEvent,
   type TimelineResponse,
   type VersionFilesResponse,
@@ -277,6 +279,11 @@ export function getVersionFiles(table: readonly string[], version: number): Prom
  *  browser then reads from object storage directly. */
 export function presignMedia(uri: string): Promise<MediaPresignResponse> {
   return request("GET", `/catalog/v1/media/presign?uri=${encodeURIComponent(uri)}`, mediaPresignResponseSchema);
+}
+
+/** Catalog route: advance the table's current version to the newest committed version. */
+export function refreshTable(table: readonly string[]): Promise<RefreshTableResponse> {
+  return request("POST", `/catalog/v1/table/${idPathSegment(table)}/refresh`, refreshTableResponseSchema);
 }
 
 /** Catalog route: run one read-only SQL query. The plain table name reads `version` (the current

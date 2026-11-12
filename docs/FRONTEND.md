@@ -41,8 +41,10 @@ Routes carry `$`-joined ids; names display dotted.
   `?tab=`; Schema and Indices show their counts).
   - **Overview:** a full-width, untitled About card, in order: the current
     version's table format (`Lance <data storage version>`, e.g. `Lance 2.2`),
-    the current version with its commit age (and the latest committed version
-    when newer), the business and technical owners (the `business_owner` and
+    the current version with its commit age (when a newer version is
+    committed: the latest version and a Refresh button that makes it current
+    through `POST /catalog/v1/table/{id}/refresh`, then reloads the page's
+    data), the business and technical owners (the `business_owner` and
     `technical_owner` table properties), then the copyable location on its own
     row. Then three tiles: rows (with
     fragment count), deleted rows (with deletion file count), and the

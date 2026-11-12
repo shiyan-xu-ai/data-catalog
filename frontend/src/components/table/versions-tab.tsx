@@ -144,7 +144,7 @@ function VersionHistory({
     <Section
       title="Version history"
       description={versions.hasNextPage ? `${formatCount(all.length)} loaded` : undefined}
-      help="The Current badge marks this version; newer versions need a catalog refresh."
+      help="The Current badge marks this version; Refresh on the Overview makes the newest version current."
       contentClassName="px-0 pb-0"
     >
       <ScrollTable

@@ -127,7 +127,15 @@ function TablePage({ tableId }: { tableId: string }) {
           })}
         </TabsList>
         <TabsContent value="overview">
-          <OverviewTab cheap={cheap} detail={detail} versions={versions} storage={storage} stats={stats} measures={measures} />
+          <OverviewTab
+            segments={segments}
+            cheap={cheap}
+            detail={detail}
+            versions={versions}
+            storage={storage}
+            stats={stats}
+            measures={measures}
+          />
         </TabsContent>
         <TabsContent value="properties">
           <PropertiesTab cheap={cheap} detail={detail} />
