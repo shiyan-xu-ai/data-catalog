@@ -1,4 +1,4 @@
-import { Suspense, lazy, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   BarChart3,
@@ -10,6 +10,7 @@ import {
   TableProperties,
   TerminalSquare,
 } from "lucide-react";
+import { ActiveContext } from "@/lib/active";
 import { ApiError } from "@/lib/api";
 import {
   useTableCheap,
@@ -48,20 +49,58 @@ export const Route = createFileRoute("/tables/$tableId")({
   component: RouteComponent,
 });
 
+/** Visited table pages kept mounted; the least recently visited beyond this are dropped. */
+const MAX_KEPT_TABLES = 8;
+
 function RouteComponent() {
   const { tableId } = Route.useParams();
-  // Keyed so tab-local state (paging, expansion, the SQL editor) resets between tables.
-  return <TablePage key={tableId} tableId={tableId} />;
+  // Pages stay mounted, hidden, once visited, so each table keeps its tab state (selected rows,
+  // SQL query and results, expansion, paging) while another table is on screen. `order` holds
+  // recency; `ids` keeps insertion order so React never moves a page's DOM, which would reset
+  // its scroll positions.
+  const [kept, setKept] = useState({ ids: [tableId], order: [tableId] });
+  if (kept.order[kept.order.length - 1] !== tableId) {
+    const order = [...kept.order.filter((id) => id !== tableId), tableId];
+    const dropped = order.length > MAX_KEPT_TABLES ? order.shift() : undefined;
+    const ids = kept.ids.filter((id) => id !== dropped);
+    setKept({ ids: ids.includes(tableId) ? ids : [...ids, tableId], order });
+  }
+  const ids = kept.ids.includes(tableId) ? kept.ids : [...kept.ids, tableId];
+  return (
+    <>
+      {ids.map((id) => (
+        <div key={id} hidden={id !== tableId}>
+          <TablePage tableId={id} active={id === tableId} />
+        </div>
+      ))}
+    </>
+  );
 }
 
-function TablePage({ tableId }: { tableId: string }) {
+function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
   const segments = useMemo(() => splitId(tableId), [tableId]);
-  const { tab = "overview" } = Route.useSearch();
+  const urlTab = Route.useSearch().tab ?? "overview";
   const navigate = useNavigate();
-  // The SQL tab mounts on first visit and then stays mounted, so its query and results survive
-  // switching tabs.
-  const [sqlOpened, setSqlOpened] = useState(tab === "sql");
-  if (tab === "sql" && !sqlOpened) setSqlOpened(true);
+  // The shown tab is local so a hidden page keeps its own while the URL follows the table on
+  // screen. Returning to a table restores its tab into the URL; while on screen, the URL (a tab
+  // click, back, forward) wins.
+  const [tab, setTab] = useState<Tab>(urlTab);
+  const wasActive = useRef(active);
+  useEffect(() => {
+    const activated = active && !wasActive.current;
+    wasActive.current = active;
+    if (!active) return;
+    if (!activated) {
+      if (urlTab !== tab) setTab(urlTab);
+    } else if (urlTab !== tab) {
+      navigate({ to: ".", search: tab === "overview" ? {} : { tab }, replace: true });
+    }
+    // `tab` is read only when the URL or activity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, urlTab]);
+  // A tab mounts on first visit and then stays mounted, so its state survives switching tabs.
+  const [opened, setOpened] = useState<ReadonlySet<Tab>>(() => new Set([tab]));
+  if (!opened.has(tab)) setOpened(new Set([...opened, tab]));
   const cheap = useTableCheap(segments);
   const detail = useTableDetail(segments);
   const versions = useTableVersions(segments);
@@ -96,6 +135,36 @@ function TablePage({ tableId }: { tableId: string }) {
     schema: detail.data?.schema?.fields.length,
     indices: indices.data?.length,
   };
+  const select = (v: string) => {
+    setTab(v as Tab);
+    navigate({ to: ".", search: v === "overview" ? {} : { tab: v as Tab }, replace: true });
+  };
+  const content: Record<Tab, React.ReactNode> = {
+    overview: (
+      <OverviewTab
+        segments={segments}
+        cheap={cheap}
+        detail={detail}
+        versions={versions}
+        storage={storage}
+        stats={stats}
+        measures={measures}
+      />
+    ),
+    properties: <PropertiesTab cheap={cheap} detail={detail} />,
+    timeline: <TimelineTab segments={segments} />,
+    versions: <VersionsTab segments={segments} versions={versions} currentVersion={detail.data?.version} />,
+    schema: <SchemaTab segments={segments} detail={detail} />,
+    indices: <IndicesTab indices={indices} />,
+    sql: (
+      // `overflow-clip` rounds the corners without becoming the toolbar's sticky scroll box.
+      <div className="overflow-clip rounded-lg border bg-card shadow-xs">
+        <Suspense fallback={<Skeleton className="h-96 w-full rounded-none" />}>
+          <SqlPanel segments={segments} columns={columnNames} versions={versions} currentVersion={detail.data?.version} />
+        </Suspense>
+      </div>
+    ),
+  };
 
   return (
     <div className="space-y-6">
@@ -106,11 +175,7 @@ function TablePage({ tableId }: { tableId: string }) {
 
       {cheap.error && <ErrorState message={cheap.error.message} />}
 
-      <Tabs
-        value={tab}
-        onValueChange={(v) => navigate({ to: ".", search: v === "overview" ? {} : { tab: v as Tab }, replace: true })}
-        className="min-w-0 [--tabs-h:2.25rem]"
-      >
+      <Tabs value={tab} onValueChange={select} className="min-w-0 [--tabs-h:2.25rem]">
         <TabsList className="sticky top-0 z-30 h-(--tabs-h) bg-background">
           {TABS.map((t) => {
             const Icon = tabIcon[t];
@@ -126,42 +191,11 @@ function TablePage({ tableId }: { tableId: string }) {
             );
           })}
         </TabsList>
-        <TabsContent value="overview">
-          <OverviewTab
-            segments={segments}
-            cheap={cheap}
-            detail={detail}
-            versions={versions}
-            storage={storage}
-            stats={stats}
-            measures={measures}
-          />
-        </TabsContent>
-        <TabsContent value="properties">
-          <PropertiesTab cheap={cheap} detail={detail} />
-        </TabsContent>
-        <TabsContent value="timeline">
-          <TimelineTab segments={segments} />
-        </TabsContent>
-        <TabsContent value="versions">
-          <VersionsTab segments={segments} versions={versions} currentVersion={detail.data?.version} />
-        </TabsContent>
-        <TabsContent value="schema">
-          <SchemaTab segments={segments} detail={detail} />
-        </TabsContent>
-        <TabsContent value="indices">
-          <IndicesTab indices={indices} />
-        </TabsContent>
-        {sqlOpened && (
-          <TabsContent value="sql" forceMount className="data-[state=inactive]:hidden">
-            {/* `overflow-clip` rounds the corners without becoming the toolbar's sticky scroll box. */}
-            <div className="overflow-clip rounded-lg border bg-card shadow-xs">
-              <Suspense fallback={<Skeleton className="h-96 w-full rounded-none" />}>
-                <SqlPanel segments={segments} columns={columnNames} versions={versions} currentVersion={detail.data?.version} />
-              </Suspense>
-            </div>
+        {TABS.filter((t) => opened.has(t)).map((t) => (
+          <TabsContent key={t} value={t} forceMount className="data-[state=inactive]:hidden">
+            <ActiveContext.Provider value={active && tab === t}>{content[t]}</ActiveContext.Provider>
           </TabsContent>
-        )}
+        ))}
       </Tabs>
     </div>
   );

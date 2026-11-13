@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { useActive } from "@/lib/active";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -70,12 +71,13 @@ export interface PaneRowProps {
  *  must be a stable function. */
 export function usePaneSelection<T, K>(items: readonly T[], keyOf: (item: T) => K) {
   const [active, setActive] = useState<K | null>(null);
+  const visible = useActive();
   const rowRefs = useRef(new Map<K, HTMLElement>());
   const index = items.findIndex((item) => keyOf(item) === active);
   const current = index >= 0 ? items[index] : null;
 
   useEffect(() => {
-    if (!current) return;
+    if (!current || !visible) return;
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || t.closest("input, textarea, select, [role=dialog]"))) return;
@@ -96,7 +98,7 @@ export function usePaneSelection<T, K>(items: readonly T[], keyOf: (item: T) => 
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [current, index, items, keyOf]);
+  }, [current, index, items, keyOf, visible]);
 
   const close = () => {
     if (current) rowRefs.current.get(keyOf(current))?.focus();
