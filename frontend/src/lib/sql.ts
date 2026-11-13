@@ -62,6 +62,14 @@ export function versionRef(tableName: string, version: number): string {
 
 const VIDEO_URL = /^(https?|s3):\/\/\S+\.(mp4|m4v|mov|webm|h265|hevc)(?:[?#]\S*)?$/i;
 
+/** The SQL type of a Lance blob v2 column, which queries read as its descriptor. */
+const BLOB_TYPE =
+  /^Struct\("kind": (?:non-null )?UInt8, "position": (?:non-null )?UInt64, "size": (?:non-null )?UInt64, "blob_id": (?:non-null )?UInt32, "blob_uri": (?:non-null )?Utf8\)$/;
+
+/** Lance `BlobKind::External`: `blob_uri` is an absolute URI when `blob_id` is 0. The other kinds
+ *  live inside the table's own files, which a descriptor does not locate. */
+const BLOB_KIND_EXTERNAL = 3;
+
 /** A playable video referenced by a result value. */
 export interface VideoSource {
   url: string;
@@ -69,14 +77,35 @@ export interface VideoSource {
   rawHevc: boolean;
   /** `s3://` objects play from a presigned https URL the catalog signs. */
   presign: boolean;
+  /** The bytes of the object the clip occupies, from a blob descriptor's position and size;
+   *  absent when the clip is the whole object. */
+  range?: { start: number; length: number };
 }
 
-/** The video a result value points to: an http(s) or s3 URL ending in a video extension (a
- *  query string allowed), or null. */
-export function videoSource(value: unknown): VideoSource | null {
-  if (typeof value !== "string") return null;
-  const url = value.trim();
+function urlSource(url: string): VideoSource | null {
   const match = VIDEO_URL.exec(url);
   if (!match) return null;
   return { url, rawHevc: /^(h265|hevc)$/i.test(match[2]), presign: match[1].toLowerCase() === "s3" };
+}
+
+/** The clip an external blob descriptor points to: its `blob_uri` must pass the same URL check
+ *  as a plain string, and a non-zero `size` limits playback to `[position, position + size)`. */
+function blobSource(value: unknown): VideoSource | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { kind, position, size, blob_id: blobId, blob_uri: uri } = value as Record<string, unknown>;
+  if (kind !== BLOB_KIND_EXTERNAL || blobId !== 0 || typeof uri !== "string") return null;
+  const source = urlSource(uri.trim());
+  if (!source) return null;
+  const start = typeof position === "number" ? position : 0;
+  const length = typeof size === "number" ? size : 0;
+  return length > 0 ? { ...source, range: { start, length } } : source;
+}
+
+/** The video a result value points to, or null. A Lance blob column (by its SQL `type`) is read
+ *  through its descriptor first: an external blob whose URI ends in a video extension, limited
+ *  to the blob's byte range. Any other value must be an http(s) or s3 URL string ending in a
+ *  video extension (a query string allowed). */
+export function videoSource(value: unknown, type?: string): VideoSource | null {
+  if (type !== undefined && BLOB_TYPE.test(type)) return blobSource(value);
+  return typeof value === "string" ? urlSource(value.trim()) : null;
 }

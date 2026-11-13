@@ -76,3 +76,42 @@ describe("videoSource", () => {
     expect(videoSource({ url: "https://host/a.mp4" })).toBeNull();
   });
 });
+
+describe("videoSource for Lance blob columns", () => {
+  const blobType =
+    'Struct("kind": non-null UInt8, "position": non-null UInt64, "size": non-null UInt64, "blob_id": non-null UInt32, "blob_uri": non-null Utf8)';
+  const external = (over: Record<string, unknown> = {}) => ({
+    kind: 3,
+    blob_id: 0,
+    blob_uri: "s3://bucket/media/pack_00000.h265",
+    position: 80626,
+    size: 1000,
+    ...over,
+  });
+  it("plays an external blob's URI limited to its byte range", () => {
+    expect(videoSource(external(), blobType)).toEqual({
+      url: "s3://bucket/media/pack_00000.h265",
+      rawHevc: true,
+      presign: true,
+      range: { start: 80626, length: 1000 },
+    });
+  });
+  it("plays the whole object when the blob has no size", () => {
+    expect(videoSource(external({ size: 0 }), blobType)).toEqual({
+      url: "s3://bucket/media/pack_00000.h265",
+      rawHevc: true,
+      presign: true,
+    });
+  });
+  it("needs a supported URI suffix and an absolute external blob", () => {
+    expect(videoSource(external({ blob_uri: "s3://bucket/media/pack_00000.bin" }), blobType)).toBeNull();
+    expect(videoSource(external({ kind: 1 }), blobType)).toBeNull();
+    expect(videoSource(external({ blob_id: 2 }), blobType)).toBeNull();
+    expect(videoSource(null, blobType)).toBeNull();
+  });
+  it("reads a descriptor only from a blob column, and a URL string from any column", () => {
+    expect(videoSource(external(), 'Struct("a": Int32)')).toBeNull();
+    expect(videoSource("s3://bucket/a.mp4", blobType)).toBeNull();
+    expect(videoSource("s3://bucket/a.mp4", "Utf8")).toMatchObject({ url: "s3://bucket/a.mp4" });
+  });
+});
