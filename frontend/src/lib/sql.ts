@@ -78,15 +78,40 @@ const BLOB_DESCRIPTOR_KEY = "lance-encoding:blob";
  *  does not locate. */
 const BLOB_KIND_EXTERNAL = 3;
 
-/** Names of the table's top-level blob v2 columns. */
+/** Blob v2 logical children, in order (Blob v2 spec): `data`, `uri`, and optionally `position`
+ *  and `size`. */
+const BLOB_LOGICAL_CHILDREN = [
+  ["data", "large_binary"],
+  ["uri", "utf8"],
+  ["position", "uint64"],
+  ["size", "uint64"],
+] as const;
+
+/** The descriptor struct a query reads a blob column as. */
+const BLOB_DESCRIPTOR_TYPE =
+  /^Struct\("kind": (?:non-null )?UInt8, "position": (?:non-null )?UInt64, "size": (?:non-null )?UInt64, "blob_id": (?:non-null )?UInt32, "blob_uri": (?:non-null )?Utf8\)$/;
+
+function isBlobField(field: JsonArrowField): boolean {
+  const children = field.type.fields ?? [];
+  return (
+    field.metadata?.["ARROW:extension:name"] === BLOB_EXTENSION &&
+    field.type.type === "struct" &&
+    (children.length === 2 || children.length === 4) &&
+    children.every((c, i) => c.name === BLOB_LOGICAL_CHILDREN[i][0] && c.type.type === BLOB_LOGICAL_CHILDREN[i][1])
+  );
+}
+
+/** Names of the table's top-level blob v2 columns: fields tagged `lance.blob.v2` whose struct
+ *  children are the blob v2 logical ones. */
 export function blobColumnNames(fields: readonly JsonArrowField[]): Set<string> {
-  return new Set(fields.filter((f) => f.metadata?.["ARROW:extension:name"] === BLOB_EXTENSION).map((f) => f.name));
+  return new Set(fields.filter(isBlobField).map((f) => f.name));
 }
 
 /** Whether a result column holds blob descriptors: its field metadata says so, or it is one of
- *  the table's blob columns by name. */
+ *  the table's blob columns by name; either way its type must be the descriptor struct. */
 export function isBlobColumn(column: SqlColumn, blobColumns: ReadonlySet<string>): boolean {
-  return column.metadata?.[BLOB_DESCRIPTOR_KEY] === "true" || blobColumns.has(column.name);
+  const marked = column.metadata?.[BLOB_DESCRIPTOR_KEY] === "true" || blobColumns.has(column.name);
+  return marked && BLOB_DESCRIPTOR_TYPE.test(column.type);
 }
 
 /** A playable video referenced by a result value. */

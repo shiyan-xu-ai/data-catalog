@@ -88,21 +88,29 @@ describe("videoSource", () => {
 });
 
 describe("blob columns", () => {
-  it("are the table fields tagged lance.blob.v2", () => {
-    const struct = { type: "struct", fields: [] };
+  const child = (name: string, type: string) => ({ name, type: { type }, nullable: true });
+  const logical = (...children: ReturnType<typeof child>[]) => ({ type: "struct", fields: children });
+  const tag = { "ARROW:extension:name": "lance.blob.v2" };
+  const minimal = logical(child("data", "large_binary"), child("uri", "utf8"));
+  const complete = logical(child("data", "large_binary"), child("uri", "utf8"), child("position", "uint64"), child("size", "uint64"));
+  it("are the table fields tagged lance.blob.v2 with the blob v2 struct children", () => {
     expect(
       blobColumnNames([
-        { name: "media", type: struct, nullable: true, metadata: { "ARROW:extension:name": "lance.blob.v2" } },
-        { name: "meta", type: struct, nullable: true, metadata: { "ARROW:extension:name": "arrow.json" } },
+        { name: "media", type: complete, nullable: true, metadata: tag },
+        { name: "thumb", type: minimal, nullable: true, metadata: tag },
+        { name: "odd", type: logical(child("uri", "utf8"), child("data", "large_binary")), nullable: true, metadata: tag },
+        { name: "meta", type: complete, nullable: true, metadata: { "ARROW:extension:name": "arrow.json" } },
         { name: "id", type: { type: "int64" }, nullable: false },
       ]),
-    ).toEqual(new Set(["media"]));
+    ).toEqual(new Set(["media", "thumb"]));
   });
-  it("in results are flagged by descriptor metadata (aliases too) or match a table blob column", () => {
-    const descriptor = { name: "clip", type: "Struct(…)", metadata: { "lance-encoding:blob": "true" } };
-    expect(isBlobColumn(descriptor, new Set())).toBe(true);
-    expect(isBlobColumn({ name: "media", type: "Struct(…)" }, new Set(["media"]))).toBe(true);
-    expect(isBlobColumn({ name: "uri", type: "Utf8", metadata: null }, new Set(["media"]))).toBe(false);
+  it("in results are marked by descriptor metadata (aliases too) or a table blob name, and typed as the descriptor", () => {
+    const descriptorType =
+      'Struct("kind": non-null UInt8, "position": non-null UInt64, "size": non-null UInt64, "blob_id": non-null UInt32, "blob_uri": non-null Utf8)';
+    expect(isBlobColumn({ name: "clip", type: descriptorType, metadata: { "lance-encoding:blob": "true" } }, new Set())).toBe(true);
+    expect(isBlobColumn({ name: "media", type: descriptorType }, new Set(["media"]))).toBe(true);
+    expect(isBlobColumn({ name: "media", type: "Utf8" }, new Set(["media"]))).toBe(false);
+    expect(isBlobColumn({ name: "uri", type: descriptorType, metadata: null }, new Set(["media"]))).toBe(false);
   });
 });
 

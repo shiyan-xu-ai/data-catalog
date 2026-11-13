@@ -159,9 +159,11 @@ Routes carry `$`-joined ids; names display dotted.
   every column's name, type, and full value, nested values as a JSON tree, each
   with a copy button; a new run clears the selection. Lance blob v2 columns are
   read first. A table field whose metadata has `ARROW:extension:name:
-  lance.blob.v2` is a blob column; SQL reads it as its stored descriptor
-  (`kind`, `position`, `size`, `blob_id`, `blob_uri`), whose result-column
-  metadata carries `lance-encoding:blob: true`, so an aliased blob column is
+  lance.blob.v2` and whose struct children are `data`, `uri` (and optionally
+  `position`, `size`) is a blob column. SQL reads it as its stored descriptor
+  struct (`kind`, `position`, `size`, `blob_id`, `blob_uri`), which the result
+  column must be typed as; that column's metadata carries
+  `lance-encoding:blob: true`, so an aliased blob column is
   recognized too. An external blob (`kind` 3, `blob_id` 0) whose `blob_uri`
   ends in a supported video extension plays only its byte range
   `[position, position + size)`; a zero `size` means the object's length, so it
