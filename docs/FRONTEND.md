@@ -18,8 +18,10 @@ the chosen timezone. The top bar shows a breadcrumb. Page content scrolls on its
 own.
 
 - **Namespace tree.** Expands lazily, one list request per opened namespace,
-  with tables as leaves. The current namespace or table is highlighted and its
-  ancestors open automatically.
+  with tables as leaves. A click anywhere on a namespace row expands or
+  collapses it (the chevron only shows the state); a click on its name also
+  opens the namespace page. The current namespace or table is highlighted and
+  its ancestors open automatically.
 - **Global search.** Matches namespace and table names (not columns or
   properties). Tables come from `GET /v1/table`; namespaces come from walking the
   tree from the root on first focus (four list requests at a time, up to 5,000
@@ -31,8 +33,9 @@ Routes carry `$`-joined ids; names display dotted.
 ## Pages
 
 - **Namespace page.** The namespace name (its path is in the breadcrumb), child
-  namespaces, and a table list with name, description, owner, location, and
-  registered and updated times. Each row fills from a cheap describe (Postgres
+  namespaces, and a table list with name, business and technical owner (the
+  `business_owner` and `technical_owner` properties), and registered and
+  updated times. Each row fills from a cheap describe (Postgres
   only) once it scrolls into view, at most six at a time, so listing never opens
   a dataset.
 - **Table page.** The Lance logo and the table name (namespace path in the breadcrumb) and seven

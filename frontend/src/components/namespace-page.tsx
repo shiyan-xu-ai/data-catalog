@@ -10,7 +10,7 @@ import {
   type PagedNames,
 } from "@/lib/catalog-queries";
 import { joinId } from "@/lib/ids";
-import { DESCRIPTION, OWNER, REGISTERED_AT, UPDATED_AT, sortedEntries } from "@/lib/table-metadata";
+import { BUSINESS_OWNER, REGISTERED_AT, TECHNICAL_OWNER, UPDATED_AT, sortedEntries } from "@/lib/table-metadata";
 import { useInView } from "@/lib/use-in-view";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -55,7 +55,6 @@ function TableListRow({ segments }: { segments: string[] }) {
   const pending = !inView || isLoading;
   const cell = (content: React.ReactNode, width = "w-24") =>
     pending ? <Skeleton className={`h-4 ${width}`} /> : error ? <span className="text-muted-foreground">—</span> : content;
-  const location = data?.location ?? data?.table_uri;
   return (
     <TableRow ref={ref}>
       <TableCell className="max-w-64">
@@ -68,29 +67,14 @@ function TableListRow({ segments }: { segments: string[] }) {
           <span className="truncate">{segments[segments.length - 1]}</span>
         </Link>
       </TableCell>
-      <TableCell className="max-w-80">
+      <TableCell className="whitespace-nowrap">
         {error ? (
           <span className="text-xs text-destructive" title={error.message}>Failed to load details</span>
         ) : (
-          cell(
-            props[DESCRIPTION] ? (
-              <span className="line-clamp-2 text-muted-foreground" title={props[DESCRIPTION]}>{props[DESCRIPTION]}</span>
-            ) : (
-              <Dash />
-            ),
-            "w-40",
-          )
+          cell(props[BUSINESS_OWNER] ?? <Dash />, "w-40")
         )}
       </TableCell>
-      <TableCell className="whitespace-nowrap">{cell(props[OWNER] ?? <Dash />)}</TableCell>
-      <TableCell className="max-w-72">
-        {cell(
-          <span className="block truncate font-mono text-xs text-muted-foreground" title={location ?? undefined}>
-            {location ?? "—"}
-          </span>,
-          "w-48",
-        )}
-      </TableCell>
+      <TableCell className="whitespace-nowrap">{cell(props[TECHNICAL_OWNER] ?? <Dash />, "w-40")}</TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground">{cell(<Timestamp value={props[REGISTERED_AT]} />, "w-20")}</TableCell>
       <TableCell className="whitespace-nowrap text-muted-foreground">{cell(<Timestamp value={props[UPDATED_AT]} />, "w-20")}</TableCell>
     </TableRow>
@@ -149,9 +133,8 @@ export function NamespacePage({ segments }: { segments: readonly string[] }) {
                 <TableHeader className="bg-muted/40">
                   <TableRow className="hover:bg-transparent">
                     <TableHead className="pl-4">Name</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead>Owner</TableHead>
-                    <TableHead>Location</TableHead>
+                    <TableHead>Business owner</TableHead>
+                    <TableHead>Technical owner</TableHead>
                     <TableHead>Registered</TableHead>
                     <TableHead>Updated</TableHead>
                   </TableRow>
