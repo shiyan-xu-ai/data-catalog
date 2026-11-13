@@ -65,10 +65,9 @@ function RouteComponent() {
     const ids = kept.ids.filter((id) => id !== dropped);
     setKept({ ids: ids.includes(tableId) ? ids : [...ids, tableId], order });
   }
-  const ids = kept.ids.includes(tableId) ? kept.ids : [...kept.ids, tableId];
   return (
     <>
-      {ids.map((id) => (
+      {kept.ids.map((id) => (
         <div key={id} hidden={id !== tableId}>
           <TablePage tableId={id} active={id === tableId} />
         </div>
@@ -82,18 +81,18 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
   const urlTab = Route.useSearch().tab ?? "overview";
   const navigate = useNavigate();
   // The shown tab is local so a hidden page keeps its own while the URL follows the table on
-  // screen. Returning to a table restores its tab into the URL; while on screen, the URL (a tab
-  // click, back, forward) wins.
+  // screen. Returning to a table through a link without `?tab=` restores its tab into the URL;
+  // otherwise the URL (a tab click, back, forward) wins.
   const [tab, setTab] = useState<Tab>(urlTab);
   const wasActive = useRef(active);
   useEffect(() => {
     const activated = active && !wasActive.current;
     wasActive.current = active;
     if (!active) return;
-    if (!activated) {
-      if (urlTab !== tab) setTab(urlTab);
+    if (activated && urlTab === "overview") {
+      if (tab !== "overview") navigate({ to: ".", search: { tab }, replace: true });
     } else if (urlTab !== tab) {
-      navigate({ to: ".", search: tab === "overview" ? {} : { tab }, replace: true });
+      setTab(urlTab);
     }
     // `tab` is read only when the URL or activity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps

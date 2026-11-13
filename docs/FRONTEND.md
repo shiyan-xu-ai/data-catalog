@@ -42,7 +42,9 @@ Routes carry `$`-joined ids; names display dotted.
   and stays mounted, and the eight most recently visited tables stay mounted
   (hidden) while another table is open, so selected rows and panes, the SQL
   query and results, expansion, filters, and the open tab are all still there
-  when you return; opening a table again restores its tab into `?tab=`.
+  when you return. Opening a table again through a link without `?tab=`
+  restores its tab into the URL; a URL that names a tab (back, forward, a
+  deep link) opens that tab.
   Hidden pages ignore keyboard shortcuts and pause video. Scroll position is
   not kept.
   - **Overview:** a full-width, untitled About card, in order: the current
