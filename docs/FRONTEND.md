@@ -120,8 +120,8 @@ Routes carry `$`-joined ids; names display dotted.
     (`?page_token=<version + 1>&limit=1`) and changes measured against the next
     older loaded version.
   - **Schema:** schema-level metadata on top, then an expandable field tree
-    with compact types (full type on hover), nullability, a count of field
-    metadata entries, and size on disk (last), plus a raw JSON view. Size on
+    with compact types (full type on hover), nullability, a description (the
+    `description` key of the field's metadata), and size on disk (last), plus a raw JSON view. Size on
     disk is a bar per top-level column scaled to the largest column, with the
     size inside it, from `GET /catalog/v1/table/{id}/column-storage` (blob
     payloads and index files excluded); it loads on its own when the tab opens.
