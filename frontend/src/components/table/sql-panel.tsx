@@ -8,7 +8,18 @@ import type { ByteRange } from "@/lib/hevc-player";
 import { MAX_CLIP_BYTES, clipFileName, fetchClip } from "@/lib/media";
 import { useDateTimeFormatter } from "@/lib/preferences";
 import { ErrorCode, type SqlResponse } from "@/lib/schemas";
-import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef, videoSource, type CellKind, type VideoSource } from "@/lib/sql";
+import {
+  defaultQuery,
+  formatCell,
+  isBlobColumn,
+  quoteIdent,
+  resultsToCsv,
+  shortTypeName,
+  versionRef,
+  videoSource,
+  type CellKind,
+  type VideoSource,
+} from "@/lib/sql";
 import { versionStatus } from "@/lib/table-metadata";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -65,7 +76,7 @@ type RowView = "values" | "playback";
 /** Saves the clip's byte range to a file. */
 function SaveClip({ url, source }: { url: string; source: VideoSource & { range: ByteRange } }) {
   const [state, setState] = useState<"idle" | "saving" | "failed">("idle");
-  const tooBig = source.range.length > MAX_CLIP_BYTES;
+  const tooBig = source.range.length != null && source.range.length > MAX_CLIP_BYTES;
   async function save() {
     setState("saving");
     try {
@@ -130,7 +141,9 @@ function VideoClip({ name, source }: { name: string; source: VideoSource }) {
       </div>
       {range && (
         <p className="text-[11px] text-muted-foreground tabular-nums">
-          Blob bytes {formatCount(range.start)}–{formatCount(range.start + range.length)} ({formatBytes(range.length)})
+          {range.length != null
+            ? `Blob bytes ${formatCount(range.start)}–${formatCount(range.start + range.length)} (${formatBytes(range.length)})`
+            : `Blob bytes from ${formatCount(range.start)} to the end of the object`}
         </p>
       )}
       {source.presign && signed.error ? (
@@ -153,6 +166,7 @@ function VideoClip({ name, source }: { name: string; source: VideoSource }) {
  *  a Playback view shows a player per such column. */
 function RowPane({
   result,
+  blobColumns,
   row,
   top,
   view,
@@ -160,6 +174,7 @@ function RowPane({
   onClose,
 }: {
   result: SqlResponse;
+  blobColumns: ReadonlySet<string>;
   row: number;
   top: number;
   view: RowView;
@@ -168,7 +183,7 @@ function RowPane({
 }) {
   const values = result.rows[row];
   const videos = result.columns.flatMap((c, i) => {
-    const source = videoSource(values[i], c.type);
+    const source = videoSource(values[i], isBlobColumn(c, blobColumns));
     return source ? [{ name: c.name, source }] : [];
   });
   const shown = videos.length > 0 ? view : "values";
@@ -235,7 +250,15 @@ function RowPane({
  *  page scrolls. Wide results scroll sideways in the body; the header, a separate table with the
  *  same column widths, follows that scroll. Selecting a row opens its values beside the grid,
  *  pinned `paneTop` px below the tab bar. */
-function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number }) {
+function ResultGrid({
+  result,
+  blobColumns,
+  paneTop,
+}: {
+  result: SqlResponse;
+  blobColumns: ReadonlySet<string>;
+  paneTop: number;
+}) {
   const [widths, setWidths] = useState<number[]>([]);
   const head = useRef<HTMLDivElement>(null);
   const indices = useMemo(() => result.rows.map((_, i) => i), [result]);
@@ -283,7 +306,15 @@ function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number 
     <SidePaneLayout
       pane={
         current != null && (
-          <RowPane result={result} row={current} top={paneTop} view={view} onView={setView} onClose={close} />
+          <RowPane
+            result={result}
+            blobColumns={blobColumns}
+            row={current}
+            top={paneTop}
+            view={view}
+            onView={setView}
+            onClose={close}
+          />
         )
       }
     >
@@ -369,12 +400,15 @@ function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number 
 export function SqlPanel({
   segments,
   columns,
+  blobColumns,
   versions,
   currentVersion,
 }: {
   segments: readonly string[];
   /** Top-level column names, for editor completion. */
   columns: readonly string[];
+  /** Top-level Lance blob v2 columns, whose values play by their descriptors. */
+  blobColumns: ReadonlySet<string>;
   /** The page's paged versions query, newest first. */
   versions: PagedVersions;
   currentVersion: number | null | undefined;
@@ -615,7 +649,7 @@ export function SqlPanel({
             </div>
           ) : result ? (
             // Keyed per run: a new result starts with no row selected and default column widths.
-            <ResultGrid key={runs} result={result} paneTop={toolbarHeight} />
+            <ResultGrid key={runs} result={result} blobColumns={blobColumns} paneTop={toolbarHeight} />
           ) : (
             <div className="space-y-2 p-4 text-xs text-muted-foreground">
               <p>

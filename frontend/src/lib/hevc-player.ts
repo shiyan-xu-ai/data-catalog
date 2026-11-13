@@ -41,10 +41,11 @@ function sleep(ms: number): Promise<void> {
   return promise;
 }
 
-/** A byte window `[start, start + length)` of an object. */
+/** A byte window of an object starting at `start`: `length` bytes, or to the object's end when
+ *  `length` is absent. */
 export interface ByteRange {
   start: number;
-  length: number;
+  length?: number;
 }
 
 /** The `Range` header for the chunk at `offset` within the window that starts at `origin` and is
@@ -94,7 +95,7 @@ export class HevcStreamPlayer {
     private readonly range?: ByteRange,
   ) {
     this.fps = fps;
-    if (range) this.state = { ...this.state, bytesTotal: range.length };
+    if (range?.length != null) this.state = { ...this.state, bytesTotal: range.length };
   }
 
   start(): void {
@@ -194,7 +195,8 @@ export class HevcStreamPlayer {
       if ((start > 0 || origin > 0) && response.status !== 206) {
         throw new Error("The server does not serve byte ranges, so the video cannot seek.");
       }
-      const total = this.range ? this.range.length : Number(response.headers.get("content-range")?.split("/")[1]);
+      const objectSize = Number(response.headers.get("content-range")?.split("/")[1]);
+      const total = Math.min(limit, objectSize - origin);
       if (Number.isFinite(total) && total !== this.state.bytesTotal) this.update({ bytesTotal: total });
       const reader = response.body!.getReader();
       for (;;) {

@@ -157,12 +157,16 @@ Routes carry `$`-joined ids; names display dotted.
   past the server's cap. Clicking a result row (or Enter/Space; Esc closes,
   arrows move) opens a row pane beside the results like the schema field pane:
   every column's name, type, and full value, nested values as a JSON tree, each
-  with a copy button; a new run clears the selection. A result column of a
-  Lance blob type (the descriptor struct `kind`, `position`, `size`, `blob_id`,
-  `blob_uri`) is read first: an external blob (`kind` 3, `blob_id` 0) whose
-  `blob_uri` ends in a supported video extension plays only its byte range
-  `[position, position + size)`; a zero `size` plays the whole object. Other
-  blob kinds live inside the table's own files and are not played. Any other
+  with a copy button; a new run clears the selection. Lance blob v2 columns are
+  read first. A table field whose metadata has `ARROW:extension:name:
+  lance.blob.v2` is a blob column; SQL reads it as its stored descriptor
+  (`kind`, `position`, `size`, `blob_id`, `blob_uri`), whose result-column
+  metadata carries `lance-encoding:blob: true`, so an aliased blob column is
+  recognized too. An external blob (`kind` 3, `blob_id` 0) whose `blob_uri`
+  ends in a supported video extension plays only its byte range
+  `[position, position + size)`; a zero `size` means the object's length, so it
+  plays from `position` to the end. Other blob kinds live inside the table's
+  own files or under a registered base and are not played. Any other
   value that is an http(s) or `s3://` URL ending in a video extension (`.mp4`,
   `.m4v`, `.mov`, `.webm`, `.h265`, `.hevc`; a query string is allowed) plays
   as a whole object. The

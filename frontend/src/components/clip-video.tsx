@@ -22,7 +22,7 @@ export function ClipVideo({ url, range, onFailed }: { url: string; range?: ByteR
   const length = range?.length;
   const tooBig = length != null && length > MAX_CLIP_BYTES;
   useEffect(() => {
-    if (start == null || length == null || tooBig) return;
+    if (start == null || tooBig) return;
     const controller = new AbortController();
     let made: string | undefined;
     fetchClip(url, { start, length }, controller.signal)

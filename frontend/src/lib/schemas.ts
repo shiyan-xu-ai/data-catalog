@@ -47,7 +47,14 @@ export type DescribeNamespaceResponse = z.infer<typeof describeNamespaceResponse
  *  Arrow's JSON writer, so they stay `unknown` until formatted per column type. `version` is
  *  the table version the plain table name read. */
 export const sqlResponseSchema = z.object({
-  columns: z.array(z.object({ name: z.string(), type: z.string() })),
+  columns: z.array(
+    z.object({
+      name: z.string(),
+      type: z.string(),
+      /** Arrow field metadata; a blob column's descriptor carries `lance-encoding:blob`. */
+      metadata: z.record(z.string(), z.string()).nullish(),
+    }),
+  ),
   rows: z.array(z.array(z.unknown())),
   row_count: z.number(),
   truncated: z.boolean(),

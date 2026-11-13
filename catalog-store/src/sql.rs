@@ -39,6 +39,8 @@ pub struct SqlColumn {
     pub name: String,
     /// Arrow data type, as Arrow displays it (`Int32`, `Utf8`, ...).
     pub data_type: String,
+    /// Arrow field metadata, such as `ARROW:extension:name` (`lance.blob.v2` on blob columns).
+    pub metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +146,7 @@ async fn run_on(table: OpenTable, name: &str, sql: &str, limits: &SqlLimits) -> 
             .map(|f| SqlColumn {
                 name: f.name().clone(),
                 data_type: f.data_type().to_string(),
+                metadata: f.metadata().clone(),
             })
             .collect(),
         rows,
