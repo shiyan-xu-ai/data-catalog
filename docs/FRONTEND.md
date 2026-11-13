@@ -38,7 +38,15 @@ Routes carry `$`-joined ids; names display dotted.
 - **Table page.** The Lance logo and the table name (namespace path in the breadcrumb) and seven
   tabs in a tab bar pinned to the top while content scrolls (Overview,
   Properties, Timeline, Versions, Schema, Indices, SQL; the active tab is in
-  `?tab=`; Schema and Indices show their counts).
+  `?tab=`; Schema and Indices show their counts). A tab mounts on first visit
+  and stays mounted, and the eight most recently visited tables stay mounted
+  (hidden) while another table is open, so selected rows and panes, the SQL
+  query and results, expansion, filters, and the open tab are all still there
+  when you return. Opening a table again through a link without `?tab=`
+  restores its tab into the URL; a URL that names a tab (back, forward, a
+  deep link) opens that tab.
+  Hidden pages ignore keyboard shortcuts and pause video. Scroll position is
+  not kept.
   - **Overview:** a full-width, untitled About card, in order: the current
     version's table format (`Lance <data storage version>`, e.g. `Lance 2.2`),
     the current version with its commit age (when a newer version is

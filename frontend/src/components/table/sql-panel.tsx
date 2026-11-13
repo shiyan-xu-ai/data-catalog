@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2, PanelLeftClose, PanelLeftOpen, Play, RotateCcw, Square } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useActive } from "@/lib/active";
 import { ApiError, presignMedia, runSql } from "@/lib/api";
 import type { PagedVersions } from "@/lib/catalog-queries";
 import { formatCount, parseTime } from "@/lib/format";
@@ -63,6 +64,11 @@ type RowView = "values" | "playback";
  *  storage directly; raw H.265 streams are decoded in the browser, other files use `<video>`. */
 function VideoClip({ name, source }: { name: string; source: VideoSource }) {
   const [failed, setFailed] = useState(false);
+  const video = useRef<HTMLVideoElement>(null);
+  const visible = useActive();
+  useEffect(() => {
+    if (!visible) video.current?.pause();
+  }, [visible]);
   const signed = useQuery({
     queryKey: ["media-url", source.url],
     queryFn: () => presignMedia(source.url),
@@ -95,7 +101,14 @@ function VideoClip({ name, source }: { name: string; source: VideoSource }) {
       ) : failed ? (
         <p className="text-xs text-muted-foreground">This browser cannot play this file. Download it to watch.</p>
       ) : (
-        <video controls preload="metadata" src={url} onError={() => setFailed(true)} className="aspect-video w-full rounded bg-black" />
+        <video
+          ref={video}
+          controls
+          preload="metadata"
+          src={url}
+          onError={() => setFailed(true)}
+          className="aspect-video w-full rounded bg-black"
+        />
       )}
     </section>
   );

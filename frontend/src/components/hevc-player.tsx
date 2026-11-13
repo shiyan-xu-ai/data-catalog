@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { Maximize, Minimize, Pause, Play, RotateCcw } from "lucide-react";
+import { useActive } from "@/lib/active";
 import { formatBytes } from "@/lib/format";
 import { HevcStreamPlayer, type PlayerState } from "@/lib/hevc-player";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,11 @@ export function HevcPlayer({ url }: { url: string }) {
   const [scrub, setScrub] = useState<number | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
 
+  const visible = useActive();
   useEffect(() => () => player.current?.close(), []);
+  useEffect(() => {
+    if (!visible) player.current?.pause();
+  }, [visible]);
   useEffect(() => {
     const onChange = () => setFullscreen(document.fullscreenElement === container.current);
     document.addEventListener("fullscreenchange", onChange);
