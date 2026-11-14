@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } fr
 import { Maximize, Minimize, Pause, Play, RotateCcw } from "lucide-react";
 import { useActive } from "@/lib/active";
 import { formatBytes } from "@/lib/format";
-import { HevcStreamPlayer, type PlayerState } from "@/lib/hevc-player";
+import { HevcStreamPlayer, type ByteRange, type PlayerState } from "@/lib/hevc-player";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -18,11 +18,12 @@ function clock(seconds: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-/** Player for a raw H.265 stream at `url`, decoded in the browser. Nothing is fetched until Play.
+/** Player for a raw H.265 stream at `url` (only the bytes in `range` when given), decoded in the
+ *  browser. Nothing is fetched until Play.
  *  A frame-rate picker sets playback speed since raw streams carry no timing; the progress bar and
  *  duration are by byte position, so times are estimates. Click the video or press Space to play
  *  or pause, arrow keys skip, F toggles full screen. */
-export function HevcPlayer({ url }: { url: string }) {
+export function HevcPlayer({ url, range }: { url: string; range?: ByteRange }) {
   const container = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const bar = useRef<HTMLDivElement>(null);
@@ -58,7 +59,7 @@ export function HevcPlayer({ url }: { url: string }) {
     } else if (!current || !state || status === "ended" || status === "error") {
       current?.close();
       if (!canvas.current) return;
-      const next = new HevcStreamPlayer(url, canvas.current, fps, setState);
+      const next = new HevcStreamPlayer(url, canvas.current, fps, setState, range);
       player.current = next;
       next.start();
     } else if (status === "paused") {

@@ -1,13 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2, PanelLeftClose, PanelLeftOpen, Play, RotateCcw, Square } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useActive } from "@/lib/active";
 import { ApiError, presignMedia, runSql } from "@/lib/api";
 import type { PagedVersions } from "@/lib/catalog-queries";
-import { formatCount, parseTime } from "@/lib/format";
+import { formatBytes, formatCount, parseTime } from "@/lib/format";
+import type { ByteRange } from "@/lib/hevc-player";
+import { MAX_CLIP_BYTES, clipFileName, fetchClip } from "@/lib/media";
 import { useDateTimeFormatter } from "@/lib/preferences";
 import { ErrorCode, type SqlResponse } from "@/lib/schemas";
-import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef, videoSource, type CellKind, type VideoSource } from "@/lib/sql";
+import {
+  defaultQuery,
+  formatCell,
+  isBlobColumn,
+  quoteIdent,
+  resultsToCsv,
+  shortTypeName,
+  versionRef,
+  videoSource,
+  type CellKind,
+  type VideoSource,
+} from "@/lib/sql";
 import { versionStatus } from "@/lib/table-metadata";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CopyButton } from "@/components/copy-button";
 import { HelpTooltip } from "@/components/help-tooltip";
+import { ClipVideo } from "@/components/clip-video";
 import { HevcPlayer } from "@/components/hevc-player";
 import { JsonTree } from "@/components/json-tree";
 import { PaneTabs, SidePane, SidePaneLayout, usePaneSelection } from "@/components/side-pane";
@@ -60,15 +73,44 @@ function copyText(value: unknown): string {
 
 type RowView = "values" | "playback";
 
+/** Saves the clip's byte range to a file. */
+function SaveClip({ url, source }: { url: string; source: VideoSource & { range: ByteRange } }) {
+  const [state, setState] = useState<"idle" | "saving" | "failed">("idle");
+  const tooBig = source.range.length != null && source.range.length > MAX_CLIP_BYTES;
+  async function save() {
+    setState("saving");
+    try {
+      const href = URL.createObjectURL(await fetchClip(url, source.range));
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = clipFileName(source.url, source.range);
+      link.click();
+      URL.revokeObjectURL(href);
+      setState("idle");
+    } catch {
+      setState("failed");
+    }
+  }
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className="ml-auto h-7 shrink-0"
+      disabled={tooBig || state === "saving"}
+      onClick={save}
+      title={tooBig ? "Too large to save from the browser" : state === "failed" ? "Saving failed; try again" : undefined}
+    >
+      {state === "saving" ? <Loader2 className="animate-spin" /> : <Download />}
+      {state === "failed" ? "Retry download" : "Download"}
+    </Button>
+  );
+}
+
 /** One playable column. `s3://` sources are presigned by the catalog and then read from object
- *  storage directly; raw H.265 streams are decoded in the browser, other files use `<video>`. */
+ *  storage directly; raw H.265 streams are decoded in the browser, other files use `<video>`.
+ *  A source with a byte range (a Lance blob) plays and downloads only those bytes. */
 function VideoClip({ name, source }: { name: string; source: VideoSource }) {
   const [failed, setFailed] = useState(false);
-  const video = useRef<HTMLVideoElement>(null);
-  const visible = useActive();
-  useEffect(() => {
-    if (!visible) video.current?.pause();
-  }, [visible]);
   const signed = useQuery({
     queryKey: ["media-url", source.url],
     queryFn: () => presignMedia(source.url),
@@ -77,48 +119,54 @@ function VideoClip({ name, source }: { name: string; source: VideoSource }) {
   });
   const url = source.presign ? signed.data?.url : source.url;
   const downloadUrl = source.presign ? signed.data?.download_url : source.url;
+  const { range } = source;
   return (
     <section className="space-y-1.5 border-t px-4 py-3">
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate font-mono text-xs font-medium" title={source.url}>
           {name}
         </span>
-        {downloadUrl && (
-          <Button asChild size="sm" variant="outline" className="ml-auto h-7 shrink-0">
-            <a href={downloadUrl} download>
-              <Download />
-              Download
-            </a>
-          </Button>
+        {url && range ? (
+          <SaveClip url={url} source={{ ...source, range }} />
+        ) : (
+          downloadUrl && (
+            <Button asChild size="sm" variant="outline" className="ml-auto h-7 shrink-0">
+              <a href={downloadUrl} download>
+                <Download />
+                Download
+              </a>
+            </Button>
+          )
         )}
       </div>
+      {range && (
+        <p className="text-[11px] text-muted-foreground tabular-nums">
+          {range.length != null
+            ? `Blob bytes ${formatCount(range.start)}–${formatCount(range.start + range.length)} (${formatBytes(range.length)})`
+            : `Blob bytes from ${formatCount(range.start)} to the end of the object`}
+        </p>
+      )}
       {source.presign && signed.error ? (
         <p className="text-xs text-destructive">Could not get a URL for this object: {signed.error.message}</p>
       ) : !url ? (
         <Skeleton className="aspect-video w-full" />
       ) : source.rawHevc ? (
-        <HevcPlayer key={url} url={url} />
+        <HevcPlayer key={`${url}:${range?.start}:${range?.length}`} url={url} range={range} />
       ) : failed ? (
         <p className="text-xs text-muted-foreground">This browser cannot play this file. Download it to watch.</p>
       ) : (
-        <video
-          ref={video}
-          controls
-          preload="metadata"
-          src={url}
-          onError={() => setFailed(true)}
-          className="aspect-video w-full rounded bg-black"
-        />
+        <ClipVideo url={url} range={range} onFailed={() => setFailed(true)} />
       )}
     </section>
   );
 }
 
 /** Every column of one result row with its type and full value, nested values as a JSON tree.
- *  When some value is a video URL (see `videoSource`), a Playback view shows a player per such
- *  column. */
+ *  When some value is a playable video (see `videoSource`: a Lance blob column or a video URL),
+ *  a Playback view shows a player per such column. */
 function RowPane({
   result,
+  blobColumns,
   row,
   top,
   view,
@@ -126,6 +174,7 @@ function RowPane({
   onClose,
 }: {
   result: SqlResponse;
+  blobColumns: ReadonlySet<string>;
   row: number;
   top: number;
   view: RowView;
@@ -134,7 +183,7 @@ function RowPane({
 }) {
   const values = result.rows[row];
   const videos = result.columns.flatMap((c, i) => {
-    const source = videoSource(values[i]);
+    const source = videoSource(values[i], isBlobColumn(c, blobColumns));
     return source ? [{ name: c.name, source }] : [];
   });
   const shown = videos.length > 0 ? view : "values";
@@ -201,7 +250,15 @@ function RowPane({
  *  page scrolls. Wide results scroll sideways in the body; the header, a separate table with the
  *  same column widths, follows that scroll. Selecting a row opens its values beside the grid,
  *  pinned `paneTop` px below the tab bar. */
-function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number }) {
+function ResultGrid({
+  result,
+  blobColumns,
+  paneTop,
+}: {
+  result: SqlResponse;
+  blobColumns: ReadonlySet<string>;
+  paneTop: number;
+}) {
   const [widths, setWidths] = useState<number[]>([]);
   const head = useRef<HTMLDivElement>(null);
   const indices = useMemo(() => result.rows.map((_, i) => i), [result]);
@@ -249,7 +306,15 @@ function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number 
     <SidePaneLayout
       pane={
         current != null && (
-          <RowPane result={result} row={current} top={paneTop} view={view} onView={setView} onClose={close} />
+          <RowPane
+            result={result}
+            blobColumns={blobColumns}
+            row={current}
+            top={paneTop}
+            view={view}
+            onView={setView}
+            onClose={close}
+          />
         )
       }
     >
@@ -335,12 +400,15 @@ function ResultGrid({ result, paneTop }: { result: SqlResponse; paneTop: number 
 export function SqlPanel({
   segments,
   columns,
+  blobColumns,
   versions,
   currentVersion,
 }: {
   segments: readonly string[];
   /** Top-level column names, for editor completion. */
   columns: readonly string[];
+  /** Top-level Lance blob v2 columns, whose values play by their descriptors. */
+  blobColumns: ReadonlySet<string>;
   /** The page's paged versions query, newest first. */
   versions: PagedVersions;
   currentVersion: number | null | undefined;
@@ -581,7 +649,7 @@ export function SqlPanel({
             </div>
           ) : result ? (
             // Keyed per run: a new result starts with no row selected and default column widths.
-            <ResultGrid key={runs} result={result} paneTop={toolbarHeight} />
+            <ResultGrid key={runs} result={result} blobColumns={blobColumns} paneTop={toolbarHeight} />
           ) : (
             <div className="space-y-2 p-4 text-xs text-muted-foreground">
               <p>

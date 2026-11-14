@@ -24,6 +24,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { displayName, splitId } from "@/lib/ids";
 import { ErrorCode } from "@/lib/schemas";
+import { blobColumnNames } from "@/lib/sql";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/empty-state";
@@ -111,6 +112,7 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
   const stats = useTableStats(segments, settled);
   const measures = useFragmentMeasures(segments);
   const columnNames = useMemo(() => detail.data?.schema?.fields.map((f) => f.name) ?? [], [detail.data]);
+  const blobColumns = useMemo(() => blobColumnNames(detail.data?.schema?.fields ?? []), [detail.data]);
 
   if (cheap.error instanceof ApiError && cheap.error.code === ErrorCode.TableNotFound) {
     return (
@@ -159,7 +161,13 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
       // `overflow-clip` rounds the corners without becoming the toolbar's sticky scroll box.
       <div className="overflow-clip rounded-lg border bg-card shadow-xs">
         <Suspense fallback={<Skeleton className="h-96 w-full rounded-none" />}>
-          <SqlPanel segments={segments} columns={columnNames} versions={versions} currentVersion={detail.data?.version} />
+          <SqlPanel
+            segments={segments}
+            columns={columnNames}
+            blobColumns={blobColumns}
+            versions={versions}
+            currentVersion={detail.data?.version}
+          />
         </Suspense>
       </div>
     ),

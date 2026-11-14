@@ -157,15 +157,30 @@ Routes carry `$`-joined ids; names display dotted.
   past the server's cap. Clicking a result row (or Enter/Space; Esc closes,
   arrows move) opens a row pane beside the results like the schema field pane:
   every column's name, type, and full value, nested values as a JSON tree, each
-  with a copy button; a new run clears the selection. When some value in the
-  row is an http(s) or `s3://` URL ending in a video extension (`.mp4`,
-  `.m4v`, `.mov`, `.webm`, `.h265`, `.hevc`; a query string is allowed), the
+  with a copy button; a new run clears the selection. Lance blob v2 columns are
+  read first. A table field whose metadata has `ARROW:extension:name:
+  lance.blob.v2` and whose struct children are `data`, `uri` (and optionally
+  `position`, `size`) is a blob column. SQL reads it as its stored descriptor
+  struct (`kind`, `position`, `size`, `blob_id`, `blob_uri`), which the result
+  column must be typed as; that column's metadata carries
+  `lance-encoding:blob: true`, so an aliased blob column is
+  recognized too. An external blob (`kind` 3, `blob_id` 0) whose `blob_uri`
+  ends in a supported video extension plays only its byte range
+  `[position, position + size)`; a zero `size` means the object's length, so it
+  plays from `position` to the end. Other blob kinds live inside the table's
+  own files or under a registered base and are not played. Any other
+  value that is an http(s) or `s3://` URL ending in a video extension (`.mp4`,
+  `.m4v`, `.mov`, `.webm`, `.h265`, `.hevc`; a query string is allowed) plays
+  as a whole object. The
   pane adds a Playback tab with a player per such column and a Download button
-  (for `s3://` objects, a presigned URL served as an attachment).
+  (for `s3://` objects, a presigned URL served as an attachment; for a blob
+  range, the range saved as a file, up to 512 MiB).
   `s3://` objects play from a presigned https URL
   (`GET /catalog/v1/media/presign?uri=`), so the browser reads them from object
   storage directly; the bucket's CORS rules must allow the UI's origin and the
-  `Range` header. Container formats play in a `<video>` element. Raw H.265
+  `Range` header. A blob range of a container file (`.mp4` and so on) is
+  fetched into memory (up to 512 MiB) and played from there, since a browser
+  cannot play a slice of a remote file. Container formats play in a `<video>` element. Raw H.265
   streams (`.h265`, `.hevc`) are read in 2 MiB byte ranges, split into
   pictures, decoded with WebCodecs (where the browser and hardware support
   H.265; otherwise the pane says so and stops reading), and drawn on a canvas

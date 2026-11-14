@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { defaultQuery, formatCell, quoteIdent, resultsToCsv, shortTypeName, versionRef, videoSource } from "./sql";
+import {
+  blobColumnNames,
+  defaultQuery,
+  formatCell,
+  isBlobColumn,
+  quoteIdent,
+  resultsToCsv,
+  shortTypeName,
+  versionRef,
+  videoSource,
+} from "./sql";
 
 describe("SQL pre-fill", () => {
   it("always double-quotes the table name and escapes embedded quotes", () => {
@@ -74,5 +84,70 @@ describe("videoSource", () => {
     expect(videoSource("https://host/a.mp4.json")).toBeNull();
     expect(videoSource("https://host/mp4")).toBeNull();
     expect(videoSource({ url: "https://host/a.mp4" })).toBeNull();
+  });
+});
+
+describe("blob columns", () => {
+  const child = (name: string, type: string) => ({ name, type: { type }, nullable: true });
+  const logical = (...children: ReturnType<typeof child>[]) => ({ type: "struct", fields: children });
+  const tag = { "ARROW:extension:name": "lance.blob.v2" };
+  const minimal = logical(child("data", "large_binary"), child("uri", "utf8"));
+  const complete = logical(child("data", "large_binary"), child("uri", "utf8"), child("position", "uint64"), child("size", "uint64"));
+  it("are the table fields tagged lance.blob.v2 with the blob v2 struct children", () => {
+    expect(
+      blobColumnNames([
+        { name: "media", type: complete, nullable: true, metadata: tag },
+        { name: "thumb", type: minimal, nullable: true, metadata: tag },
+        { name: "odd", type: logical(child("uri", "utf8"), child("data", "large_binary")), nullable: true, metadata: tag },
+        { name: "meta", type: complete, nullable: true, metadata: { "ARROW:extension:name": "arrow.json" } },
+        { name: "id", type: { type: "int64" }, nullable: false },
+      ]),
+    ).toEqual(new Set(["media", "thumb"]));
+  });
+  it("in results are marked by descriptor metadata (aliases too) or a table blob name, and typed as the descriptor", () => {
+    const descriptorType =
+      'Struct("kind": non-null UInt8, "position": non-null UInt64, "size": non-null UInt64, "blob_id": non-null UInt32, "blob_uri": non-null Utf8)';
+    expect(isBlobColumn({ name: "clip", type: descriptorType, metadata: { "lance-encoding:blob": "true" } }, new Set())).toBe(true);
+    expect(isBlobColumn({ name: "media", type: descriptorType }, new Set(["media"]))).toBe(true);
+    expect(isBlobColumn({ name: "media", type: "Utf8" }, new Set(["media"]))).toBe(false);
+    expect(isBlobColumn({ name: "uri", type: descriptorType, metadata: null }, new Set(["media"]))).toBe(false);
+  });
+});
+
+describe("videoSource for blob descriptors", () => {
+  const external = (over: Record<string, unknown> = {}) => ({
+    kind: 3,
+    blob_id: 0,
+    blob_uri: "s3://bucket/media/pack_00000.h265",
+    position: 80626,
+    size: 1000,
+    ...over,
+  });
+  it("plays an external blob's URI limited to its byte range", () => {
+    expect(videoSource(external(), true)).toEqual({
+      url: "s3://bucket/media/pack_00000.h265",
+      rawHevc: true,
+      presign: true,
+      range: { start: 80626, length: 1000 },
+    });
+  });
+  it("reads a zero size as the rest of the object from the position", () => {
+    expect(videoSource(external({ size: 0 }), true)?.range).toEqual({ start: 80626, length: undefined });
+    expect(videoSource(external({ size: 0, position: 0 }), true)).toEqual({
+      url: "s3://bucket/media/pack_00000.h265",
+      rawHevc: true,
+      presign: true,
+    });
+  });
+  it("needs a supported URI suffix and an absolute external blob", () => {
+    expect(videoSource(external({ blob_uri: "s3://bucket/media/pack_00000.bin" }), true)).toBeNull();
+    expect(videoSource(external({ kind: 1 }), true)).toBeNull();
+    expect(videoSource(external({ blob_id: 2 }), true)).toBeNull();
+    expect(videoSource(null, true)).toBeNull();
+  });
+  it("reads a descriptor only from a blob column, and a URL string only from other columns", () => {
+    expect(videoSource(external(), false)).toBeNull();
+    expect(videoSource("s3://bucket/a.mp4", true)).toBeNull();
+    expect(videoSource("s3://bucket/a.mp4")).toMatchObject({ url: "s3://bucket/a.mp4" });
   });
 });

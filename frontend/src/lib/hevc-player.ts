@@ -41,6 +41,19 @@ function sleep(ms: number): Promise<void> {
   return promise;
 }
 
+/** A byte window of an object starting at `start`: `length` bytes, or to the object's end when
+ *  `length` is absent. */
+export interface ByteRange {
+  start: number;
+  length?: number;
+}
+
+/** The `Range` header for the chunk at `offset` within the window that starts at `origin` and is
+ *  `limit` bytes long (unbounded for the whole object). */
+export function rangeHeader(origin: number, offset: number, limit: number): string {
+  return `bytes=${origin + offset}-${origin + Math.min(offset + CHUNK_BYTES, limit) - 1}`;
+}
+
 /** Plays a raw H.265 Annex-B stream from `url` on `canvas`: reads it in ranged chunks, splits it
  *  into pictures, decodes them with WebCodecs, and draws frames at `fps` (raw streams carry no
  *  timestamps). Reading pauses while enough frames are buffered. `seek` jumps to a byte fraction
@@ -77,8 +90,12 @@ export class HevcStreamPlayer {
     private readonly canvas: HTMLCanvasElement,
     fps: number,
     private readonly onState: (state: PlayerState) => void,
+    /** The bytes of the object that hold the stream; the whole object when absent. All offsets
+     *  the player reports are relative to `range.start`. */
+    private readonly range?: ByteRange,
   ) {
     this.fps = fps;
+    if (range?.length != null) this.state = { ...this.state, bytesTotal: range.length };
   }
 
   start(): void {
@@ -164,26 +181,36 @@ export class HevcStreamPlayer {
     });
   }
 
-  /** Reads the object range by range from `start`; from 0 it falls back to one streamed body when
-   *  ranges are ignored. */
+  /** Reads the stream range by range from `start` (relative to the window); from 0 it falls back
+   *  to one streamed body when ranges are ignored. */
   private async readFrom(start: number, signal: AbortSignal): Promise<void> {
     const splitter = new AnnexBSplitter(start);
     const assembler = new AccessUnitAssembler();
+    const origin = this.range?.start ?? 0;
+    const limit = this.range?.length ?? Infinity;
     let offset = start;
     while (!signal.aborted) {
-      const response = await fetch(this.url, { headers: { Range: `bytes=${offset}-${offset + CHUNK_BYTES - 1}` }, signal });
+      const response = await fetch(this.url, { headers: { Range: rangeHeader(origin, offset, limit) }, signal });
       if (!response.ok) throw new Error(`HTTP ${response.status} reading the video`);
-      if (start > 0 && response.status !== 206) throw new Error("The server does not serve byte ranges, so the video cannot seek.");
-      const total = Number(response.headers.get("content-range")?.split("/")[1]);
+      if ((start > 0 || origin > 0) && response.status !== 206) {
+        throw new Error("The server does not serve byte ranges, so the video cannot seek.");
+      }
+      const objectSize = Number(response.headers.get("content-range")?.split("/")[1]);
+      const total = Math.min(limit, objectSize - origin);
       if (Number.isFinite(total) && total !== this.state.bytesTotal) this.update({ bytesTotal: total });
       const reader = response.body!.getReader();
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        offset += value.length;
+        const chunk = offset + value.length > limit ? value.subarray(0, limit - offset) : value;
+        offset += chunk.length;
         this.update({ bytesRead: offset });
-        await this.feed(splitter.push(value), assembler, signal);
+        await this.feed(splitter.push(chunk), assembler, signal);
         if (signal.aborted) return;
+        if (offset >= limit) {
+          void reader.cancel();
+          break;
+        }
       }
       if (response.status !== 206 || !Number.isFinite(total) || offset >= total) break;
     }

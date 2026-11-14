@@ -7,6 +7,7 @@
 //! cannot share the service port with the UI and health routes. Every other `/v1` route answers
 //! the spec's Unsupported error.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -634,6 +635,8 @@ struct SqlColumnResponse {
     name: String,
     #[serde(rename = "type")]
     data_type: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    metadata: HashMap<String, String>,
 }
 
 async fn run_sql(
@@ -671,6 +674,7 @@ async fn run_sql(
             .map(|c| SqlColumnResponse {
                 name: c.name,
                 data_type: c.data_type,
+                metadata: c.metadata,
             })
             .collect(),
         row_count: result.rows.len(),
