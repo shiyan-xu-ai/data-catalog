@@ -4,7 +4,7 @@ members = ["catalog-store", "catalog-api"]
 
 [workspace.package]
 # Keep in sync with frontend/package.json; frontend/src/lib/version.test.ts checks it.
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 
