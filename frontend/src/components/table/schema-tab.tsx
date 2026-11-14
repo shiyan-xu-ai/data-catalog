@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { Braces, ChevronRight, ListTree, TableProperties } from "lucide-react";
 import { useColumnStorage } from "@/lib/catalog-queries";
-import { formatBytes, formatCountOf, formatPercent } from "@/lib/format";
+import { formatBytes, formatPercent } from "@/lib/format";
 import { expandablePaths, flattenSchema, schemaMetadataByColumn, type SchemaRow } from "@/lib/schema-tree";
 import { sortedEntries } from "@/lib/table-metadata";
 import type { ColumnStorageResponse, DescribeTableResponse, JsonArrowSchema } from "@/lib/schemas";
@@ -254,7 +254,7 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                   <th className={cn(HEAD_CELL, "min-w-48 pl-4")}>Field</th>
                   <th className={cn(HEAD_CELL, "min-w-32")}>Type</th>
                   <th className={HEAD_CELL}>Nullable</th>
-                  <th className={HEAD_CELL}>Field metadata</th>
+                  <th className={HEAD_CELL}>Description</th>
                   <th className={cn(HEAD_CELL, "pr-4")}>
                     <span className="inline-flex items-center gap-1">
                       Size on disk
@@ -305,11 +305,11 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
                     <td className="px-3 py-2">
                       <Badge variant="outline">{r.nullable ? "nullable" : "required"}</Badge>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap">
-                      {r.metadata.length ? (
-                        <Badge variant="secondary" className="font-normal">
-                          {formatCountOf(r.metadata.length, "entry", "entries")}
-                        </Badge>
+                    <td className="max-w-96 min-w-48 px-3 py-2">
+                      {r.field.metadata?.description ? (
+                        <span className="line-clamp-2 text-muted-foreground" title={r.field.metadata.description}>
+                          {r.field.metadata.description}
+                        </span>
                       ) : (
                         <Dash />
                       )}

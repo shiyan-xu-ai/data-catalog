@@ -121,21 +121,22 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
   const FolderIcon = open ? FolderOpen : Folder;
   return (
     <>
-      <div className={cn(rowClass, active && activeClass)} style={{ paddingLeft: `${depth * 12 + 4}px` }}>
-        <button
-          type="button"
-          aria-label={open ? "Collapse" : "Expand"}
-          aria-expanded={open}
-          onClick={() => state.toggle(id)}
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background/60 hover:text-foreground"
-        >
+      {/* A click anywhere on the row toggles it; the chevron only shows the state, and the name
+          still opens the namespace page. */}
+      <div
+        onClick={() => state.toggle(id)}
+        className={cn(rowClass, "cursor-pointer", active && activeClass)}
+        style={{ paddingLeft: `${depth * 12 + 4}px` }}
+      >
+        <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground">
           <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
-        </button>
+        </span>
         <Link
           ref={ref}
           to="/namespaces/$nsId"
           params={{ nsId: id }}
           onClick={state.onNavigate}
+          aria-expanded={open}
           className="flex min-w-0 flex-1 items-center gap-1.5"
           title={segments[segments.length - 1]}
         >
