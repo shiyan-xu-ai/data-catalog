@@ -12,14 +12,15 @@ use lance::session::Session;
 use lance::Dataset;
 use lance_index::is_system_index;
 use lance_namespace::models::{
-    BranchContents, CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
-    DeregisterTableResponse, DescribeNamespaceRequest, DescribeNamespaceResponse,
-    DescribeTableIndexStatsRequest, DescribeTableIndexStatsResponse, DescribeTableRequest,
-    DescribeTableResponse, DescribeTableVersionRequest, DescribeTableVersionResponse,
-    DropNamespaceRequest, DropNamespaceResponse, FragmentStats, FragmentSummary,
-    GetTableStatsRequest, GetTableStatsResponse, IndexContent, ListNamespacesRequest,
-    ListNamespacesResponse, ListTableBranchesRequest, ListTableBranchesResponse,
-    ListTableIndicesRequest, ListTableIndicesResponse, ListTableTagsRequest, ListTableTagsResponse,
+    BranchContents, CountTableRowsRequest, CreateNamespaceRequest, CreateNamespaceResponse,
+    DeregisterTableRequest, DeregisterTableResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DescribeTableIndexStatsRequest, DescribeTableIndexStatsResponse,
+    DescribeTableRequest, DescribeTableResponse, DescribeTableVersionRequest,
+    DescribeTableVersionResponse, DropNamespaceRequest, DropNamespaceResponse, FragmentStats,
+    FragmentSummary, GetTableStatsRequest, GetTableStatsResponse, GetTableTagVersionRequest,
+    GetTableTagVersionResponse, IndexContent, ListNamespacesRequest, ListNamespacesResponse,
+    ListTableBranchesRequest, ListTableBranchesResponse, ListTableIndicesRequest,
+    ListTableIndicesResponse, ListTableTagsRequest, ListTableTagsResponse,
     ListTableVersionsRequest, ListTableVersionsResponse, ListTablesRequest, ListTablesResponse,
     NamespaceExistsRequest, RegisterTableRequest, RegisterTableResponse, TableBasicStats,
     TableExistsRequest, TableVersion, TagContents,
@@ -1360,6 +1361,49 @@ impl LanceNamespace for PostgresNamespace {
             page_token,
             ..Default::default()
         })
+    }
+
+    async fn get_table_tag_version(
+        &self,
+        request: GetTableTagVersionRequest,
+    ) -> Result<GetTableTagVersionResponse> {
+        let OpenTable {
+            location, dataset, ..
+        } = self
+            .open_table(&request.id.unwrap_or_default(), None)
+            .await?;
+        let tag = request.tag;
+        let contents = dataset.tags().get(&tag).await.map_err(|e| match e {
+            lance::Error::RefNotFound { .. } => NamespaceError::TableTagNotFound {
+                message: format!("tag {tag:?} at {location}"),
+            }
+            .into(),
+            lance::Error::InvalidRef { message } => {
+                invalid_input(format!("invalid tag {tag:?}: {message}"))
+            }
+            e => lance_error(format!("get tag {tag:?} at {location}"))(e),
+        })?;
+        let mut response = GetTableTagVersionResponse::new(contents.version as i64);
+        response.branch = contents.branch;
+        Ok(response)
+    }
+
+    /// Counts live rows (deleted rows excluded) at the requested version, else the current
+    /// version. With a predicate this scans the filtered columns, so it is slow on large tables.
+    async fn count_table_rows(&self, request: CountTableRowsRequest) -> Result<i64> {
+        reject_branch(request.branch.as_deref())?;
+        let version = parse_version(request.version)?;
+        let OpenTable {
+            location, dataset, ..
+        } = self
+            .open_table(&request.id.unwrap_or_default(), version)
+            .await?;
+        let predicate = request.predicate.filter(|p| !p.trim().is_empty());
+        let rows = dataset.count_rows(predicate).await.map_err(|e| match e {
+            lance::Error::InvalidInput { .. } => invalid_input(format!("invalid predicate: {e}")),
+            e => lance_error(format!("count rows at {location}"))(e),
+        })?;
+        Ok(rows as i64)
     }
 
     async fn list_table_branches(

@@ -263,6 +263,22 @@ async fn rest_catalog_routes() {
         (StatusCode::OK, json!({"tags": {}}))
     );
     assert_eq!(
+        post(
+            &app,
+            "/v1/table/prod%24users/count_rows",
+            json!({"predicate": "id > 1"})
+        )
+        .await,
+        (StatusCode::OK, json!(2))
+    );
+    let (status, missing_tag) = post(
+        &app,
+        "/v1/table/prod%24users/tags/version",
+        json!({"tag": "release"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing_tag}");
+    assert_eq!(
         post(&app, "/v1/table/prod%24users/branches/list", json!({})).await,
         (StatusCode::OK, json!({"branches": {}}))
     );

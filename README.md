@@ -76,11 +76,13 @@ page).
 | POST | `/v1/table/:id/exists` | 200, or 404. |
 | POST | `/v1/table/:id/deregister` | Removes the registration; the data stays. |
 | POST | `/v1/table/:id/stats` | Total bytes, rows, index count, and rows-per-fragment statistics. |
+| POST | `/v1/table/:id/count_rows` | Live rows as a bare integer, at the current version or a body `version`; an optional `predicate` (SQL filter) scans the filtered columns. |
 | POST | `/v1/table/:id/version/list` | Versions with their manifest summaries, including versions newer than the current one (`?descending=true` for newest first). |
 | POST | `/v1/table/:id/version/describe` | One version. |
 | POST | `/v1/table/:id/index/list` | Indices with type and columns. |
 | POST | `/v1/table/:id/index/:name/stats` | One index's size and indexed versus unindexed rows. |
 | POST | `/v1/table/:id/tags/list` | Tags. |
+| POST | `/v1/table/:id/tags/version` | The version a body `tag` points at; 404 for an unknown tag. |
 | POST | `/v1/table/:id/branches/list` | Branches. |
 
 Every other spec route returns `Unsupported` (code 0, HTTP 406): data writes,

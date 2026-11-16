@@ -17,6 +17,7 @@ import {
   useTableDetail,
   useFragmentMeasures,
   useTableIndices,
+  useTableRowCount,
   useTableStats,
   useTableStorage,
   useTableVersions,
@@ -111,6 +112,7 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
   const storage = useTableStorage(segments, settled);
   const stats = useTableStats(segments, settled);
   const measures = useFragmentMeasures(segments);
+  const rowCount = useTableRowCount(segments);
   const columnNames = useMemo(() => detail.data?.schema?.fields.map((f) => f.name) ?? [], [detail.data]);
   const blobColumns = useMemo(() => blobColumnNames(detail.data?.schema?.fields ?? []), [detail.data]);
 
@@ -149,6 +151,7 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
         versions={versions}
         storage={storage}
         stats={stats}
+        rowCount={rowCount}
         measures={measures}
       />
     ),

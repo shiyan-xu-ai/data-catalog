@@ -22,12 +22,13 @@ use catalog_store::{
     Distribution, FragmentMeasures, PostgresNamespace, StorageBreakdown, StorageFootprint,
 };
 use lance_namespace::models::{
-    CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
+    CountTableRowsRequest, CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
     DeregisterTableResponse, DescribeNamespaceRequest, DescribeNamespaceResponse,
     DescribeTableIndexStatsRequest, DescribeTableIndexStatsResponse, DescribeTableRequest,
     DescribeTableResponse, DescribeTableVersionRequest, DescribeTableVersionResponse,
     DropNamespaceRequest, DropNamespaceResponse, ErrorResponse, GetTableStatsRequest,
-    GetTableStatsResponse, ListNamespacesRequest, ListNamespacesResponse, ListTableBranchesRequest,
+    GetTableStatsResponse, GetTableTagVersionRequest, GetTableTagVersionResponse,
+    ListNamespacesRequest, ListNamespacesResponse, ListTableBranchesRequest,
     ListTableBranchesResponse, ListTableIndicesRequest, ListTableIndicesResponse,
     ListTableTagsRequest, ListTableTagsResponse, ListTableVersionsRequest,
     ListTableVersionsResponse, ListTablesRequest, ListTablesResponse, NamespaceExistsRequest,
@@ -61,6 +62,7 @@ pub fn router(backend: Backend) -> Router {
         .route("/table/:id/exists", post(table_exists))
         .route("/table/:id/deregister", post(deregister_table))
         .route("/table/:id/stats", post(get_table_stats))
+        .route("/table/:id/count_rows", post(count_table_rows))
         .route("/table/:id/version/list", post(list_table_versions))
         .route("/table/:id/version/describe", post(describe_table_version))
         .route("/table/:id/index/list", post(list_table_indices))
@@ -69,6 +71,7 @@ pub fn router(backend: Backend) -> Router {
             post(describe_table_index_stats),
         )
         .route("/table/:id/tags/list", post(list_table_tags))
+        .route("/table/:id/tags/version", post(get_table_tag_version))
         .route("/table/:id/branches/list", post(list_table_branches))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
@@ -298,6 +301,17 @@ async fn get_table_stats(
     Ok(Json(ns.get_table_stats(request).await?))
 }
 
+/// The spec answers with a bare JSON integer.
+async fn count_table_rows(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<Json<i64>> {
+    let mut request: CountTableRowsRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    Ok(Json(ns.count_table_rows(request).await?))
+}
+
 async fn list_table_versions(
     State(ns): State<Backend>,
     Path(id): Path<String>,
@@ -365,6 +379,16 @@ async fn list_table_tags(
     request.page_token = q.page_token.or(request.page_token);
     request.limit = q.limit.or(request.limit);
     Ok(Json(ns.list_table_tags(request).await?))
+}
+
+async fn get_table_tag_version(
+    State(ns): State<Backend>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> ApiResult<Json<GetTableTagVersionResponse>> {
+    let mut request: GetTableTagVersionRequest = parse_body(&body)?;
+    reconcile_id(&mut request.id, &id)?;
+    Ok(Json(ns.get_table_tag_version(request).await?))
 }
 
 async fn list_table_branches(
