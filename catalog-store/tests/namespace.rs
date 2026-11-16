@@ -7,9 +7,10 @@ use std::collections::HashMap;
 use catalog_store::PostgresNamespace;
 use lance::Dataset;
 use lance_namespace::models::{
-    CreateNamespaceRequest, DeregisterTableRequest, DescribeNamespaceRequest,
-    DescribeTableIndexStatsRequest, DescribeTableRequest, DescribeTableVersionRequest,
-    DropNamespaceRequest, GetTableStatsRequest, ListNamespacesRequest, ListTableBranchesRequest,
+    CountTableRowsRequest, CreateNamespaceRequest, DeregisterTableRequest,
+    DescribeNamespaceRequest, DescribeTableIndexStatsRequest, DescribeTableRequest,
+    DescribeTableVersionRequest, DropNamespaceRequest, GetTableStatsRequest,
+    GetTableTagVersionRequest, ListNamespacesRequest, ListTableBranchesRequest,
     ListTableIndicesRequest, ListTableTagsRequest, ListTableVersionsRequest, ListTablesRequest,
     NamespaceExistsRequest, RegisterTableRequest, TableExistsRequest,
 };
@@ -21,6 +22,7 @@ const NAMESPACE_EXISTS: u32 = ErrorCode::NamespaceAlreadyExists as u32;
 const NAMESPACE_NOT_EMPTY: u32 = ErrorCode::NamespaceNotEmpty as u32;
 const TABLE_EXISTS: u32 = ErrorCode::TableAlreadyExists as u32;
 const TABLE_INDEX_NOT_FOUND: u32 = ErrorCode::TableIndexNotFound as u32;
+const TABLE_TAG_NOT_FOUND: u32 = ErrorCode::TableTagNotFound as u32;
 const INVALID_INPUT: u32 = ErrorCode::InvalidInput as u32;
 const UNSUPPORTED: u32 = ErrorCode::Unsupported as u32;
 
@@ -644,6 +646,42 @@ async fn table_details() {
         .await
         .unwrap();
     let history_id = id(&["prod", "history"]).unwrap();
+
+    // Tags resolve to the version they point at; an unknown tag is TableTagNotFound.
+    let tag_version = |tag: &str| {
+        ns.get_table_tag_version(GetTableTagVersionRequest {
+            id: Some(history_id.clone()),
+            tag: tag.into(),
+            ..Default::default()
+        })
+    };
+    let release = tag_version("release").await.unwrap();
+    assert_eq!((release.version, release.branch), (3, None));
+    assert_eq!(
+        code(tag_version("missing").await.unwrap_err()),
+        TABLE_TAG_NOT_FOUND
+    );
+
+    // Row counts exclude deleted rows: version 4 deleted `id = 2` of ids 1-4.
+    let count = |version: Option<i64>, predicate: Option<&str>| {
+        ns.count_table_rows(CountTableRowsRequest {
+            id: Some(history_id.clone()),
+            version,
+            predicate: predicate.map(Into::into),
+            ..Default::default()
+        })
+    };
+    assert_eq!(count(None, None).await.unwrap(), 3);
+    assert_eq!(count(Some(3), None).await.unwrap(), 4);
+    assert_eq!(count(None, Some("id > 2")).await.unwrap(), 2);
+    assert_eq!(
+        code(count(None, Some("no_such_column > 1")).await.unwrap_err()),
+        INVALID_INPUT
+    );
+    assert_eq!(
+        code(count(Some(99), None).await.unwrap_err()),
+        TABLE_VERSION_NOT_FOUND
+    );
     let page1 = ns.timeline(&history_id, None, Some(3)).await.unwrap();
     let page2 = ns
         .timeline(&history_id, page1.page_token.as_deref(), Some(3))

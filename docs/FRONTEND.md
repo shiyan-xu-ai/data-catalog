@@ -44,8 +44,8 @@ video. Scroll position is not kept.
 - **Overview.** An About card: table format (`Lance 2.2`), current version with
   its commit age, business and technical owner, and location. When a newer
   version is committed, it shows the latest version and a Refresh button that
-  calls `POST /catalog/v1/table/:id/refresh`. Below: rows, deleted rows, and the
-  estimated monthly storage cost; storage by category for the current version
+  calls `POST /catalog/v1/table/:id/refresh`. Below: rows (`count_rows`), deleted
+  rows, and the estimated monthly storage cost; storage by category for the current version
   and for every object; and fragment health (rows, data files, data size, and
   deleted rows per fragment, plus the share of fragments under Lance's
   1,048,576-row compaction target). The slow storage listing and stats load

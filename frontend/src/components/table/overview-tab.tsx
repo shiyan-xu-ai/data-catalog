@@ -110,6 +110,7 @@ export function OverviewTab({
   versions,
   storage,
   stats,
+  rowCount,
   measures,
 }: {
   segments: readonly string[];
@@ -118,6 +119,7 @@ export function OverviewTab({
   versions: PagedVersions;
   storage: UseQueryResult<TableStorageResponse>;
   stats: UseQueryResult<TableStatsResponse>;
+  rowCount: UseQueryResult<number>;
   measures: UseQueryResult<FragmentMeasuresResponse>;
 }) {
   const s = parseManifestSummary(detail.data?.metadata);
@@ -133,11 +135,11 @@ export function OverviewTab({
         <Kpi
           icon={Rows3}
           label="Rows"
-          value={formatCount(s.rows)}
+          value={formatCount(rowCount.data)}
           sub={s.fragments != null ? formatCountOf(s.fragments, "fragment") : undefined}
-          help="Live rows in the current version."
-          loading={detail.isPending}
-          failed={detail.error?.message}
+          help="Live rows in the current version, from Lance CountTableRows."
+          loading={rowCount.isPending}
+          failed={rowCount.error?.message}
         />
         <Kpi
           icon={Trash2}

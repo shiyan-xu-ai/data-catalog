@@ -2,6 +2,7 @@ import { idPathSegment } from "./ids";
 import { z } from "zod";
 import {
   columnStorageResponseSchema,
+  countTableRowsResponseSchema,
   describeNamespaceResponseSchema,
   describeTableResponseSchema,
   errorResponseSchema,
@@ -233,6 +234,11 @@ export function getTableStorage(table: readonly string[]): Promise<TableStorageR
  *  data bytes. Reads every fragment's metadata, so it is slow on large tables. */
 export function getTableStats(table: readonly string[]): Promise<TableStatsResponse> {
   return request("POST", `/v1/table/${idPathSegment(table)}/stats`, tableStatsResponseSchema, {});
+}
+
+/** Spec row count (Lance `CountTableRows`) of the current version, deleted rows excluded. */
+export function countTableRows(table: readonly string[]): Promise<number> {
+  return request("POST", `/v1/table/${idPathSegment(table)}/count_rows`, countTableRowsResponseSchema, {});
 }
 
 /** Catalog route: per-fragment data files, data bytes, and deleted rows from the manifest. */

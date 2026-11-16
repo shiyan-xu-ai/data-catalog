@@ -237,6 +237,9 @@ export const fragmentMeasuresResponseSchema = z.object({
 });
 export type FragmentMeasuresResponse = z.infer<typeof fragmentMeasuresResponseSchema>;
 
+/** Spec `CountTableRows` (`POST /v1/table/{id}/count_rows`): a bare integer of live rows. */
+export const countTableRowsResponseSchema = z.number();
+
 /** Spec `GetTableStatsResponse` (`POST /v1/table/{id}/stats`). Fragment lengths are physical
  *  rows per fragment. */
 export const tableStatsResponseSchema = z.object({

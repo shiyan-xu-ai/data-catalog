@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
+  countTableRows,
   describeTable,
   describeTableCheap,
   followPages,
@@ -41,6 +42,7 @@ export const keys = {
   tableColumns: (id: string) => ["table", id, "columns"] as const,
   tableStorage: (id: string) => ["table", id, "storage"] as const,
   tableStats: (id: string) => ["table", id, "stats"] as const,
+  tableRowCount: (id: string) => ["table", id, "row-count"] as const,
   fragmentMeasures: (id: string) => ["table", id, "fragment-measures"] as const,
   tableTimeline: (id: string) => ["table", id, "timeline"] as const,
   timelineEvent: (id: string, version: number) => ["table", id, "timeline", "event", version] as const,
@@ -220,6 +222,14 @@ export function useTableStats(segments: readonly string[], enabled: boolean) {
     queryKey: keys.tableStats(joinId(segments)),
     queryFn: () => getTableStats(segments),
     enabled,
+  });
+}
+
+/** Live row count of the current version; from manifest row counts, so cheap. */
+export function useTableRowCount(segments: readonly string[]) {
+  return useQuery({
+    queryKey: keys.tableRowCount(joinId(segments)),
+    queryFn: () => countTableRows(segments),
   });
 }
 
