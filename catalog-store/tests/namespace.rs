@@ -683,7 +683,7 @@ async fn table_details() {
         INVALID_INPUT
     );
 
-    // Exists with a version checks that version, not just the registration.
+    // Exists with a version checks that version; a missing one is TableNotFound, per the spec.
     let exists_at = |table: &[&str], version: i64| {
         ns.table_exists(TableExistsRequest {
             id: id(table),
@@ -694,7 +694,7 @@ async fn table_details() {
     exists_at(&["prod", "history"], 3).await.unwrap();
     assert_eq!(
         code(exists_at(&["prod", "history"], 99).await.unwrap_err()),
-        TABLE_VERSION_NOT_FOUND
+        TABLE_NOT_FOUND
     );
     assert_eq!(
         code(exists_at(&["prod", "ghost"], 1).await.unwrap_err()),

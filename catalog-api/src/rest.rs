@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Bytes};
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -74,8 +75,31 @@ pub fn router(backend: Backend) -> Router {
         .route("/table/:id/tags/version", post(get_table_tag_version))
         .route("/table/:id/branches/list", post(list_table_branches))
         .fallback(unsupported)
+        .layer(axum::middleware::from_fn(require_default_delimiter))
         .layer(axum::middleware::map_response(rejection_to_error_response))
         .with_state(backend)
+}
+
+#[derive(Deserialize)]
+struct DelimiterQuery {
+    delimiter: Option<String>,
+}
+
+/// Only the spec's default `$` delimiter is supported. Any other `?delimiter=` is rejected, since
+/// ignoring it would read an id such as `prod.users` as one name.
+async fn require_default_delimiter(request: Request, next: Next) -> Response {
+    if let Ok(Query(DelimiterQuery {
+        delimiter: Some(delimiter),
+    })) = Query::<DelimiterQuery>::try_from_uri(request.uri())
+    {
+        if delimiter != DELIMITER {
+            return ApiError::invalid_input(format!(
+                "unsupported delimiter {delimiter:?}; ids must be joined with {DELIMITER:?}"
+            ))
+            .into_response();
+        }
+    }
+    next.run(request).await
 }
 
 /// State of the catalog routes.

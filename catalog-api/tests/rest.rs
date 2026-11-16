@@ -80,6 +80,13 @@ async fn rest_catalog_routes() {
         (StatusCode::OK, json!("<html>catalog</html>"))
     );
 
+    // Only the default `$` delimiter is accepted.
+    assert_eq!(
+        get(&app, "/v1/namespace/%24/list?delimiter=%24").await.0,
+        StatusCode::OK
+    );
+    error(StatusCode::BAD_REQUEST, 13)(get(&app, "/v1/namespace/prod/list?delimiter=.").await);
+
     // Namespaces: `$` path ids, URL-encoded, root is `$`.
     let (status, body) = post(
         &app,

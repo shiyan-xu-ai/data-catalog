@@ -1050,9 +1050,16 @@ impl LanceNamespace for PostgresNamespace {
         let version = parse_version(request.version)?;
         let id = request.id.unwrap_or_default();
         let (namespace, name) = split_table_id(&id)?;
-        if version.is_some() {
-            // Opening the version answers TableNotFound or TableVersionNotFound when missing.
-            return self.open_table(&id, version).await.map(|_| ());
+        if let Some(v) = version {
+            // The spec's TableExists errors are NamespaceNotFound and TableNotFound only, so a
+            // missing version reports the table as not found at that version.
+            return match self.open_table(&id, Some(v)).await {
+                Err(e) if is_version_missing(&e) => Err(NamespaceError::TableNotFound {
+                    message: format!("{} at version {v}", join_id(&id)),
+                }
+                .into()),
+                result => result.map(|_| ()),
+            };
         }
         if self.table_row_exists(namespace, name).await? {
             Ok(())
