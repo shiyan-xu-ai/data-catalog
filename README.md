@@ -62,45 +62,75 @@ page).
 
 ### Lance namespace spec (`/v1`)
 
-| Method | Path | Returns |
-|---|---|---|
-| GET | `/v1/namespace/:id/list` | Child namespaces. |
-| POST | `/v1/namespace/:id/create` | Creates a namespace; its parent must exist. |
-| POST | `/v1/namespace/:id/describe` | Namespace properties. |
-| POST | `/v1/namespace/:id/exists` | 200, or 404. |
-| POST | `/v1/namespace/:id/drop` | Drops an empty namespace; 409 if it has children. |
-| GET | `/v1/namespace/:id/table/list` | Tables in a namespace. |
-| GET | `/v1/table` | Every table id. |
-| POST | `/v1/table/:id/register` | Registers the Lance dataset at `location`; it must open as Lance, and its newest version becomes current. `"mode": "overwrite"` replaces the location and properties, keeps `catalog.registered_at`, and advances `catalog.updated_at`. |
-| POST | `/v1/table/:id/describe` | Location and properties from Postgres. With `?load_detailed_metadata=true`, a body `version`, or a body `tag` (resolved to its version; not combinable with `version`), also opens that version and returns `version`, `schema`, `stats`, and `metadata` (manifest summary, `table_metadata.*`, `config.*`, `lance.data_storage_version`). |
-| POST | `/v1/table/:id/exists` | 200, or 404. With a body `version`, 404 also when that version does not exist. |
-| POST | `/v1/table/:id/deregister` | Removes the registration; the data stays. |
-| POST | `/v1/table/:id/stats` | Total bytes, rows, index count, and rows-per-fragment statistics. |
-| POST | `/v1/table/:id/count_rows` | Live rows as a bare integer, at the current version or a body `version`; an optional `predicate` (SQL filter) scans the filtered columns. |
-| POST | `/v1/table/:id/version/list` | Versions with their manifest summaries, including versions newer than the current one (`?descending=true` for newest first). |
-| POST | `/v1/table/:id/version/describe` | One version. |
-| POST | `/v1/table/:id/index/list` | Indices with type and columns. |
-| POST | `/v1/table/:id/index/:name/stats` | One index's size and indexed versus unindexed rows. |
-| POST | `/v1/table/:id/tags/list` | Tags. |
-| POST | `/v1/table/:id/tags/version` | The version a body `tag` points at; 404 for an unknown tag. |
-| POST | `/v1/table/:id/branches/list` | Branches. |
+Each route implements the linked spec operation. Links go to the operation's
+request model, or to the REST catalog spec or OpenAPI file where the spec site
+has no model page.
 
-Every other spec route returns `Unsupported` (code 0, HTTP 406): data writes,
+| Method | Path | Spec operation | Returns |
+|---|---|---|---|
+| GET | `/v1/namespace/:id/list` | [ListNamespaces][ListNamespaces] | Child namespaces. |
+| POST | `/v1/namespace/:id/create` | [CreateNamespace][CreateNamespace] | Creates a namespace; its parent must exist. |
+| POST | `/v1/namespace/:id/describe` | [DescribeNamespace][DescribeNamespace] | Namespace properties. |
+| POST | `/v1/namespace/:id/exists` | [NamespaceExists][NamespaceExists] | 200, or 404. |
+| POST | `/v1/namespace/:id/drop` | [DropNamespace][DropNamespace] | Drops an empty namespace; 409 if it has children. |
+| GET | `/v1/namespace/:id/table/list` | [ListTables][ListTables] | Tables in a namespace. |
+| GET | `/v1/table` | [ListAllTables][ListAllTables] | Every table id. |
+| POST | `/v1/table/:id/register` | [RegisterTable][RegisterTable] | Registers the Lance dataset at `location`; it must open as Lance, and its newest version becomes current. `"mode": "overwrite"` replaces the location and properties, keeps `catalog.registered_at`, and advances `catalog.updated_at`. |
+| POST | `/v1/table/:id/describe` | [DescribeTable][DescribeTable] | Location and properties from Postgres. With `?load_detailed_metadata=true`, a body `version`, or a body `tag` (resolved to its version; not combinable with `version`), also opens that version and returns `version`, `schema`, `stats`, and `metadata` (manifest summary, `table_metadata.*`, `config.*`, `lance.data_storage_version`). |
+| POST | `/v1/table/:id/exists` | [TableExists][TableExists] | 200, or 404. With a body `version`, 404 also when that version does not exist. |
+| POST | `/v1/table/:id/deregister` | [DeregisterTable][DeregisterTable] | Removes the registration; the data stays. |
+| POST | `/v1/table/:id/stats` | [GetTableStats][GetTableStats] | Total bytes, rows, index count, and rows-per-fragment statistics. |
+| POST | `/v1/table/:id/count_rows` | [CountTableRows][CountTableRows] | Live rows as a bare integer, at the current version or a body `version`; an optional `predicate` (SQL filter) scans the filtered columns. |
+| POST | `/v1/table/:id/version/list` | [ListTableVersions][ListTableVersions] | Versions with their manifest summaries, including versions newer than the current one (`?descending=true` for newest first). |
+| POST | `/v1/table/:id/version/describe` | [DescribeTableVersion][DescribeTableVersion] | One version. |
+| POST | `/v1/table/:id/index/list` | [ListTableIndices][ListTableIndices] | Indices with type and columns. |
+| POST | `/v1/table/:id/index/:name/stats` | [DescribeTableIndexStats][DescribeTableIndexStats] | One index's size and indexed versus unindexed rows. |
+| POST | `/v1/table/:id/tags/list` | [ListTableTags][ListTableTags] | Tags. |
+| POST | `/v1/table/:id/tags/version` | [GetTableTagVersion][GetTableTagVersion] | The version a body `tag` points at; 404 for an unknown tag. |
+| POST | `/v1/table/:id/branches/list` | [ListTableBranches][ListTableBranches] | Branches. |
+
+[ListNamespaces]: https://lance.org/format/namespace/operations/models/ListNamespacesRequest/
+[CreateNamespace]: https://lance.org/format/namespace/operations/models/CreateNamespaceRequest/
+[DescribeNamespace]: https://lance.org/format/namespace/operations/models/DescribeNamespaceRequest/
+[NamespaceExists]: https://lance.org/format/namespace/operations/models/NamespaceExistsRequest/
+[DropNamespace]: https://lance.org/format/namespace/operations/models/DropNamespaceRequest/
+[ListTables]: https://lance.org/format/namespace/operations/models/ListTablesRequest/
+[ListAllTables]: https://lance.org/format/catalog/rest/#listalltables
+[RegisterTable]: https://lance.org/format/namespace/operations/models/RegisterTableRequest/
+[DescribeTable]: https://lance.org/format/namespace/operations/models/DescribeTableRequest/
+[TableExists]: https://lance.org/format/namespace/operations/models/TableExistsRequest/
+[DeregisterTable]: https://lance.org/format/namespace/operations/models/DeregisterTableRequest/
+[GetTableStats]: https://lance.org/format/namespace/operations/models/GetTableStatsRequest/
+[CountTableRows]: https://lance.org/format/namespace/operations/models/CountTableRowsRequest/
+[ListTableVersions]: https://lance.org/format/namespace/operations/models/ListTableVersionsRequest/
+[DescribeTableVersion]: https://lance.org/format/namespace/operations/models/DescribeTableVersionRequest/
+[ListTableIndices]: https://lance.org/format/namespace/operations/models/ListTableIndicesRequest/
+[DescribeTableIndexStats]: https://lance.org/format/namespace/operations/models/DescribeTableIndexStatsRequest/
+[ListTableTags]: https://lance.org/format/namespace/operations/models/ListTableTagsRequest/
+[GetTableTagVersion]: https://lance.org/format/namespace/operations/models/GetTableTagVersionRequest/
+[ListTableBranches]: https://github.com/lance-format/lance-namespace/blob/main/docs/src/spec.yaml
+[QueryTable]: https://lance.org/format/catalog/rest/#querytable
+
+Every other [spec operation](https://lance.org/format/namespace/operations/#operation-list)
+returns `Unsupported` (code 0, HTTP 406): data writes,
 commits, tag, branch, and index writes, transactions, rename, restore,
 cascading drop, and credential vending.
 
 ### Catalog routes (`/catalog/v1`)
 
-| Method | Path | Returns |
-|---|---|---|
-| GET | `/catalog/v1/table/:id/column-storage` | Bytes on disk per top-level column, excluding blob payloads. |
-| GET | `/catalog/v1/table/:id/storage` | Bytes and objects by category (data, blob, index, deletion, manifest, transaction, other) for the current version and for everything under the location, plus an estimated monthly cost. |
-| GET | `/catalog/v1/table/:id/fragment-measures` | Per-fragment data files, data bytes, and deleted rows (min, p25, median, mean, p75, p99, max), from the manifest. |
-| GET | `/catalog/v1/table/:id/timeline` | One event per retained version, newest first (`page_token`, `limit` up to 200): operation, details, manifest summary, writer, transaction properties, tags. |
-| GET | `/catalog/v1/table/:id/version/:version/files` | The manifest and transaction files of one version, decoded from protobuf to JSON. |
-| POST | `/catalog/v1/table/:id/refresh` | Moves the current version to the newest committed one; returns `previous_version` and `current_version`. |
-| POST | `/catalog/v1/table/:id/sql` | Runs one read-only SQL query (`{"sql": "...", "version": N}`). The table's name reads `version` (default: current); `"<name>@v<N>"` reads version N. Returns columns (`name`, Arrow `type`, field `metadata`) and rows, capped at `CATALOG_SQL_MAX_ROWS` and flagged `truncated`. |
-| GET | `/catalog/v1/media/presign?uri=s3://...` | Presigned GET URLs (`url`, `download_url`, `expires_in_secs`) for any object the catalog's credentials can read. |
+These have no spec model. Where a spec operation covers part of the same
+data, it is linked.
+
+| Method | Path | Related spec operation | Returns |
+|---|---|---|---|
+| GET | `/catalog/v1/table/:id/column-storage` | [GetTableStats][GetTableStats] (`total_bytes` only, not per column) | Bytes on disk per top-level column, excluding blob payloads. |
+| GET | `/catalog/v1/table/:id/storage` | | Bytes and objects by category (data, blob, index, deletion, manifest, transaction, other) for the current version and for everything under the location, plus an estimated monthly cost. |
+| GET | `/catalog/v1/table/:id/fragment-measures` | [GetTableStats][GetTableStats] (`fragment_stats` covers rows per fragment only) | Per-fragment data files, data bytes, and deleted rows (min, p25, median, mean, p75, p99, max), from the manifest. |
+| GET | `/catalog/v1/table/:id/timeline` | [ListTableVersions][ListTableVersions] (versions without operations) | One event per retained version, newest first (`page_token`, `limit` up to 200): operation, details, manifest summary, writer, transaction properties, tags. |
+| GET | `/catalog/v1/table/:id/version/:version/files` | [DescribeTableVersion][DescribeTableVersion] (manifest path only) | The manifest and transaction files of one version, decoded from protobuf to JSON. |
+| POST | `/catalog/v1/table/:id/refresh` | | Moves the current version to the newest committed one; returns `previous_version` and `current_version`. |
+| POST | `/catalog/v1/table/:id/sql` | [QueryTable][QueryTable] (structured queries; not implemented) | Runs one read-only SQL query (`{"sql": "...", "version": N}`). The table's name reads `version` (default: current); `"<name>@v<N>"` reads version N. Returns columns (`name`, Arrow `type`, field `metadata`) and rows, capped at `CATALOG_SQL_MAX_ROWS` and flagged `truncated`. |
+| GET | `/catalog/v1/media/presign?uri=s3://...` | | Presigned GET URLs (`url`, `download_url`, `expires_in_secs`) for any object the catalog's credentials can read. |
 
 ### Health
 
