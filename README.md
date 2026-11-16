@@ -72,8 +72,8 @@ page).
 | GET | `/v1/namespace/:id/table/list` | Tables in a namespace. |
 | GET | `/v1/table` | Every table id. |
 | POST | `/v1/table/:id/register` | Registers the Lance dataset at `location`; it must open as Lance, and its newest version becomes current. `"mode": "overwrite"` replaces the location and properties, keeps `catalog.registered_at`, and advances `catalog.updated_at`. |
-| POST | `/v1/table/:id/describe` | Location and properties from Postgres. With `?load_detailed_metadata=true` or a body `version`, also opens that version and returns `version`, `schema`, `stats`, and `metadata` (manifest summary, `table_metadata.*`, `config.*`, `lance.data_storage_version`). |
-| POST | `/v1/table/:id/exists` | 200, or 404. |
+| POST | `/v1/table/:id/describe` | Location and properties from Postgres. With `?load_detailed_metadata=true`, a body `version`, or a body `tag` (resolved to its version; not combinable with `version`), also opens that version and returns `version`, `schema`, `stats`, and `metadata` (manifest summary, `table_metadata.*`, `config.*`, `lance.data_storage_version`). |
+| POST | `/v1/table/:id/exists` | 200, or 404. With a body `version`, 404 also when that version does not exist. |
 | POST | `/v1/table/:id/deregister` | Removes the registration; the data stays. |
 | POST | `/v1/table/:id/stats` | Total bytes, rows, index count, and rows-per-fragment statistics. |
 | POST | `/v1/table/:id/count_rows` | Live rows as a bare integer, at the current version or a body `version`; an optional `predicate` (SQL filter) scans the filtered columns. |
