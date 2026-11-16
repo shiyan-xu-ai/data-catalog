@@ -54,7 +54,8 @@ deployment in detail.
 ## API
 
 Path ids are name segments joined by `$`; the root namespace is `$`. Table
-`prod.analytics.users` is `prod$analytics$users`. Bodies use the
+`prod.analytics.users` is `prod$analytics$users`. A `?delimiter=` other than
+`$` is rejected as invalid input. Bodies use the
 [Lance namespace spec](https://lance.org/format/namespace/) models. Errors are
 `{"error": "...", "code": N}` with the spec error code. Paginated routes take
 `limit` and `page_token` (the last name or version number of the previous
