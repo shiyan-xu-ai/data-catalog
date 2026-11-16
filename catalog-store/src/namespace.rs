@@ -885,16 +885,21 @@ impl LanceNamespace for PostgresNamespace {
     }
 
     async fn describe_table(&self, request: DescribeTableRequest) -> Result<DescribeTableResponse> {
-        if request.tag.is_some() || request.branch.is_some() {
-            return Err(NamespaceError::Unsupported {
-                message: "describing a tag or branch is not supported".into(),
-            }
-            .into());
+        reject_branch(request.branch.as_deref())?;
+        if request.tag.is_some() && (request.version.is_some() || request.branch.is_some()) {
+            return Err(invalid_input(
+                "tag cannot be combined with version or branch".into(),
+            ));
         }
-        let version = parse_version(request.version)?;
+        let mut version = parse_version(request.version)?;
         let id = request.id.unwrap_or_default();
         let (namespace, name) = split_table_id(&id)?;
         let row = self.table_row(&id).await?;
+        if let Some(tag) = &request.tag {
+            let contents = get_tag(&self.open_row(&id, &row, None).await?, tag).await?;
+            reject_branch(contents.branch.as_deref())?;
+            version = Some(contents.version);
+        }
 
         let mut response = DescribeTableResponse {
             table: Some(name.to_string()),
@@ -1042,14 +1047,13 @@ impl LanceNamespace for PostgresNamespace {
     }
 
     async fn table_exists(&self, request: TableExistsRequest) -> Result<()> {
-        if request.version.is_some() {
-            return Err(NamespaceError::Unsupported {
-                message: "checking a table version is not supported".into(),
-            }
-            .into());
-        }
+        let version = parse_version(request.version)?;
         let id = request.id.unwrap_or_default();
         let (namespace, name) = split_table_id(&id)?;
+        if version.is_some() {
+            // Opening the version answers TableNotFound or TableVersionNotFound when missing.
+            return self.open_table(&id, version).await.map(|_| ());
+        }
         if self.table_row_exists(namespace, name).await? {
             Ok(())
         } else {
@@ -1367,22 +1371,10 @@ impl LanceNamespace for PostgresNamespace {
         &self,
         request: GetTableTagVersionRequest,
     ) -> Result<GetTableTagVersionResponse> {
-        let OpenTable {
-            location, dataset, ..
-        } = self
+        let table = self
             .open_table(&request.id.unwrap_or_default(), None)
             .await?;
-        let tag = request.tag;
-        let contents = dataset.tags().get(&tag).await.map_err(|e| match e {
-            lance::Error::RefNotFound { .. } => NamespaceError::TableTagNotFound {
-                message: format!("tag {tag:?} at {location}"),
-            }
-            .into(),
-            lance::Error::InvalidRef { message } => {
-                invalid_input(format!("invalid tag {tag:?}: {message}"))
-            }
-            e => lance_error(format!("get tag {tag:?} at {location}"))(e),
-        })?;
+        let contents = get_tag(&table, &request.tag).await?;
         let mut response = GetTableTagVersionResponse::new(contents.version as i64);
         response.branch = contents.branch;
         Ok(response)
@@ -1624,6 +1616,21 @@ pub(crate) fn lance_error(context: String) -> impl FnOnce(lance::Error) -> Error
             internal(message)
         }
     }
+}
+
+/// Reads `tag` from the refs beside the manifests, which every version's handle sees.
+async fn get_tag(table: &OpenTable, tag: &str) -> Result<lance::dataset::refs::TagContents> {
+    let location = &table.location;
+    table.dataset.tags().get(tag).await.map_err(|e| match e {
+        lance::Error::RefNotFound { .. } => NamespaceError::TableTagNotFound {
+            message: format!("tag {tag:?} at {location}"),
+        }
+        .into(),
+        lance::Error::InvalidRef { message } => {
+            invalid_input(format!("invalid tag {tag:?}: {message}"))
+        }
+        e => lance_error(format!("get tag {tag:?} at {location}"))(e),
+    })
 }
 
 pub(crate) fn is_missing(e: &lance::Error) -> bool {

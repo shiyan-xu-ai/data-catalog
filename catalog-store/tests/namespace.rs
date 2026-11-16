@@ -662,6 +662,45 @@ async fn table_details() {
         TABLE_TAG_NOT_FOUND
     );
 
+    // Describe by tag opens the tagged version; a tag excludes `version`.
+    let describe_tag = |tag: &str, version: Option<i64>| {
+        ns.describe_table(DescribeTableRequest {
+            id: Some(history_id.clone()),
+            tag: Some(tag.into()),
+            version,
+            ..Default::default()
+        })
+    };
+    let tagged = describe_tag("release", None).await.unwrap();
+    assert_eq!(tagged.version, Some(3));
+    assert_eq!(tagged.metadata.unwrap()["total_rows"], "4");
+    assert_eq!(
+        code(describe_tag("missing", None).await.unwrap_err()),
+        TABLE_TAG_NOT_FOUND
+    );
+    assert_eq!(
+        code(describe_tag("release", Some(3)).await.unwrap_err()),
+        INVALID_INPUT
+    );
+
+    // Exists with a version checks that version, not just the registration.
+    let exists_at = |table: &[&str], version: i64| {
+        ns.table_exists(TableExistsRequest {
+            id: id(table),
+            version: Some(version),
+            ..Default::default()
+        })
+    };
+    exists_at(&["prod", "history"], 3).await.unwrap();
+    assert_eq!(
+        code(exists_at(&["prod", "history"], 99).await.unwrap_err()),
+        TABLE_VERSION_NOT_FOUND
+    );
+    assert_eq!(
+        code(exists_at(&["prod", "ghost"], 1).await.unwrap_err()),
+        TABLE_NOT_FOUND
+    );
+
     // Row counts exclude deleted rows: version 4 deleted `id = 2` of ids 1-4.
     let count = |version: Option<i64>, predicate: Option<&str>| {
         ns.count_table_rows(CountTableRowsRequest {
