@@ -86,6 +86,10 @@ Open `$URL/` for the UI; tail logs with `apps-platform app tail`.
 Tables live under `<vertical>/<domain>/<table>`. `CATALOG_VERTICALS` lists the
 allowed top-level namespaces; creating any other returns 400.
 
+`CATALOG_TABLE_LOCATIONS` and `CATALOG_MEDIA_LOCATIONS` in `project.toml` bound
+what can be registered and presigned. Add a prefix there before registering a
+table, or serving media, from a new bucket or path.
+
 [`scripts/move-tables.sh`](../scripts/move-tables.sh) moves registered tables to
 new paths without touching their data. It keeps location and properties and
 drops old namespaces once empty. A move resets `catalog.registered_at`, and old

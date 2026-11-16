@@ -21,6 +21,12 @@ pub struct AppConfig {
     pub webui_dir: String,
     /// Allowed top-level namespace names (`CATALOG_VERTICALS`, comma-separated); empty allows any.
     pub verticals: Vec<String>,
+    /// URI prefixes table locations must fall under (`CATALOG_TABLE_LOCATIONS`,
+    /// comma-separated); empty allows any.
+    pub table_locations: Vec<String>,
+    /// URI prefixes presigned media objects must fall under (`CATALOG_MEDIA_LOCATIONS`,
+    /// comma-separated); empty allows any.
+    pub media_locations: Vec<String>,
     pub cache_budget_bytes: usize,
     /// Settings of the `/catalog/v1` routes.
     pub catalog: CatalogConfig,
@@ -157,6 +163,12 @@ impl AppConfig {
                 .filter(|s| !s.is_empty()),
             webui_dir: env_or("CATALOG_WEBUI_DIR", "frontend/dist"),
             verticals: parse_list(&std::env::var("CATALOG_VERTICALS").unwrap_or_default()),
+            table_locations: parse_list(
+                &std::env::var("CATALOG_TABLE_LOCATIONS").unwrap_or_default(),
+            ),
+            media_locations: parse_list(
+                &std::env::var("CATALOG_MEDIA_LOCATIONS").unwrap_or_default(),
+            ),
             cache_budget_bytes,
             catalog: CatalogConfig::from_env()?,
         })

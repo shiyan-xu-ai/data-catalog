@@ -24,6 +24,7 @@ const TABLE_EXISTS: u32 = ErrorCode::TableAlreadyExists as u32;
 const TABLE_INDEX_NOT_FOUND: u32 = ErrorCode::TableIndexNotFound as u32;
 const TABLE_TAG_NOT_FOUND: u32 = ErrorCode::TableTagNotFound as u32;
 const INVALID_INPUT: u32 = ErrorCode::InvalidInput as u32;
+const PERMISSION_DENIED: u32 = ErrorCode::PermissionDenied as u32;
 const UNSUPPORTED: u32 = ErrorCode::Unsupported as u32;
 
 fn props(pairs: &[(&str, &str)]) -> Option<HashMap<String, String>> {
@@ -919,4 +920,39 @@ async fn top_level_allowlist() {
         .with_top_level_allowlist(vec!["bad$name".into()])
         .unwrap_err();
     assert_eq!(code(err), INVALID_INPUT);
+}
+
+#[tokio::test]
+async fn location_allowlists() {
+    let Some(pool) = support::pool("store_location_allowlists").await else {
+        return;
+    };
+    let allowed = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let inside = support::write_dataset(allowed.path(), "inside.lance").await;
+    let outside = support::write_dataset(elsewhere.path(), "outside.lance").await;
+    let ns = PostgresNamespace::new(pool, HashMap::new()).with_location_allowlists(
+        vec![format!("{}/", allowed.path().display())],
+        vec!["s3://media/clips".into()],
+    );
+    ns.create_namespace(create(&["prod"])).await.unwrap();
+
+    ns.register_table(register(&["prod", "inside"], &inside))
+        .await
+        .unwrap();
+    let err = ns
+        .register_table(register(&["prod", "outside"], &outside))
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), PERMISSION_DENIED);
+
+    let ttl = std::time::Duration::from_secs(60);
+    for uri in [
+        "s3://media/clipsx/a.mp4",
+        "s3://media/clips/../raw/a.mp4",
+        "s3://other/a.mp4",
+    ] {
+        let err = ns.presign_media(uri, ttl).await.unwrap_err();
+        assert_eq!(code(err), PERMISSION_DENIED, "{uri}");
+    }
 }
