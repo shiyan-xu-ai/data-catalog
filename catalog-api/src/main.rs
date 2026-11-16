@@ -49,9 +49,18 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => return Err(e).context("connect to database and run migrations"),
         }
     };
+    for (var, prefixes) in [
+        ("CATALOG_TABLE_LOCATIONS", &cfg.table_locations),
+        ("CATALOG_MEDIA_LOCATIONS", &cfg.media_locations),
+    ] {
+        if prefixes.is_empty() {
+            tracing::warn!("{var} is unset; any location the storage credentials reach is allowed");
+        }
+    }
     let namespace = Arc::new(
         PostgresNamespace::new(pool, storage_options)
             .with_cache_budget(cfg.cache_budget_bytes)
+            .with_location_allowlists(cfg.table_locations, cfg.media_locations)
             .with_top_level_allowlist(cfg.verticals)
             .context("CATALOG_VERTICALS")?,
     );

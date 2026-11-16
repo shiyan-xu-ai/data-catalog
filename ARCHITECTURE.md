@@ -87,8 +87,10 @@ prices it at `CATALOG_STORAGE_PRICE_PER_GB_MONTH`.
 `/catalog/v1/media/presign` signs GET URLs with the catalog's storage
 credentials and makes no storage request. The browser then reads the object
 directly, with byte ranges, so the bucket's CORS rules must allow the UI's
-origin and the `Range` header. Any object those credentials can read can be
-signed, so scope the credentials accordingly.
+origin and the `Range` header. Only objects under `CATALOG_MEDIA_LOCATIONS` are
+signed, and only locations under `CATALOG_TABLE_LOCATIONS` can be registered;
+with either unset, the storage credentials are the only bound, and the server
+logs a warning at startup.
 
 ## Deployment
 

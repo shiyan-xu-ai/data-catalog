@@ -254,6 +254,10 @@ pub struct PostgresNamespace {
     session: Arc<Session>,
     /// Names allowed for new top-level namespaces; empty allows any.
     top_level_allowlist: Vec<String>,
+    /// URI prefixes table locations must fall under; empty allows any.
+    table_locations: Vec<String>,
+    /// URI prefixes presigned media objects must fall under; empty allows any.
+    pub(crate) media_locations: Vec<String>,
 }
 
 impl std::fmt::Debug for PostgresNamespace {
@@ -270,6 +274,8 @@ impl PostgresNamespace {
             storage_options,
             session: session(DEFAULT_CACHE_BUDGET_BYTES),
             top_level_allowlist: Vec::new(),
+            table_locations: Vec::new(),
+            media_locations: Vec::new(),
         }
     }
 
@@ -286,6 +292,22 @@ impl PostgresNamespace {
         validate_names(&names)?;
         self.top_level_allowlist = names;
         Ok(self)
+    }
+
+    /// Restricts registered table locations to `tables` and presigned media objects to `media`,
+    /// each a list of URI prefixes matched by whole path segments; an empty list allows any.
+    /// Tables registered before a restriction stay readable.
+    pub fn with_location_allowlists(mut self, tables: Vec<String>, media: Vec<String>) -> Self {
+        let normalize = |prefixes: Vec<String>| -> Vec<String> {
+            prefixes
+                .into_iter()
+                .map(|p| p.trim_end_matches('/').to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        };
+        self.table_locations = normalize(tables);
+        self.media_locations = normalize(media);
+        self
     }
 
     /// True when the database answers a trivial query.
@@ -976,6 +998,9 @@ impl LanceNamespace for PostgresNamespace {
         if request.location.is_empty() {
             return Err(invalid_input("location is required".into()));
         }
+        if !location_allowed(&request.location, &self.table_locations) {
+            return Err(location_denied(&request.location, &self.table_locations));
+        }
 
         // Cheap checks first so a missing namespace or duplicate never waits on object storage;
         // the insert below still enforces both under concurrency.
@@ -1610,6 +1635,28 @@ fn reject_branch(branch: Option<&str>) -> Result<()> {
 
 pub(crate) fn internal(message: String) -> Error {
     NamespaceError::Internal { message }.into()
+}
+
+/// Whether `uri` is one of `prefixes` or below one, comparing whole path segments; an empty
+/// list allows any. `.` and `..` segments below a prefix never match, so they cannot step out.
+pub(crate) fn location_allowed(uri: &str, prefixes: &[String]) -> bool {
+    prefixes.is_empty()
+        || prefixes.iter().any(|prefix| {
+            uri.strip_prefix(prefix.as_str()).is_some_and(|rest| {
+                (rest.is_empty() || rest.starts_with('/'))
+                    && rest.split('/').all(|s| s != "." && s != "..")
+            })
+        })
+}
+
+pub(crate) fn location_denied(uri: &str, prefixes: &[String]) -> Error {
+    NamespaceError::PermissionDenied {
+        message: format!(
+            "{uri} is outside the allowed locations ({})",
+            prefixes.join(", ")
+        ),
+    }
+    .into()
 }
 
 /// Maps a Lance error from reading one version; a missing file is TableVersionNotFound, which

@@ -76,7 +76,7 @@ has no model page.
 | POST | `/v1/namespace/:id/drop` | [DropNamespace][DropNamespace] | Drops an empty namespace; 409 if it has children. |
 | GET | `/v1/namespace/:id/table/list` | [ListTables][ListTables] | Tables in a namespace. |
 | GET | `/v1/table` | [ListAllTables][ListAllTables] | Every table id. |
-| POST | `/v1/table/:id/register` | [RegisterTable][RegisterTable] | Registers the Lance dataset at `location`; it must open as Lance, and its newest version becomes current. `"mode": "overwrite"` replaces the location and properties, keeps `catalog.registered_at`, and advances `catalog.updated_at`. |
+| POST | `/v1/table/:id/register` | [RegisterTable][RegisterTable] | Registers the Lance dataset at `location`; it must open as Lance and fall under `CATALOG_TABLE_LOCATIONS` (else PermissionDenied, 403), and its newest version becomes current. `"mode": "overwrite"` replaces the location and properties, keeps `catalog.registered_at`, and advances `catalog.updated_at`. |
 | POST | `/v1/table/:id/describe` | [DescribeTable][DescribeTable] | Location and properties from Postgres. With `?load_detailed_metadata=true`, a body `version`, or a body `tag` (resolved to its version; not combinable with `version`), also opens that version and returns `version`, `schema`, `stats`, and `metadata` (manifest summary, `table_metadata.*`, `config.*`, `lance.data_storage_version`). |
 | POST | `/v1/table/:id/exists` | [TableExists][TableExists] | 200, or 404. With a body `version`, 404 also when that version does not exist. |
 | POST | `/v1/table/:id/deregister` | [DeregisterTable][DeregisterTable] | Removes the registration; the data stays. |
@@ -131,7 +131,7 @@ data, it is linked.
 | GET | `/catalog/v1/table/:id/version/:version/files` | [DescribeTableVersion][DescribeTableVersion] (manifest path only) | The manifest and transaction files of one version, decoded from protobuf to JSON. |
 | POST | `/catalog/v1/table/:id/refresh` | | Moves the current version to the newest committed one; returns `previous_version` and `current_version`. |
 | POST | `/catalog/v1/table/:id/sql` | [QueryTable][QueryTable] (structured queries; not implemented) | Runs one read-only SQL query (`{"sql": "...", "version": N}`). The table's name reads `version` (default: current); `"<name>@v<N>"` reads version N. Returns columns (`name`, Arrow `type`, field `metadata`) and rows, capped at `CATALOG_SQL_MAX_ROWS` and flagged `truncated`. |
-| GET | `/catalog/v1/media/presign?uri=s3://...` | | Presigned GET URLs (`url`, `download_url`, `expires_in_secs`) for any object the catalog's credentials can read. |
+| GET | `/catalog/v1/media/presign?uri=s3://...` | | Presigned GET URLs (`url`, `download_url`, `expires_in_secs`) for an object under `CATALOG_MEDIA_LOCATIONS` (else PermissionDenied, 403). |
 
 ### Health
 
@@ -152,6 +152,8 @@ deployed access.
 | `PORT` / `CATALOG_BIND_ADDR` | unset / `0.0.0.0:8080` | Listen address; `PORT` (Cloud Run) wins. |
 | `CATALOG_WEBUI_DIR` | `frontend/dist` | Built UI; without an `index.html`, only the API is served. |
 | `CATALOG_VERTICALS` | unset | Comma-separated top-level namespaces allowed (deployed: `automotive,trucking,mining,robotics`). Unset allows any. |
+| `CATALOG_TABLE_LOCATIONS` | unset | Comma-separated URI prefixes (e.g. `s3://bucket/lance/`) that registered table locations must fall under, matched by whole path segments. Unset allows any; tables registered earlier stay readable. |
+| `CATALOG_MEDIA_LOCATIONS` | unset | Comma-separated URI prefixes that presigned media objects must fall under. Unset allows any object the storage credentials can read. |
 | `CATALOG_SECRET_PREFIX` | `K_SERVICE` | Secret Manager prefix for AWS credentials on Cloud Run. |
 | `CATALOG_STORAGE_PRICE_PER_GB_MONTH` | `0.0133875` | USD per GB-month for the cost estimate. |
 | `CATALOG_STORAGE_PRICE_TIER` | `OCI Object Storage Active (contracted)` | Label shown with the estimate. |

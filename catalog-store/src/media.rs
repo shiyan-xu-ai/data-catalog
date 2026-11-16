@@ -9,7 +9,9 @@ use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
 use object_store::path::Path;
 use object_store::signer::{Method, SignedUrlOptions, Signer};
 
-use crate::namespace::{internal, invalid_input, PostgresNamespace};
+use crate::namespace::{
+    internal, invalid_input, location_allowed, location_denied, PostgresNamespace,
+};
 
 /// Presigned GET URLs for one media object.
 #[derive(Debug, Clone)]
@@ -23,9 +25,13 @@ pub struct MediaUrls {
 impl PostgresNamespace {
     /// GET URLs for `uri` (`s3://bucket/key`) signed with the catalog's storage credentials (the
     /// `AWS_*` environment, overridden by its storage options) and valid for `expires_in`. Errors
-    /// with `InvalidInput` for anything but an `s3://bucket/key` URI. Signing sends no request, so
-    /// a missing object only fails when a URL is fetched.
+    /// with `InvalidInput` for anything but an `s3://bucket/key` URI, and `PermissionDenied`
+    /// outside the media allow-list. Signing sends no request, so a missing object only fails
+    /// when a URL is fetched.
     pub async fn presign_media(&self, uri: &str, expires_in: Duration) -> Result<MediaUrls> {
+        if !location_allowed(uri, &self.media_locations) {
+            return Err(location_denied(uri, &self.media_locations));
+        }
         let invalid = || invalid_input(format!("{uri} is not an s3://bucket/key URI"));
         let (bucket, key) = uri
             .strip_prefix("s3://")
