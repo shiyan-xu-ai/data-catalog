@@ -1,238 +1,136 @@
-# Catalog frontend
+# Frontend
 
-A React + Vite + TypeScript SPA that `catalog-api` serves from `CATALOG_WEBUI_DIR`
-at the API's origin, behind the same platform access boundary; there is no
-separate frontend host, deploy step, or login (see
-[deployment](../ARCHITECTURE.md#deployment)). The UI is read-only: namespaces are
-created and dropped, and tables registered and deregistered, through the
-[API](../README.md#api).
+A React, Vite, and TypeScript SPA. `catalog-api` serves it from
+`CATALOG_WEBUI_DIR` at the API's origin, so it has no separate host, deploy, or
+login. The UI only reads, apart from Refresh: namespaces and tables are created
+and registered through the [API](../README.md#api).
 
 ## Layout
 
-A left sidebar holds global search, the namespace tree, and, at the bottom, the
-theme (light, dark, system) and timezone (UTC, local) controls. It collapses to
-an icon rail (search, namespaces, theme, timezone); a click anywhere on the rail
-expands it, except on the theme and timezone buttons. The collapsed state, theme,
-and timezone persist in `localStorage`, and every absolute timestamp renders in
-the chosen timezone. The top bar shows a breadcrumb. Page content scrolls on its
-own.
-
-- **Namespace tree.** Expands lazily, one list request per opened namespace,
-  with tables as leaves. A click anywhere on a namespace row expands or
-  collapses it (the chevron only shows the state); a click on its name also
-  opens the namespace page. The current namespace or table is highlighted and
-  its ancestors open automatically.
-- **Global search.** Matches namespace and table names (not columns or
-  properties). Tables come from `GET /v1/table`; namespaces come from walking the
-  tree from the root on first focus (four list requests at a time, up to 5,000
-  namespaces), so empty namespaces are found too. Focus it with ⌘K, Ctrl+K, or
-  `/`.
+- **Sidebar.** Global search, the namespace tree, and theme (light, dark,
+  system) and timezone (UTC, local) controls. It collapses to an icon rail; a
+  click anywhere on the rail except those two controls expands it. The
+  collapsed state, theme, and timezone persist in `localStorage`, and every
+  timestamp renders in the chosen timezone.
+- **Namespace tree.** Loads children when a namespace opens; tables are leaves.
+  A click anywhere on a namespace row toggles it (the chevron only shows the
+  state); a click on its name also opens the namespace page. The current page's
+  ancestors open automatically.
+- **Search.** Matches namespace and table names. Tables come from
+  `GET /v1/table`; namespaces from walking the tree on first focus (up to
+  5,000). Focus it with Cmd/Ctrl+K or `/`.
 
 Routes carry `$`-joined ids; names display dotted.
 
-## Pages
+## Namespace page
 
-- **Namespace page.** The namespace name (its path is in the breadcrumb), child
-  namespaces, and a table list with name, business and technical owner (the
-  `business_owner` and `technical_owner` properties), and registered and
-  updated times. Each row fills from a cheap describe (Postgres
-  only) once it scrolls into view, at most six at a time, so listing never opens
-  a dataset.
-- **Table page.** The Lance logo and the table name (namespace path in the breadcrumb) and seven
-  tabs in a tab bar pinned to the top while content scrolls (Overview,
-  Properties, Timeline, Versions, Schema, Indices, SQL; the active tab is in
-  `?tab=`; Schema and Indices show their counts). A tab mounts on first visit
-  and stays mounted, and the eight most recently visited tables stay mounted
-  (hidden) while another table is open, so selected rows and panes, the SQL
-  query and results, expansion, filters, and the open tab are all still there
-  when you return. Opening a table again through a link without `?tab=`
-  restores its tab into the URL; a URL that names a tab (back, forward, a
-  deep link) opens that tab.
-  Hidden pages ignore keyboard shortcuts and pause video. Scroll position is
-  not kept.
-  - **Overview:** a full-width, untitled About card, in order: the current
-    version's table format (`Lance <data storage version>`, e.g. `Lance 2.2`),
-    the current version with its commit age (when a newer version is
-    committed: the latest version and a Refresh button that makes it current
-    through `POST /catalog/v1/table/{id}/refresh`, then reloads the page's
-    data), the business and technical owners (the `business_owner` and
-    `technical_owner` table properties), then the copyable location on its own
-    row. Then three tiles: rows (with
-    fragment count), deleted rows (with deletion file count), and the
-    estimated monthly storage cost of every object under the location
-    (`GET /catalog/v1/table/{id}/storage`). Tiles keep a short caption; tiles
-    and sections each carry a one-line (?) tooltip instead of a subtitle.
-    Sections:
-    - *Storage: current version* (left) and *Storage: all versions* (right):
-      the objects under the location that the current version references, and
-      every object under it. With blob files, each shows two donuts (blob files
-      vs everything else, then non-blob files by category: data, index,
-      deletion, manifests, transactions, other); without, one donut by
-      category. Legend rows show category and share.
-    - *Fragment health:* per-fragment statistics (min, p25, median, mean, p75,
-      p99, max), one row per measure: physical rows from
-      `POST /v1/table/{id}/stats`, and data files, data size, and deleted rows
-      from `GET /catalog/v1/table/{id}/fragment-measures` (each row loads,
-      fails, or reads "Not recorded" on its own). Beside it, the share of
-      fragments under 1,048,576 rows (Lance's default compaction target). A
-      `lance.compaction.target_rows_per_fragment` override is shown but not
-      used, since the stats count against the fixed default.
+Child namespaces, and a table list with name, business owner, technical owner,
+and registered and updated times. Each row loads a cheap describe (Postgres
+only) when it scrolls into view, at most six at a time, so a list never opens
+a dataset.
 
-    The storage listing and table stats are slow, so they are requested only
-    after the rest of the page loads; each has its own skeleton and error.
-  - **Properties:** table properties (including owner, description, and the
-    registration and update times; the two owners shown on the Overview are
-    left out), Lance table metadata (`table_metadata`), and Lance table
-    configuration (`config`).
-  - **Timeline:** every retained version as a compact commit row, newest
-    first, from `GET /catalog/v1/table/{id}/timeline`, 50 at a time with "Load
-    earlier". Rows sit on a vertical rail under sticky `YYYY-MM-DD` day headers
-    and show a color-coded operation marker and label (Compaction for
-    `Rewrite`, Index built for `CreateIndex`, and so on), the version, its
-    tags, one essential summary (row change, index name, first changed key, or
-    fragments before → after), and the commit time as `HH:mm:ss`. A jump in
-    version numbers shows a dashed row for the versions cleanup removed.
-    Operation chips with counts over the loaded entries filter the list.
-    Clicking a row (or Enter/Space) opens a detail pane beside the list (an
-    overlay on narrow screens; Esc or the close button closes it, arrow keys
-    move the selection) with the full ISO 8601 commit timestamp, operation,
-    version and read version, tags, the row, data size, fragment, and
-    deleted-row change against the next older loaded version ("—" for the
-    oldest loaded one), all operation details (delete predicate, built indices,
-    set and removed keys with values, compaction counts), the manifest totals
-    at that version, the writer, and the transaction id and properties. The
-    pane's Source files view shows the files the entry was read from
-    (`GET /catalog/v1/table/{id}/version/{version}/files`): the manifest file
-    and, from older writers, the transaction file, each section as a
-    collapsible JSON tree with a copy button.
-  - **Versions:** newest first, 50 at a time
-    (`POST /v1/table/{id}/version/list?descending=true`) with "Load earlier";
-    nothing reads every manifest up front. A Trends chart of rows and
-    current-version data size covers exactly the loaded versions and stays
-    pinned at the top while the version table scrolls under it. Below Trends,
-    Tags (name → version) and Branches (name, parent branch and version,
-    manifest size) tiles. The table lists timestamp, rows and row change
-    against the next older loaded version ("—" for the oldest loaded one), data
-    size, data files, and deletions. The current version carries a "current"
-    badge; later versions carry "newer than current" until a catalog refresh.
-    Clicking a row opens the Timeline's pane below the Trends chart, with the
-    version's event fetched as a one-event page
-    (`?page_token=<version + 1>&limit=1`) and changes measured against the next
-    older loaded version.
-  - **Schema:** schema-level metadata on top, then an expandable field tree
-    with compact types (full type on hover), nullability, a description (the
-    `description` key of the field's metadata), and size on disk (last), plus a raw JSON view. Size on
-    disk is a bar per top-level column scaled to the largest column, with the
-    size inside it, from `GET /catalog/v1/table/{id}/column-storage` (blob
-    payloads and index files excluded); it loads on its own when the tab opens.
-    Clicking a row (or Enter/Space; Esc closes, arrows move) opens a field pane:
-    path, full type, nullability, size with its share of all columns and rank,
-    field metadata, the schema-level entries keyed `<key>:<column>` to that
-    column (such as `blob-codec:<column>`), and the Arrow field as a JSON tree.
-  - **Indices:** name, type, columns, size, and indexed versus unindexed rows.
+## Table page
 
-  The version, field, and index tables pin their header row below the tab bar
-  (the version table's below the Trends chart) and scroll sideways with the
-  header following when wider than their column.
+The Lance logo, the table name, and seven tabs: Overview, Properties, Timeline,
+Versions, Schema, Indices, SQL. The active tab is in `?tab=`.
 
-  The timeline, version, field, and SQL row panes are one shared side pane.
-  On wide screens it and its list split the width evenly, with every list
-  column kept; on narrow screens it opens as an overlay.
+**State.** A tab mounts on first visit and stays mounted, and the eight most
+recently visited tables stay mounted while hidden. Selected rows and panes, SQL
+queries and results, expansion, and filters survive switching tabs or tables.
+Opening a table through a link without `?tab=` restores its last tab; a URL that
+names a tab opens that tab. Hidden pages ignore keyboard shortcuts and pause
+video. Scroll position is not kept.
 
-  The **SQL** tab (labeled read-only) runs one query at a time against this
-  table (`POST /catalog/v1/table/{id}/sql`). A version picker lists the loaded
-  versions newest first (its last option loads earlier ones; it shares the
-  Versions tab's pages) and sets which version the table name reads: the
-  current version by default, labeled "Current (vN)", with newer versions
-  marked. Any other version is addressable as `"<table>@v<N>"`. The panel opens
-  with `SELECT * FROM "<table>" LIMIT 20` and runs on the Run button or
-  Ctrl/Cmd+Enter. Results show column names and types, nested values as JSON,
-  binary values as hex, row count, the queried version, elapsed time, a
-  truncation notice past the server's row cap, and the server's error message.
-  Cancel stops waiting; the server's time limit ends the query. The results
-  scroll with the page like the other tables: the toolbar and the result
-  header pin below the tab bar, and wide results scroll sideways with the header
-  following. Side by side (wide screens), the collapsible editor stays pinned on
-  the left at the viewport's height; hidden, the results take the full width;
-  stacked (narrow screens), the editor sits above them. Drag the divider to
-  resize the editor, or a column header edge to resize that column. Download
-  CSV exports the returned rows with full values; truncated results omit rows
-  past the server's cap. Clicking a result row (or Enter/Space; Esc closes,
-  arrows move) opens a row pane beside the results like the schema field pane:
-  every column's name, type, and full value, nested values as a JSON tree, each
-  with a copy button; a new run clears the selection. Lance blob v2 columns are
-  read first. A table field whose metadata has `ARROW:extension:name:
-  lance.blob.v2` and whose struct children are `data`, `uri` (and optionally
-  `position`, `size`) is a blob column. SQL reads it as its stored descriptor
-  struct (`kind`, `position`, `size`, `blob_id`, `blob_uri`), which the result
-  column must be typed as; that column's metadata carries
-  `lance-encoding:blob: true`, so an aliased blob column is
-  recognized too. An external blob (`kind` 3, `blob_id` 0) whose `blob_uri`
-  ends in a supported video extension plays only its byte range
-  `[position, position + size)`; a zero `size` means the object's length, so it
-  plays from `position` to the end. Other blob kinds live inside the table's
-  own files or under a registered base and are not played. Any other
-  value that is an http(s) or `s3://` URL ending in a video extension (`.mp4`,
-  `.m4v`, `.mov`, `.webm`, `.h265`, `.hevc`; a query string is allowed) plays
-  as a whole object. The
-  pane adds a Playback tab with a player per such column and a Download button
-  (for `s3://` objects, a presigned URL served as an attachment; for a blob
-  range, the range saved as a file, up to 512 MiB).
-  `s3://` objects play from a presigned https URL
-  (`GET /catalog/v1/media/presign?uri=`), so the browser reads them from object
-  storage directly; the bucket's CORS rules must allow the UI's origin and the
-  `Range` header. A blob range of a container file (`.mp4` and so on) is
-  fetched into memory (up to 512 MiB) and played from there, since a browser
-  cannot play a slice of a remote file. Container formats play in a `<video>` element. Raw H.265
-  streams (`.h265`, `.hevc`) are read in 2 MiB byte ranges, split into
-  pictures, decoded with WebCodecs (where the browser and hardware support
-  H.265; otherwise the pane says so and stops reading), and drawn on a canvas
-  at a chosen frame rate, since raw streams carry no timing; reading pauses
-  while 30 frames are buffered. Its controls: play/pause (also a click on the
-  video, Space, or K), a seek bar showing the read range, elapsed and
-  estimated total time, the frame rate, and full screen (F); arrow keys skip
-  5 seconds. A seek jumps to that byte fraction of the file and resumes at the
-  next random access picture, so times are estimates from the average picture
-  size read so far. The
-  editor loads when the tab first opens and then stays mounted, so the query and
-  results survive switching tabs until the user leaves the table page; the other
-  tabs stay usable while a query runs.
+- **Overview.** An About card: table format (`Lance 2.2`), current version with
+  its commit age, business and technical owner, and location. When a newer
+  version is committed, it shows the latest version and a Refresh button that
+  calls `POST /catalog/v1/table/:id/refresh`. Below: rows, deleted rows, and the
+  estimated monthly storage cost; storage by category for the current version
+  and for every object; and fragment health (rows, data files, data size, and
+  deleted rows per fragment, plus the share of fragments under Lance's
+  1,048,576-row compaction target). The slow storage listing and stats load
+  last.
+- **Properties.** Table properties (owner, description, registration times, and
+  any client keys except the two owners), Lance table metadata
+  (`table_metadata`), and table config (`config`).
+- **Timeline.** One row per retained version, newest first, 50 at a time,
+  grouped under day headers, with the operation, version, tags, a one-line
+  summary, and commit time. A dashed row marks versions removed by cleanup.
+  Operation chips filter the list.
+- **Versions.** Versions newest first, 50 at a time, under a pinned Trends chart
+  of rows and data size. Tags and Branches tiles. Each row shows time, rows and
+  change, data size, data files, and deletions; the current version and newer
+  ones are badged.
+- **Schema.** Schema-level metadata, then a field tree with type, nullability,
+  description (the field's `description` metadata), and size on disk per
+  top-level column. A raw JSON view is available.
+- **Indices.** Name, type, columns, size, and coverage.
+- **SQL.** See below.
 
-Catalog-recorded facts come from the cheap describe; Lance-derived sections come
-from the detailed describe and the version, index, tag, and branch routes. Each
-Lance-derived section loads and fails on its own, so a table whose dataset is
-missing still shows its About facts. Empty sections render an explicit empty
-state.
+Clicking a timeline, version, field, or SQL result row opens a side pane (Esc
+closes it, arrow keys move). The pane shares the width evenly with its list on
+wide screens and overlays it on narrow ones. Timeline and version panes show
+the commit, changes against the next older loaded version, operation details,
+totals, writer, transaction, and a Source files view of the decoded manifest
+and transaction (`GET /catalog/v1/table/:id/version/:version/files`). Version,
+field, and index tables pin their header and scroll sideways when wide.
 
-## Implementation
+### SQL tab
 
-- TanStack Router defines file-based routes and generates `src/routeTree.gen.ts`.
-- TanStack Query handles fetching, `page_token` pagination, and cache
-  invalidation; query hooks and keys live in `src/lib/catalog-queries.ts`.
-- `src/lib/api.ts` is the client for the spec routes and the `/catalog/v1` read
-  and SQL routes, and parses `{error, code}` error bodies.
-- Zod schemas in `src/lib/schemas.ts` hand-mirror the spec models and the
-  `/catalog/v1` responses; `tsc` checks them against their callers.
-- `src/lib/ids.ts` builds ids from segment arrays; `src/lib/table-metadata.ts`
-  reads the manifest summary and `table_metadata.*` / `config.*` keys from
-  describe and version metadata.
-- Tailwind and local shadcn/ui components supply styles and controls; charts use
-  Recharts through the shadcn chart pattern (`src/components/ui/chart.tsx`).
+Runs one read-only query at a time (`POST /catalog/v1/table/:id/sql`). A version
+picker sets which version the table name reads; `"<table>@v<N>"` reads any
+other. The editor opens with `SELECT * FROM "<table>" LIMIT 20` and runs on Run
+or Ctrl/Cmd+Enter. Results show column types, nested values as JSON, binary as
+hex, the row count, version, elapsed time, and a truncation notice. Cancel stops
+waiting; the server's time limit ends the query. Columns resize by dragging, and
+Download CSV exports the returned rows.
+
+The row pane lists every column's value with a copy button and adds a
+**Playback** tab for each playable value:
+
+- **Lance blob columns.** A table field tagged `ARROW:extension:name:
+  lance.blob.v2` whose children are `data`, `uri` (and optionally `position`,
+  `size`) is a blob column. SQL returns it as the descriptor struct (`kind`,
+  `position`, `size`, `blob_id`, `blob_uri`) with `lance-encoding:blob: true` in
+  the column metadata, so aliases are recognized too. An external blob
+  (`kind` 3, `blob_id` 0) whose `blob_uri` ends in a supported extension plays
+  only `[position, position + size)`; a zero `size` plays from `position` to the
+  end of the object. Other blob kinds are not played.
+- **URL strings.** Any other value that is an http(s) or `s3://` URL ending in
+  `.mp4`, `.m4v`, `.mov`, `.webm`, `.h265`, or `.hevc` plays as a whole object.
+
+`s3://` objects play from a presigned URL
+(`GET /catalog/v1/media/presign`), read directly from object storage.
+Containers play in a `<video>` element; a blob range of a container is fetched
+into memory first (up to 512 MiB). Raw H.265 streams are read in 2 MiB ranges,
+decoded with WebCodecs where the browser supports H.265, and drawn on a canvas
+at a chosen frame rate. The player has play/pause (click, Space, or K), a seek
+bar, elapsed and estimated time, full screen (F), and 5-second skips (arrow
+keys). Raw streams carry no timing, so a seek jumps to a byte position and times
+are estimates. Download saves the file, or the blob's byte range.
+
+## Code
+
+- TanStack Router file routes (`src/routes/`, generating `src/routeTree.gen.ts`)
+  and TanStack Query; query hooks and keys are in `src/lib/catalog-queries.ts`.
+- `src/lib/api.ts` is the API client; `src/lib/schemas.ts` holds Zod schemas
+  that mirror the spec and `/catalog/v1` responses.
+- `src/lib/sql.ts` decides playability; `src/lib/hevc.ts` and
+  `src/lib/hevc-player.ts` parse and play raw H.265.
+- `src/lib/active.ts` tells components whether their page or tab is on screen.
+- Tailwind with local shadcn/ui components; charts use Recharts.
 
 ## Development
 
 ```sh
 cd frontend
 bun install --frozen-lockfile
-bun --bun run dev
-bun --bun run typecheck
-bun --bun run test
-bun --bun run build
+bun run dev         # http://localhost:5173, proxies /v1 and /catalog to :8080
+bun run typecheck
+bun run test
+bun run build       # tsc --noEmit && vite build -> dist/
 ```
 
-The dev server listens on port 5173 and proxies `/v1` and `/catalog` to a
-`catalog-api` on port 8080. To use a remote API instead, set `VITE_API_BASE`
-(for example `VITE_API_BASE=https://host bun --bun run dev`); that API must allow
-the cross-origin request. The build runs `tsc --noEmit && vite build`,
-regenerating the route tree and emitting static assets to `dist/`. CI runs the
-build on frontend changes. No lint script is configured.
+Set `VITE_API_BASE` to point the dev server at a remote API, which must allow
+the cross-origin request. CI runs `bun run build` on frontend changes. No lint
+script is configured.
