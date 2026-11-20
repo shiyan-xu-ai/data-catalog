@@ -108,13 +108,23 @@ with one part is not a table.
 - **Tabs.** Open, switch, and close; each keeps its own text, results, and
   editor/results split. **Query this table** on a table page opens a new tab
   pre-filled with `SELECT * FROM "<path>" LIMIT 20` (`/query?table=<id>`).
-- **Run.** Run or Ctrl/Cmd+Enter. Cancel stops waiting; the server's time limit
-  ends the query.
+- **Run.** Run or Ctrl/Cmd+Enter. Each run sends a fresh `query_id`. Cancel,
+  closing the tab, and leaving or reloading the page stop waiting and ask the
+  server to stop the query (`POST /catalog/v1/sql/<query_id>/cancel`; on page
+  exit a keep-alive request per running query). A 404 means the server did not
+  find the query (it already finished, or another instance runs it); the UI
+  shows nothing and the server's time limit ends it.
+- **Busy.** The server runs a limited number of queries at once, overall and per
+  user, and rejects a query over either limit instead of queuing it. The
+  rejection shows the server's message (the server is busy, or you already
+  have queries running) under "Too many queries running"; run again later or
+  cancel one of yours.
 
 Results show column types, nested values as JSON, binary as hex, the row count,
 elapsed time, the table version when exactly one table was read (otherwise the
-number of tables, with each `path@vN` in its tooltip), and a truncation notice.
-Columns resize by dragging, and Download CSV exports the returned rows.
+number of tables, with each `path@vN` in its tooltip), and a truncation notice
+that says whether the row limit or the size limit cut the result. Columns resize
+by dragging, and Download CSV exports the returned rows.
 
 The row pane lists every column's value with a copy button and adds a
 **Playback** tab for each playable value:

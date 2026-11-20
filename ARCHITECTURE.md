@@ -73,8 +73,31 @@ those tables: a plain path reads the table's current version, and a pinned path
 reads that version. DDL, DML, statements, and spilling are disabled, so a query
 cannot write anywhere. Blob columns read as their descriptors (`kind`,
 `position`, `size`, `blob_id`, `blob_uri`), so payload bytes are never fetched.
-Row, time, and memory limits bound each query, and a per-instance semaphore caps
-concurrency.
+Row, byte, time, and memory limits bound each query.
+
+Queries run on a Tokio runtime of their own (`CATALOG_SQL_THREADS` workers),
+so plan and execution work never occupies the threads that answer catalog
+requests. Lance decodes on its own CPU pool, which browsing shares.
+
+**Admission.** One lock-guarded registry tracks every running query with its
+user and optional client id. A query starts only when fewer than
+`CATALOG_SQL_MAX_CONCURRENT` run on the instance and fewer than
+`CATALOG_SQL_MAX_PER_USER` run for its user; otherwise it is rejected at once
+(429), with no queue. The user is IAP's `X-Goog-Authenticated-User-Email`
+header, or `anonymous` without it; every admission decision logs it. A query
+leaves the registry, freeing its slot, when it finishes, when its owner cancels
+it by id, or when its request is dropped (client disconnect), and the last two
+abort its task. Slots and the registry are per instance, so with several
+instances a cancel can land where the query is not running (404).
+
+**Memory.** `CATALOG_SQL_MEMORY_BUDGET_MB` is split evenly across the slots into
+each query's DataFusion pool. The pool tracks large operators (sorts, joins,
+group-bys), not scan buffers or the result being built, so the budget sits well
+below the instance memory. A query over its pool fails with a clear error.
+
+**Result size.** Rows are streamed and encoded until `CATALOG_SQL_MAX_ROWS` or
+`CATALOG_SQL_MAX_RESULT_MB` would be exceeded; the response's `truncated_by`
+names the cap.
 
 ## Storage footprint
 

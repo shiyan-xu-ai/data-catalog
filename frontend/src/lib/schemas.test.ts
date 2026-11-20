@@ -119,7 +119,14 @@ describe("errorResponseSchema", () => {
 });
 
 describe("sqlResponseSchema", () => {
-  const base = { columns: [{ name: "id", type: "Int64" }], rows: [[1]], row_count: 1, truncated: false, elapsed_ms: 2 };
+  const base = {
+    columns: [{ name: "id", type: "Int64" }],
+    rows: [[1]],
+    row_count: 1,
+    truncated: false,
+    truncated_by: null,
+    elapsed_ms: 2,
+  };
   it("lists the tables a query read, empty when it read none", () => {
     const r = sqlResponseSchema.parse({ ...base, tables: [{ id: ["a", "b", "events"], version: 12 }] });
     expect(r.tables).toEqual([{ id: ["a", "b", "events"], version: 12 }]);
@@ -127,5 +134,14 @@ describe("sqlResponseSchema", () => {
   });
   it("rejects a response without tables", () => {
     expect(() => sqlResponseSchema.parse(base)).toThrow();
+  });
+  it("reads which cap truncated a result", () => {
+    const r = sqlResponseSchema.parse({ ...base, tables: [], truncated: true, truncated_by: "bytes" });
+    expect(r.truncated_by).toBe("bytes");
+    expect(sqlResponseSchema.parse({ ...base, tables: [], truncated: true, truncated_by: "rows" }).truncated_by).toBe("rows");
+    expect(sqlResponseSchema.parse({ ...base, tables: [] }).truncated_by).toBeNull();
+  });
+  it("rejects an unknown truncation reason", () => {
+    expect(() => sqlResponseSchema.parse({ ...base, tables: [], truncated_by: "time" })).toThrow();
   });
 });

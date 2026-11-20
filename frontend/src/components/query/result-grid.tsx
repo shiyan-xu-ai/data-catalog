@@ -28,7 +28,7 @@ const cellClass: Record<CellKind, string> = {
 
 export function errorTitle(e: Error): string {
   if (!(e instanceof ApiError)) return "Request failed";
-  if (e.code === ErrorCode.Throttling) return "The server is busy running other queries; try again shortly";
+  if (e.code === ErrorCode.Throttling) return "Too many queries running";
   if (e.code === ErrorCode.TableNotFound) return "Table not found";
   if (e.code === ErrorCode.TableVersionNotFound) return "Version not found";
   if (e.code === ErrorCode.InvalidInput) return "Query rejected";

@@ -65,18 +65,17 @@ async fn main() -> anyhow::Result<()> {
             .context("CATALOG_VERTICALS")?,
     );
 
+    let app = catalog_api_lib::app(namespace, cfg.catalog, Some(&cfg.webui_dir))
+        .context("start the SQL query runtime")?;
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("bind api server to {}", cfg.bind_addr))?;
     tracing::info!(addr = %cfg.bind_addr, "catalog-api listening");
 
-    axum::serve(
-        listener,
-        catalog_api_lib::app(namespace, cfg.catalog, Some(&cfg.webui_dir)),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("api server error")?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("api server error")?;
 
     tracing::info!("shutdown complete");
     Ok(())

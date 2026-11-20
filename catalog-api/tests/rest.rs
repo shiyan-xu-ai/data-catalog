@@ -3,22 +3,37 @@
 #[path = "../../catalog-store/tests/support/mod.rs"]
 mod support;
 
+use std::time::Duration;
+
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
-async fn call(app: &Router, method: Method, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+/// Sends a request as `user`, the value of IAP's user header; `None` sends none.
+async fn call(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    user: Option<&str>,
+) -> (StatusCode, Value) {
     let body = body.map_or_else(Body::empty, |b| Body::from(b.to_string()));
-    let request = Request::builder()
+    let mut request = Request::builder()
         .method(method)
         .uri(uri)
-        .header("content-type", "application/json")
-        .body(body)
+        .header("content-type", "application/json");
+    if let Some(user) = user {
+        request = request.header("x-goog-authenticated-user-email", user);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(body).unwrap())
+        .await
         .unwrap();
-    let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let value = if bytes.is_empty() {
@@ -31,11 +46,15 @@ async fn call(app: &Router, method: Method, uri: &str, body: Option<Value>) -> (
 }
 
 async fn post(app: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
-    call(app, Method::POST, uri, Some(body)).await
+    call(app, Method::POST, uri, Some(body), None).await
+}
+
+async fn post_as(app: &Router, user: Option<&str>, uri: &str, body: Value) -> (StatusCode, Value) {
+    call(app, Method::POST, uri, Some(body), user).await
 }
 
 async fn get(app: &Router, uri: &str) -> (StatusCode, Value) {
-    call(app, Method::GET, uri, None).await
+    call(app, Method::GET, uri, None, None).await
 }
 
 fn error(status: StatusCode, code: u32) -> impl Fn((StatusCode, Value)) {
@@ -67,10 +86,12 @@ async fn rest_catalog_routes() {
     let ui = tempfile::tempdir().unwrap();
     std::fs::write(ui.path().join("index.html"), "<html>catalog</html>").unwrap();
     let mut catalog = catalog_api_lib::config::CatalogConfig::default();
-    // A low row cap makes the three-row fixture exercise truncation.
+    // A low row cap makes the three-row fixture exercise truncation, and a low byte cap lets a
+    // wide row exceed it.
     catalog.sql.limits.max_rows = 2;
+    catalog.sql.limits.max_result_bytes = 256;
     let pricing = catalog.storage_pricing.clone();
-    let app = catalog_api_lib::app(ns, catalog, ui.path().to_str());
+    let app = catalog_api_lib::app(ns, catalog, ui.path().to_str()).unwrap();
 
     assert_eq!(get(&app, "/healthz").await.0, StatusCode::OK);
     assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK);
@@ -386,12 +407,9 @@ async fn rest_catalog_routes() {
 
     // Read-only SQL over tables named by full path: typed columns, Arrow JSON values, truncation.
     let sql = |query: &str| json!({"sql": query});
-    let (status, mut typed) = post(
-        &app,
-        "/catalog/v1/sql",
-        sql(r#"SELECT id, name, id * 2 AS doubled, NULL AS nothing FROM "prod"."users" WHERE id = 1"#),
-    )
-    .await;
+    let typed_query =
+        r#"SELECT id, name, id * 2 AS doubled, NULL AS nothing FROM "prod"."users" WHERE id = 1"#;
+    let (status, mut typed) = post(&app, "/catalog/v1/sql", sql(typed_query)).await;
     assert_eq!(status, StatusCode::OK, "{typed}");
     assert!(typed["elapsed_ms"].take().is_u64());
     assert_eq!(
@@ -407,6 +425,7 @@ async fn rest_catalog_routes() {
             "rows": [[1, "a", 2, null]],
             "row_count": 1,
             "truncated": false,
+            "truncated_by": null,
             "elapsed_ms": null,
         })
     );
@@ -419,8 +438,24 @@ async fn rest_catalog_routes() {
     assert_eq!(status, StatusCode::OK, "{all}");
     assert_eq!(all["rows"], json!([[1], [2]]));
     assert_eq!(
-        (all["row_count"].as_u64(), all["truncated"].as_bool()),
-        (Some(2), Some(true))
+        (&all["row_count"], &all["truncated"], &all["truncated_by"]),
+        (&json!(2), &json!(true), &json!("rows"))
+    );
+    // Each row encodes as 204 bytes, so only one fits the 256-byte cap.
+    let (status, wide) = post(
+        &app,
+        "/catalog/v1/sql",
+        sql(r#"SELECT repeat('x', 200) FROM "prod"."users""#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{wide}");
+    assert_eq!(
+        (
+            &wide["row_count"],
+            &wide["truncated"],
+            &wide["truncated_by"]
+        ),
+        (&json!(1), &json!(true), &json!("bytes"))
     );
     let copied = data.path().join("copied.csv");
     for statement in [
@@ -643,7 +678,7 @@ async fn media_presign_signs_s3_uris() {
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .into();
     let ns = std::sync::Arc::new(catalog_store::PostgresNamespace::new(pool, options));
-    let app = catalog_api_lib::app(ns, Default::default(), None);
+    let app = catalog_api_lib::app(ns, Default::default(), None).unwrap();
     let presign = |uri: &str| {
         let path = format!("/catalog/v1/media/presign?uri={uri}");
         let app = app.clone();
@@ -672,4 +707,113 @@ async fn media_presign_signs_s3_uris() {
 
     error(StatusCode::BAD_REQUEST, 13)(presign("https://host/a.h265").await);
     error(StatusCode::BAD_REQUEST, 13)(presign("s3://media/clips/../other/a.h265").await);
+}
+
+/// Runs until cancelled: about a trillion rows.
+const ENDLESS: &str = "SELECT sum(value % 7) FROM range(1000000000000)";
+
+fn start_endless(
+    app: &Router,
+    user: Option<&str>,
+    query_id: &str,
+) -> JoinHandle<(StatusCode, Value)> {
+    let app = app.clone();
+    let user = user.map(str::to_string);
+    let body = json!({"sql": ENDLESS, "query_id": query_id});
+    tokio::spawn(async move { post_as(&app, user.as_deref(), "/catalog/v1/sql", body).await })
+}
+
+/// Lets spawned requests reach admission, which they do before their first wait.
+async fn settle() {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+}
+
+fn throttled((status, body): (StatusCode, Value), message: &str) {
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::TOO_MANY_REQUESTS, &json!(21)),
+        "{body}"
+    );
+    assert!(body["error"].as_str().unwrap().contains(message), "{body}");
+}
+
+async fn cancelled(request: JoinHandle<(StatusCode, Value)>) {
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the cancelled query kept running")
+        .unwrap();
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::BAD_REQUEST, &json!(13)),
+        "{body}"
+    );
+    assert_eq!(body["error"], "query cancelled");
+}
+
+#[tokio::test]
+async fn sql_admission_and_cancel() {
+    let Some(ns) = support::namespace("api_sql_admission").await else {
+        return;
+    };
+    let mut catalog = catalog_api_lib::config::CatalogConfig::default();
+    catalog.sql.max_concurrent = 3;
+    catalog.sql.max_per_user = 2;
+    catalog.sql.threads = 3;
+    let app = catalog_api_lib::app(ns, catalog, None).unwrap();
+    let ada = Some("accounts.google.com:ada@example.com");
+    let bob = Some("accounts.google.com:bob@example.com");
+    let cy = Some("accounts.google.com:cy@example.com");
+    let quick = || json!({"sql": "SELECT 1"});
+    let cancel = |user: Option<&'static str>, query_id: &str| {
+        let app = app.clone();
+        let uri = format!("/catalog/v1/sql/{query_id}/cancel");
+        async move { post_as(&app, user, &uri, json!({})).await }
+    };
+
+    // A user's third query is rejected while another user's still starts.
+    let ada_1 = start_endless(&app, ada, "ada-1");
+    let ada_2 = start_endless(&app, ada, "ada-2");
+    settle().await;
+    throttled(
+        post_as(&app, ada, "/catalog/v1/sql", quick()).await,
+        "you already have 2 queries running; wait for one or cancel it",
+    );
+    let bob_1 = start_endless(&app, bob, "bob-1");
+    settle().await;
+    // Every global slot is held.
+    throttled(
+        post_as(&app, cy, "/catalog/v1/sql", quick()).await,
+        "the server is running its maximum of 3 queries; try again shortly",
+    );
+
+    // Only the owner cancels a query; it stops at once and leaves the registry.
+    error(StatusCode::NOT_FOUND, 10)(cancel(bob, "ada-1").await);
+    assert_eq!(cancel(ada, "ada-1").await.0, StatusCode::NO_CONTENT);
+    cancelled(ada_1).await;
+    error(StatusCode::NOT_FOUND, 10)(cancel(ada, "ada-1").await);
+    // The freed slot admits the owner's next query.
+    let (status, body) = post_as(&app, ada, "/catalog/v1/sql", quick()).await;
+    assert_eq!(
+        (status, &body["rows"]),
+        (StatusCode::OK, &json!([[1]])),
+        "{body}"
+    );
+
+    for (user, query_id, request) in [(ada, "ada-2", ada_2), (bob, "bob-1", bob_1)] {
+        assert_eq!(cancel(user, query_id).await.0, StatusCode::NO_CONTENT);
+        cancelled(request).await;
+    }
+
+    // Requests without an IAP identity share one anonymous user.
+    let anonymous_1 = start_endless(&app, None, "anonymous-1");
+    let anonymous_2 = start_endless(&app, None, "anonymous-2");
+    settle().await;
+    throttled(
+        post_as(&app, None, "/catalog/v1/sql", quick()).await,
+        "you already have 2 queries running",
+    );
+    for (query_id, request) in [("anonymous-1", anonymous_1), ("anonymous-2", anonymous_2)] {
+        assert_eq!(cancel(None, query_id).await.0, StatusCode::NO_CONTENT);
+        cancelled(request).await;
+    }
 }

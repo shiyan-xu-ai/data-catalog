@@ -54,6 +54,7 @@ async fn current(ns: &PostgresNamespace, parts: &[&str]) -> i64 {
 fn limits() -> SqlLimits {
     SqlLimits {
         max_rows: 100,
+        max_result_bytes: 1 << 20,
         timeout: Duration::from_secs(30),
         memory_limit_bytes: 64 << 20,
     }

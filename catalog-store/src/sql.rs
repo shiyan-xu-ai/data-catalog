@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_json::writer::JsonArray;
+use arrow_json::writer::LineDelimited;
 use arrow_json::WriterBuilder;
 use arrow_schema::{Field, Schema};
 use futures::{StreamExt, TryStreamExt};
@@ -26,18 +26,24 @@ use lance::deps::datafusion::sql::sqlparser::ast::{
 };
 use lance::Dataset;
 use lance_namespace::{Error, NamespaceError, Result};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::namespace::{
     internal, invalid_input, is_missing, is_version_missing, PathTable, READ_CONCURRENCY,
 };
 use crate::PostgresNamespace;
 
+/// Rows encoded at a time, so a cap stops encoding before a wide batch is encoded whole.
+const ENCODE_CHUNK_ROWS: usize = 64;
+
 /// Bounds applied to every query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SqlLimits {
     /// Rows returned at most; a larger result is truncated and flagged.
     pub max_rows: usize,
+    /// Bytes of the returned rows, encoded as JSON arrays, at most; a larger result is
+    /// truncated and flagged.
+    pub max_result_bytes: usize,
     pub timeout: Duration,
     /// Memory pool of the query's DataFusion runtime; exceeding it fails the query.
     pub memory_limit_bytes: usize,
@@ -60,6 +66,13 @@ pub struct SqlTable {
     pub version: u64,
 }
 
+/// The cap that cut a result short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Truncation {
+    Rows,
+    Bytes,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlResult {
     /// Every table version the query read, in order of first appearance in the statement.
@@ -67,7 +80,8 @@ pub struct SqlResult {
     pub columns: Vec<SqlColumn>,
     /// One JSON array per row, values encoded with Arrow's JSON writer.
     pub rows: Vec<Vec<Value>>,
-    pub truncated: bool,
+    /// The cap that stopped the result, when one did.
+    pub truncated_by: Option<Truncation>,
 }
 
 impl PostgresNamespace {
@@ -225,10 +239,13 @@ async fn execute(
             .limit(0, Some(limits.max_rows.saturating_add(1)))
             .map_err(sql_error)?
     };
-    let batches = frame.collect().await.map_err(sql_error)?;
-    let mut rows = encode_rows(&schema, &batches)?;
-    let truncated = rows.len() > limits.max_rows;
-    rows.truncate(limits.max_rows);
+    let mut batches = frame.execute_stream().await.map_err(sql_error)?;
+    let mut encoder = RowEncoder::new(&schema, limits);
+    while let Some(batch) = batches.next().await {
+        if !encoder.push(&batch.map_err(sql_error)?)? {
+            break;
+        }
+    }
     Ok(SqlResult {
         tables,
         columns: schema
@@ -240,8 +257,8 @@ async fn execute(
                 metadata: f.metadata().clone(),
             })
             .collect(),
-        rows,
-        truncated,
+        rows: encoder.rows,
+        truncated_by: encoder.truncated_by,
     })
 }
 
@@ -527,48 +544,86 @@ fn table_provider(dataset: Arc<Dataset>) -> Arc<dyn TableProvider> {
     )
 }
 
-/// Encodes rows with Arrow's JSON writer. Columns are renamed positionally first so duplicate
-/// output names (`SELECT 1, 1`) cannot collide in the writer's JSON objects.
-fn encode_rows(schema: &Schema, batches: &[RecordBatch]) -> Result<Vec<Vec<Value>>> {
-    let keys: Vec<String> = (0..schema.fields().len())
-        .map(|i| format!("c{i}"))
-        .collect();
-    let positional = Arc::new(Schema::new(
-        schema
-            .fields()
-            .iter()
-            .zip(&keys)
-            .map(|(f, key)| Field::new(key, f.data_type().clone(), true))
-            .collect::<Vec<_>>(),
-    ));
-    let mut writer = WriterBuilder::new()
-        .with_explicit_nulls(true)
-        .build::<_, JsonArray>(Vec::new());
-    for batch in batches {
-        let batch = RecordBatch::try_new(positional.clone(), batch.columns().to_vec())
-            .map_err(|e| internal(format!("encode query result: {e}")))?;
-        writer
-            .write(&batch)
-            .map_err(|e| invalid_input(format!("cannot encode query result as JSON: {e}")))?;
+/// Encodes rows with Arrow's JSON writer until the row or byte cap. Columns are renamed
+/// positionally first so duplicate output names (`SELECT 1, 1`) cannot collide in the writer's
+/// JSON objects.
+struct RowEncoder<'a> {
+    limits: &'a SqlLimits,
+    positional: Arc<Schema>,
+    keys: Vec<String>,
+    /// What the keys add to a row written as a JSON object rather than an array: `"key":` each.
+    key_bytes: usize,
+    rows: Vec<Vec<Value>>,
+    /// Encoded bytes of `rows`, each counted as a JSON array.
+    bytes: usize,
+    truncated_by: Option<Truncation>,
+}
+
+impl<'a> RowEncoder<'a> {
+    fn new(schema: &Schema, limits: &'a SqlLimits) -> Self {
+        let keys: Vec<String> = (0..schema.fields().len())
+            .map(|i| format!("c{i}"))
+            .collect();
+        let positional = Arc::new(Schema::new(
+            schema
+                .fields()
+                .iter()
+                .zip(&keys)
+                .map(|(f, key)| Field::new(key, f.data_type().clone(), true))
+                .collect::<Vec<_>>(),
+        ));
+        Self {
+            limits,
+            positional,
+            key_bytes: keys.iter().map(|k| k.len() + 3).sum(),
+            keys,
+            rows: Vec::new(),
+            bytes: 0,
+            truncated_by: None,
+        }
     }
-    writer
-        .finish()
-        .map_err(|e| internal(format!("encode query result: {e}")))?;
-    let buffer = writer.into_inner();
-    let objects: Vec<serde_json::Map<String, Value>> = if buffer.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_slice(&buffer)
-            .map_err(|e| internal(format!("decode query result: {e}")))?
-    };
-    Ok(objects
-        .into_iter()
-        .map(|mut object| {
-            keys.iter()
-                .map(|key| object.remove(key).unwrap_or(Value::Null))
-                .collect()
-        })
-        .collect())
+
+    /// Encodes the batch's rows; `false` once a cap ends the result.
+    fn push(&mut self, batch: &RecordBatch) -> Result<bool> {
+        let batch = RecordBatch::try_new(self.positional.clone(), batch.columns().to_vec())
+            .map_err(|e| internal(format!("encode query result: {e}")))?;
+        let mut offset = 0;
+        while offset < batch.num_rows() {
+            let len = ENCODE_CHUNK_ROWS.min(batch.num_rows() - offset);
+            let mut writer = WriterBuilder::new()
+                .with_explicit_nulls(true)
+                .build::<_, LineDelimited>(Vec::new());
+            writer
+                .write(&batch.slice(offset, len))
+                .map_err(|e| invalid_input(format!("cannot encode query result as JSON: {e}")))?;
+            writer
+                .finish()
+                .map_err(|e| internal(format!("encode query result: {e}")))?;
+            let buffer = writer.into_inner();
+            for line in buffer.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+                if self.rows.len() == self.limits.max_rows {
+                    self.truncated_by = Some(Truncation::Rows);
+                    return Ok(false);
+                }
+                let bytes = line.len().saturating_sub(self.key_bytes);
+                if self.bytes + bytes > self.limits.max_result_bytes {
+                    self.truncated_by = Some(Truncation::Bytes);
+                    return Ok(false);
+                }
+                let mut object: Map<String, Value> = serde_json::from_slice(line)
+                    .map_err(|e| internal(format!("decode query result: {e}")))?;
+                self.rows.push(
+                    self.keys
+                        .iter()
+                        .map(|key| object.remove(key).unwrap_or(Value::Null))
+                        .collect(),
+                );
+                self.bytes += bytes;
+            }
+            offset += len;
+        }
+        Ok(true)
+    }
 }
 
 fn sql_error(e: DataFusionError) -> Error {

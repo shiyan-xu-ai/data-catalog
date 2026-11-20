@@ -5,7 +5,7 @@ mod support;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use catalog_store::{PostgresNamespace, SqlLimits, SqlResult, SqlTable};
+use catalog_store::{PostgresNamespace, SqlLimits, SqlResult, SqlTable, Truncation};
 use lance::dataset::{WriteMode, WriteParams};
 use lance_namespace::{Error, ErrorCode, LanceNamespace};
 use serde_json::{json, Value};
@@ -16,6 +16,15 @@ const INVALID_INPUT: u32 = ErrorCode::InvalidInput as u32;
 struct Fixture {
     ns: PostgresNamespace,
     dir: tempfile::TempDir,
+}
+
+fn limits() -> SqlLimits {
+    SqlLimits {
+        max_rows: 100,
+        max_result_bytes: 1 << 20,
+        timeout: Duration::from_secs(30),
+        memory_limit_bytes: 64 << 20,
+    }
 }
 
 impl Fixture {
@@ -57,16 +66,7 @@ impl Fixture {
     }
 
     async fn query(&self, sql: &str) -> Result<SqlResult, Error> {
-        self.ns
-            .query_sql(
-                sql,
-                &SqlLimits {
-                    max_rows: 100,
-                    timeout: Duration::from_secs(30),
-                    memory_limit_bytes: 64 << 20,
-                },
-            )
-            .await
+        self.ns.query_sql(sql, &limits()).await
     }
 
     async fn ok(&self, sql: &str) -> SqlResult {
@@ -387,4 +387,38 @@ async fn a_query_without_tables_reads_none() {
     let result = f.ok("SELECT 1").await;
     assert_eq!(result.rows, [[1]]);
     assert!(result.tables.is_empty());
+}
+
+#[tokio::test]
+async fn results_stop_at_the_row_or_byte_cap() {
+    let Some(f) = Fixture::new("sql_caps").await else {
+        return;
+    };
+    // Each row encodes as `["x…x"]`: 100 bytes of text and 4 of punctuation.
+    let wide = "SELECT repeat('x', 100) AS s FROM range(50)";
+    let capped = |max_rows, max_result_bytes| SqlLimits {
+        max_rows,
+        max_result_bytes,
+        ..limits()
+    };
+    let run = |limits: SqlLimits| {
+        let ns = &f.ns;
+        async move { ns.query_sql(wide, &limits).await.unwrap() }
+    };
+
+    let by_bytes = run(capped(100, 1000)).await;
+    assert_eq!(by_bytes.rows.len(), 9);
+    assert!(by_bytes
+        .rows
+        .iter()
+        .all(|row| *row == [json!("x".repeat(100))]));
+    assert_eq!(by_bytes.truncated_by, Some(Truncation::Bytes));
+
+    let by_rows = run(capped(10, 1 << 20)).await;
+    assert_eq!(by_rows.rows.len(), 10);
+    assert_eq!(by_rows.truncated_by, Some(Truncation::Rows));
+
+    let whole = run(capped(50, 50 * 104)).await;
+    assert_eq!(whole.rows.len(), 50);
+    assert_eq!(whole.truncated_by, None);
 }
