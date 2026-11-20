@@ -100,16 +100,17 @@ below the instance memory. A query over its pool fails with a clear error.
 names the cap.
 
 **Result cache.** Completed results are cached per instance in memory, shared
-by all users, bounded by `CATALOG_SQL_CACHE_MB` and evicted least recently used
-first. The key is the trimmed query text, the row and byte caps, and the sorted
-location, version, and e-tag of every table the statement resolved to. Tables
-are opened (metadata only, itself cached) before the lookup, so a hit reads no
-table data, and a refresh that moves a current version changes the key. A
-version never changes, so a hit is never stale. Results that depend on more
-than those versions are never cached: `EXPLAIN`, statements reading no table,
-and plans calling a volatile or stable function such as `random()` or `now()`.
-A hit still answers for a current version whose files cleanup removed; only a
-query that reads the files advances it.
+by all users, and evicted least recently used first once their estimated
+resident memory (parsed JSON values, not encoded bytes) exceeds
+`CATALOG_SQL_CACHE_MB`. The key is the trimmed query text, the row and byte
+caps, and the sorted location, version, and e-tag of every table the statement
+resolved to. Tables are opened (metadata only, itself cached) before the
+lookup, so a hit reads no table data, and a refresh that moves a current
+version changes the key. A version never changes, so a hit is never stale.
+Results that depend on more than those versions are never cached: `EXPLAIN`,
+statements reading no table, and plans calling a volatile or stable function
+such as `random()` or `now()`. A hit still answers for a current version whose
+files cleanup removed; only a query that reads the files advances it.
 
 ## Storage footprint
 

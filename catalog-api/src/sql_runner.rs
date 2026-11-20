@@ -52,7 +52,19 @@ struct Query {
     user: String,
     /// The id the client chose, which cancels the query.
     id: Option<String>,
-    abort: AbortHandle,
+    /// Set once the task is spawned.
+    abort: Option<AbortHandle>,
+    /// Aborted but still holding its slot until the task drops its future.
+    cancelled: bool,
+}
+
+impl Query {
+    fn cancel(&mut self) {
+        self.cancelled = true;
+        if let Some(abort) = &self.abort {
+            abort.abort();
+        }
+    }
 }
 
 impl SqlRunner {
@@ -82,86 +94,106 @@ impl SqlRunner {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        let mut running = lock(&self.running);
-        let total = running.queries.len();
-        let of_user = running.queries.values().filter(|q| q.user == user).count();
-        let rejection = if of_user >= self.max_per_user {
-            Some(format!(
-                "you already have {} queries running; wait for one or cancel it",
-                self.max_per_user
-            ))
-        } else if total >= self.max_concurrent {
-            Some(format!(
-                "the server is running its maximum of {} queries; try again shortly",
-                self.max_concurrent
-            ))
-        } else {
-            None
-        };
-        if let Some(message) = rejection {
+        let token = {
+            let mut running = lock(&self.running);
+            let total = running.queries.len();
+            let of_user = running.queries.values().filter(|q| q.user == user).count();
+            let rejection = if of_user >= self.max_per_user {
+                Some(format!(
+                    "you already have {} queries running; wait for one or cancel it",
+                    self.max_per_user
+                ))
+            } else if total >= self.max_concurrent {
+                Some(format!(
+                    "the server is running its maximum of {} queries; try again shortly",
+                    self.max_concurrent
+                ))
+            } else {
+                None
+            };
+            if let Some(message) = rejection {
+                tracing::info!(
+                    user,
+                    running = total,
+                    of_user,
+                    "sql query rejected: {message}"
+                );
+                return Err(NamespaceError::Throttling { message }.into());
+            }
+            if let Some(id) = &query_id {
+                if running
+                    .queries
+                    .values()
+                    .any(|q| q.user == user && !q.cancelled && q.id.as_ref() == Some(id))
+                {
+                    return Err(NamespaceError::InvalidInput {
+                        message: format!("query {id:?} is already running"),
+                    }
+                    .into());
+                }
+            }
+            let token = running.next_token;
+            running.next_token += 1;
             tracing::info!(
                 user,
-                running = total,
-                of_user,
-                "sql query rejected: {message}"
+                query_id,
+                running = total + 1,
+                of_user = of_user + 1,
+                "sql query admitted"
             );
-            return Err(NamespaceError::Throttling { message }.into());
-        }
-        if let Some(id) = &query_id {
-            if running
-                .queries
-                .values()
-                .any(|q| q.user == user && q.id.as_ref() == Some(id))
-            {
-                return Err(NamespaceError::InvalidInput {
-                    message: format!("query {id:?} is already running"),
-                }
-                .into());
-            }
-        }
+            running.queries.insert(
+                token,
+                Query {
+                    user: user.to_string(),
+                    id: query_id,
+                    abort: None,
+                    cancelled: false,
+                },
+            );
+            token
+        };
+        let slot = Slot {
+            running: self.running.clone(),
+            token,
+        };
+        // Spawned outside the lock: a future dropped inside `spawn` drops the slot, which locks.
         let handle = self
             .runtime
             .as_ref()
             .expect("runtime lives until drop")
-            .spawn(query);
-        let token = running.next_token;
-        running.next_token += 1;
-        tracing::info!(
-            user,
-            query_id,
-            running = total + 1,
-            of_user = of_user + 1,
-            "sql query admitted"
-        );
-        running.queries.insert(
-            token,
-            Query {
-                user: user.to_string(),
-                id: query_id,
-                abort: handle.abort_handle(),
-            },
-        );
+            .spawn(async move {
+                // The query drops before the slot, on completion and on abort alike, so the slot
+                // frees only once the query's own state is gone.
+                let output = query.await;
+                drop(slot);
+                output
+            });
+        if let Some(entry) = lock(&self.running).queries.get_mut(&token) {
+            entry.abort = Some(handle.abort_handle());
+            if entry.cancelled {
+                handle.abort();
+            }
+        }
         Ok(RunningQuery {
             handle,
-            _registration: Registration {
+            _cancel_on_drop: CancelOnDrop {
                 running: self.running.clone(),
                 token,
             },
         })
     }
 
-    /// Aborts `user`'s running query `query_id` and frees its slot; false when `user` runs no
-    /// such query.
+    /// Aborts `user`'s running query `query_id`; false when `user` runs no such query or has
+    /// already cancelled it. Its slot frees once the task drops the query.
     pub fn cancel(&self, user: &str, query_id: &str) -> bool {
         let mut running = lock(&self.running);
-        let token = running
+        let query = running
             .queries
-            .iter()
-            .find(|(_, q)| q.user == user && q.id.as_deref() == Some(query_id))
-            .map(|(token, _)| *token);
-        match token.and_then(|token| running.queries.remove(&token)) {
+            .values_mut()
+            .find(|q| q.user == user && !q.cancelled && q.id.as_deref() == Some(query_id));
+        match query {
             Some(query) => {
-                query.abort.abort();
+                query.cancel();
                 true
             }
             None => false,
@@ -179,11 +211,11 @@ impl Drop for SqlRunner {
     }
 }
 
-/// An admitted query. Dropping it, as when the client disconnects, aborts the query and frees
-/// its slot.
+/// An admitted query. Dropping it, as when the client disconnects, aborts the query; its slot
+/// frees once the task drops the query.
 pub struct RunningQuery<T> {
     handle: JoinHandle<T>,
-    _registration: Registration,
+    _cancel_on_drop: CancelOnDrop,
 }
 
 impl<T> RunningQuery<T> {
@@ -203,17 +235,29 @@ impl<T> RunningQuery<T> {
     }
 }
 
-struct Registration {
+struct CancelOnDrop {
     running: Arc<Mutex<Running>>,
     token: u64,
 }
 
-impl Drop for Registration {
+impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        let query = lock(&self.running).queries.remove(&self.token);
-        if let Some(query) = query {
-            query.abort.abort();
+        if let Some(query) = lock(&self.running).queries.get_mut(&self.token) {
+            query.cancel();
         }
+    }
+}
+
+/// Owned by the spawned task, so a query's slot stays taken until tokio drops its future,
+/// whether it completed or was aborted.
+struct Slot {
+    running: Arc<Mutex<Running>>,
+    token: u64,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        lock(&self.running).queries.remove(&self.token);
     }
 }
 
@@ -223,6 +267,7 @@ fn lock(running: &Mutex<Running>) -> MutexGuard<'_, Running> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use axum::http::HeaderValue;
@@ -256,12 +301,68 @@ mod tests {
             })
             .unwrap();
         drop(query);
+        assert!(!runner.cancel("ada", "q1"));
         // The task drops its future, and the sender with it, once the abort lands.
         tokio::time::timeout(Duration::from_secs(5), dropped)
             .await
             .expect("the query was not aborted")
             .unwrap_err();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !lock(&runner.running).queries.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the slot was not freed");
+    }
+
+    /// Signals when its drop starts, then blocks the drop until released.
+    struct SlowDrop {
+        dropping: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl Drop for SlowDrop {
+        fn drop(&mut self) {
+            self.dropping.send(()).unwrap();
+            self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_query_holds_its_slot_until_its_task_drops_it() {
+        let config = SqlConfig {
+            max_per_user: 1,
+            ..SqlConfig::default()
+        };
+        let runner = SqlRunner::new(&config).unwrap();
+        let (dropping_tx, dropping) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let slow = SlowDrop {
+            dropping: dropping_tx,
+            release: release_rx,
+        };
+        let query = runner
+            .start("ada", Some("q1".into()), async move {
+                let _slow = slow;
+                std::future::pending::<()>().await
+            })
+            .unwrap();
+        assert!(runner.cancel("ada", "q1"));
         assert!(!runner.cancel("ada", "q1"));
+        dropping.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The aborted task is still dropping the query, so its slot stays taken.
+        assert!(runner.start("ada", None, async {}).is_err());
+        assert_eq!(lock(&runner.running).queries.len(), 1);
+        release.send(()).unwrap();
+        let error = query.finish().await.unwrap_err();
+        assert!(error.to_string().contains("query cancelled"), "{error}");
         assert!(lock(&runner.running).queries.is_empty());
+        runner
+            .start("ada", Some("q1".into()), async {})
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
     }
 }

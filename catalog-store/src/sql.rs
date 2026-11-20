@@ -99,7 +99,7 @@ pub struct SqlAnswer {
 }
 
 /// Results of completed queries, keyed by their text, limits, and the table versions they read,
-/// evicted least recently used first under a byte budget.
+/// evicted least recently used first under a budget on their estimated resident memory.
 pub(crate) struct ResultCache(Cache<ResultKey, CachedResult>);
 
 #[derive(Hash, PartialEq, Eq)]
@@ -129,15 +129,85 @@ impl ResultCache {
         )
     }
 
-    async fn insert(&self, key: ResultKey, result: Arc<SqlResult>, row_bytes: usize) {
-        let weight = u32::try_from(row_bytes.saturating_add(key.sql.len())).unwrap_or(u32::MAX);
+    async fn insert(&self, key: ResultKey, result: Arc<SqlResult>) {
+        let bytes = key.resident_bytes().saturating_add(resident_bytes(&result));
+        let weight = u32::try_from(bytes).unwrap_or(u32::MAX);
         self.0.insert(key, CachedResult { result, weight }).await;
         // Evicts now rather than on a later access, so the budget holds between queries.
         self.0.run_pending_tasks().await;
     }
 }
 
+/// Estimated heap a cached result holds. Parsed JSON values take several times their encoded
+/// size (a number cell is a whole `Value`), so the budget must count them as stored.
+fn resident_bytes(result: &SqlResult) -> usize {
+    let tables: usize = result
+        .tables
+        .iter()
+        .map(|t| size_of::<SqlTable>() + strings_bytes(&t.id))
+        .sum();
+    let columns: usize = result
+        .columns
+        .iter()
+        .map(|c| {
+            size_of::<SqlColumn>()
+                + c.name.capacity()
+                + c.data_type.capacity()
+                + c.metadata
+                    .iter()
+                    .map(|(k, v)| 2 * size_of::<String>() + k.capacity() + v.capacity())
+                    .sum::<usize>()
+        })
+        .sum();
+    let rows: usize = result
+        .rows
+        .iter()
+        .map(|row| size_of::<Vec<Value>>() + values_bytes(row.capacity(), row))
+        .sum();
+    size_of::<SqlResult>() + tables + columns + rows
+}
+
+/// Heap of a vector of values: its `capacity` slots plus what each value owns.
+fn values_bytes(capacity: usize, values: &[Value]) -> usize {
+    capacity * size_of::<Value>() + values.iter().map(value_heap_bytes).sum::<usize>()
+}
+
+fn value_heap_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+        Value::String(s) => s.capacity(),
+        Value::Array(items) => values_bytes(items.capacity(), items),
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| {
+                size_of::<String>() + size_of::<Value>() + k.capacity() + value_heap_bytes(v)
+            })
+            .sum(),
+    }
+}
+
+fn strings_bytes(strings: &[String]) -> usize {
+    strings
+        .iter()
+        .map(|s| size_of::<String>() + s.capacity())
+        .sum()
+}
+
 impl ResultKey {
+    fn resident_bytes(&self) -> usize {
+        let tables: usize = self
+            .tables
+            .iter()
+            .map(|(id, location, _, e_tag)| {
+                size_of::<(Vec<String>, String, u64, Option<String>)>()
+                    + strings_bytes(id)
+                    + location.capacity()
+                    + e_tag.as_ref().map_or(0, String::capacity)
+            })
+            .sum();
+        size_of::<Self>() + self.sql.capacity() + tables
+    }
+
     /// `None` for a statement that reads no table: nothing pins its result.
     fn new(sql: &str, limits: &SqlLimits, opened: &[PathTable]) -> Option<Self> {
         if opened.is_empty() {
@@ -213,9 +283,7 @@ impl PostgresNamespace {
         let result = Arc::new(executed.result);
         if executed.cacheable {
             if let Some(key) = ResultKey::new(sql, limits, &tables) {
-                self.sql_cache
-                    .insert(key, result.clone(), executed.row_bytes)
-                    .await;
+                self.sql_cache.insert(key, result.clone()).await;
             }
         }
         Ok(SqlAnswer {
@@ -305,10 +373,9 @@ fn parse(ctx: &SessionContext, sql: &str) -> Result<Statement> {
     state.sql_to_statement(sql, &dialect).map_err(sql_error)
 }
 
-/// A query's result, its encoded row bytes, and whether the cache may keep it.
+/// A query's result and whether the cache may keep it.
 struct Executed {
     result: SqlResult,
-    row_bytes: usize,
     cacheable: bool,
 }
 
@@ -382,7 +449,6 @@ async fn execute(
             rows: encoder.rows,
             truncated_by: encoder.truncated_by,
         },
-        row_bytes: encoder.bytes,
         cacheable,
     })
 }

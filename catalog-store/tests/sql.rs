@@ -506,11 +506,12 @@ async fn the_result_cache_evicts_beyond_its_budget() {
     let Some(mut f) = Fixture::new("sql_cache_evict").await else {
         return;
     };
-    // Each result weighs about 660 bytes, so one fits and two do not.
-    f.ns = f.ns.with_sql_cache_budget(1000);
+    // Each result holds about 3.7 KB (the 3,000-byte string plus row, column, and key
+    // overhead), so one fits and two do not.
+    f.ns = f.ns.with_sql_cache_budget(5000);
     f.table(&EVENTS, &[1, 2, 3], &["a", "b", "c"]).await;
-    let first = r#"SELECT repeat('a', 600) FROM "a"."b"."events" LIMIT 1"#;
-    let second = r#"SELECT repeat('b', 600) FROM "a"."b"."events" LIMIT 1"#;
+    let first = r#"SELECT repeat('a', 3000) FROM "a"."b"."events" LIMIT 1"#;
+    let second = r#"SELECT repeat('b', 3000) FROM "a"."b"."events" LIMIT 1"#;
     assert!(!f.cached(first).await);
     assert!(f.cached(first).await);
     assert!(!f.cached(second).await);

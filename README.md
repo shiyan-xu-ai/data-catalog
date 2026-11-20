@@ -167,7 +167,7 @@ removed); requests without it share the user `anonymous`.
 | `CATALOG_SQL_MAX_CONCURRENT` | `2` | Queries running at once per instance (deployed: `10`); more get 429. |
 | `CATALOG_SQL_MAX_PER_USER` | `2` | Queries one user runs at once per instance; more get 429. |
 | `CATALOG_SQL_THREADS` | `2` | Worker threads of the runtime queries run on, apart from request handling (deployed: `3`). |
-| `CATALOG_SQL_CACHE_MB` | `64` | Query result cache per instance. |
+| `CATALOG_SQL_CACHE_MB` | `64` | Query result cache per instance; bounds the estimated resident memory of cached results, not their encoded JSON size. |
 | `CATALOG_CACHE_MEMORY_LIMIT_MB` | `256` | Lance session cache per instance. |
 | `CATALOG_MEDIA_URL_TTL_MINUTES` | `60` | Lifetime of presigned media URLs. |
 | `RUST_LOG` | `info,lance=warn` | Log filter; logs are JSON. |

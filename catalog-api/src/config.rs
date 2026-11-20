@@ -78,7 +78,8 @@ pub struct SqlConfig {
     /// Worker threads of the runtime queries run on, apart from request handling
     /// (`CATALOG_SQL_THREADS`, 2).
     pub threads: usize,
-    /// Budget of the per-instance result cache (`CATALOG_SQL_CACHE_MB`, 64).
+    /// Estimated resident memory the per-instance result cache may hold
+    /// (`CATALOG_SQL_CACHE_MB`, 64).
     pub cache_bytes: usize,
 }
 

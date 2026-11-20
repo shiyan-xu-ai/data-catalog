@@ -28,12 +28,12 @@ RUST_LOG = "info"
 # <vertical>/<domain>/<table>.
 CATALOG_VERTICALS = "automotive,trucking,mining,robotics"
 # SQL sized for ten concurrent users: three query threads leave one CPU for
-# browsing; about 300 MB of tracked memory per query, with headroom for scans
+# browsing; about 500 MB of tracked memory per query, with headroom for scans
 # and results the pool does not see.
 CATALOG_SQL_MAX_CONCURRENT = "10"
 CATALOG_SQL_MAX_PER_USER = "2"
 CATALOG_SQL_THREADS = "3"
-CATALOG_SQL_MEMORY_BUDGET_MB = "3072"
+CATALOG_SQL_MEMORY_BUDGET_MB = "5120"
 
 [metadata]
 owner = "shiyan.xu@applied.co"
