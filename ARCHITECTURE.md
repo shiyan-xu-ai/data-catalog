@@ -66,12 +66,14 @@ three quarters for metadata and the rest for index metadata.
 
 ## SQL
 
-Each query gets a fresh DataFusion session that exposes only the addressed
-table: its name reads the requested version, and `"<name>@v<N>"` opens version
-N on demand. DDL, DML, statements, and spilling are disabled, so a query cannot
-write anywhere. Blob columns read as their descriptors (`kind`, `position`,
-`size`, `blob_id`, `blob_uri`), so payload bytes are never fetched. Row, time,
-and memory limits bound each query, and a per-instance semaphore caps
+A query names tables by their full catalog path (`"a"."b"."events"`, optionally
+`"a"."b"."events@v12"`). The server parses the statement, opens only the tables
+it names, and gives each query a fresh DataFusion session that holds exactly
+those tables: a plain path reads the table's current version, and a pinned path
+reads that version. DDL, DML, statements, and spilling are disabled, so a query
+cannot write anywhere. Blob columns read as their descriptors (`kind`,
+`position`, `size`, `blob_id`, `blob_uri`), so payload bytes are never fetched.
+Row, time, and memory limits bound each query, and a per-instance semaphore caps
 concurrency.
 
 ## Storage footprint

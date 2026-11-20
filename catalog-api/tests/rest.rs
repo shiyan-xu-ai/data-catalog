@@ -384,12 +384,12 @@ async fn rest_catalog_routes() {
     let expected = total_bytes as f64 / 1e9 * pricing.price_per_gb_month;
     assert!((price["estimated_monthly_cost"].as_f64().unwrap() - expected).abs() < 1e-12);
 
-    // Read-only SQL over the table's leaf name: typed columns, Arrow JSON values, truncation.
+    // Read-only SQL over tables named by full path: typed columns, Arrow JSON values, truncation.
     let sql = |query: &str| json!({"sql": query});
     let (status, mut typed) = post(
         &app,
-        "/catalog/v1/table/prod%24users/sql",
-        sql("SELECT id, name, id * 2 AS doubled, NULL AS nothing FROM users WHERE id = 1"),
+        "/catalog/v1/sql",
+        sql(r#"SELECT id, name, id * 2 AS doubled, NULL AS nothing FROM "prod"."users" WHERE id = 1"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{typed}");
@@ -397,6 +397,7 @@ async fn rest_catalog_routes() {
     assert_eq!(
         typed,
         json!({
+            "tables": [{"id": ["prod", "users"], "version": 2}],
             "columns": [
                 {"name": "id", "type": "Int32"},
                 {"name": "name", "type": "Utf8"},
@@ -407,13 +408,12 @@ async fn rest_catalog_routes() {
             "row_count": 1,
             "truncated": false,
             "elapsed_ms": null,
-            "version": 2,
         })
     );
     let (status, all) = post(
         &app,
-        "/catalog/v1/table/prod%24users/sql",
-        sql("SELECT id FROM users ORDER BY id"),
+        "/catalog/v1/sql",
+        sql(r#"SELECT id FROM "prod"."users" ORDER BY id"#),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{all}");
@@ -425,35 +425,37 @@ async fn rest_catalog_routes() {
     let copied = data.path().join("copied.csv");
     for statement in [
         "CREATE TABLE t AS SELECT 1".to_string(),
-        "INSERT INTO users VALUES (4, 'd')".to_string(),
-        format!("COPY users TO '{}'", copied.display()),
-        "DROP TABLE users".to_string(),
-        "SELECT * FROM nope".to_string(),
+        r#"INSERT INTO "prod"."users" VALUES (4, 'd')"#.to_string(),
+        format!(r#"COPY "prod"."users" TO '{}'"#, copied.display()),
+        r#"DROP TABLE "prod"."users""#.to_string(),
         String::new(),
     ] {
-        error(StatusCode::BAD_REQUEST, 13)(
-            post(&app, "/catalog/v1/table/prod%24users/sql", sql(&statement)).await,
-        );
+        error(StatusCode::BAD_REQUEST, 13)(post(&app, "/catalog/v1/sql", sql(&statement)).await);
     }
     assert!(!copied.exists());
 
     support::append_row(&users).await;
-    let count = |body: Value| async {
-        let (status, body) = post(&app, "/catalog/v1/table/prod%24users/sql", body).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        (body["version"].clone(), body["rows"].clone())
+    let count = |query: &str| {
+        let body = sql(query);
+        let app = &app;
+        async move {
+            let (status, body) = post(app, "/catalog/v1/sql", body).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            (body["tables"].clone(), body["rows"].clone())
+        }
     };
+    let users_at = |version: u64| json!([{"id": ["prod", "users"], "version": version}]);
     assert_eq!(
-        count(json!({"sql": "SELECT count(*) FROM users", "version": 1})).await,
-        (json!(1), json!([[3]]))
+        count(r#"SELECT count(*) FROM "prod"."users@v1""#).await,
+        (users_at(1), json!([[3]]))
     );
     assert_eq!(
-        count(json!({"sql": "SELECT count(*) FROM users"})).await,
-        (json!(2), json!([[3]]))
+        count(r#"SELECT count(*) FROM "prod"."users""#).await,
+        (users_at(2), json!([[3]]))
     );
     assert_eq!(
-        count(json!({"sql": "SELECT count(*) FROM users", "version": 3})).await,
-        (json!(3), json!([[4]]))
+        count(r#"SELECT count(*) FROM "prod"."users@v3""#).await,
+        (users_at(3), json!([[4]]))
     );
     assert_eq!(
         post(&app, "/catalog/v1/table/prod%24users/refresh", json!({})).await,
@@ -466,31 +468,77 @@ async fn rest_catalog_routes() {
         post(&app, "/catalog/v1/table/prod%24nope/refresh", json!({})).await,
     );
     assert_eq!(
-        count(json!({"sql": "SELECT count(*) FROM users"})).await,
-        (json!(3), json!([[4]]))
+        count(r#"SELECT count(*) FROM "prod"."users""#).await,
+        (users_at(3), json!([[4]]))
     );
     assert_eq!(
-        count(sql(
-            r#"SELECT (SELECT count(*) FROM "users@v1") AS old, count(*) AS new FROM users"#
-        ))
-        .await,
-        (json!(3), json!([[3, 4]]))
-    );
-    for body in [
-        json!({"sql": "SELECT 1", "version": 9}),
-        sql(r#"SELECT count(*) FROM "users@v9""#),
-    ] {
-        error(StatusCode::NOT_FOUND, 11)(
-            post(&app, "/catalog/v1/table/prod%24users/sql", body).await,
-        );
-    }
-    error(StatusCode::BAD_REQUEST, 13)(
-        post(
-            &app,
-            "/catalog/v1/table/prod%24users/sql",
-            json!({"sql": "SELECT 1", "version": 0}),
+        count(
+            r#"SELECT (SELECT count(*) FROM "prod"."users@v1") AS old, count(*) AS new FROM "prod"."users""#
         )
         .await,
+        (
+            json!([
+                {"id": ["prod", "users"], "version": 1},
+                {"id": ["prod", "users"], "version": 3},
+            ]),
+            json!([[3, 4]])
+        )
+    );
+    // Tables list in order of first appearance, not sorted.
+    let orders = support::write_dataset(data.path(), "orders.lance").await;
+    let (status, _) = post(
+        &app,
+        "/v1/table/prod%24orders/register",
+        json!({"location": orders}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, joined) = post(
+        &app,
+        "/catalog/v1/sql",
+        sql(r#"SELECT count(*) AS n FROM "prod"."users" u JOIN "prod"."orders" o ON o.id = u.id"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{joined}");
+    assert_eq!(joined["rows"], json!([[3]]));
+    assert_eq!(
+        joined["tables"],
+        json!([
+            {"id": ["prod", "users"], "version": 3},
+            {"id": ["prod", "orders"], "version": 1},
+        ])
+    );
+    assert_eq!(
+        post(&app, "/v1/table/prod%24orders/deregister", json!({}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // Each failure names the path as written.
+    for (query, status, code, path) in [
+        (
+            r#"SELECT 1 FROM "prod"."users@v9""#,
+            StatusCode::NOT_FOUND,
+            11,
+            r#""prod"."users@v9""#,
+        ),
+        (
+            r#"SELECT 1 FROM "prod"."nope""#,
+            StatusCode::NOT_FOUND,
+            4,
+            r#""prod"."nope""#,
+        ),
+    ] {
+        let (actual, body) = post(&app, "/catalog/v1/sql", sql(query)).await;
+        assert_eq!(
+            (actual, body["code"].clone()),
+            (status, json!(code)),
+            "{body}"
+        );
+        assert!(body["error"].as_str().unwrap().contains(path), "{body}");
+    }
+    error(StatusCode::BAD_REQUEST, 13)(
+        post(&app, "/catalog/v1/sql", sql("SELECT * FROM nope")).await,
     );
     assert_eq!(
         post(&app, "/v1/table/prod%24users/exists", json!({})).await,
@@ -527,13 +575,19 @@ async fn rest_catalog_routes() {
         get(&app, "/catalog/v1/table/prod%24gone/fragment-measures").await,
     );
     error(StatusCode::NOT_FOUND, 4)(get(&app, "/catalog/v1/table/prod%24gone/timeline").await);
-    error(StatusCode::NOT_FOUND, 4)(
-        post(
-            &app,
-            "/catalog/v1/table/prod%24gone/sql",
-            json!({"sql": "SELECT 1"}),
-        )
-        .await,
+    let (status, body) = post(
+        &app,
+        "/catalog/v1/sql",
+        sql(r#"SELECT 1 FROM "prod"."gone""#),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].clone()),
+        (StatusCode::NOT_FOUND, json!(4))
+    );
+    assert!(
+        body["error"].as_str().unwrap().contains(r#""prod"."gone""#),
+        "{body}"
     );
     assert_eq!(
         post(&app, "/v1/table/prod%24gone/deregister", json!({}))

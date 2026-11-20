@@ -153,6 +153,14 @@ pub(crate) struct OpenTable {
     cache: LocationCache,
 }
 
+/// A table opened from a catalog path in SQL.
+pub(crate) struct PathTable {
+    pub(crate) id: Vec<String>,
+    /// The version the path pinned with `@v<N>`; unset for a plain path.
+    pub(crate) pinned: Option<u64>,
+    pub(crate) table: OpenTable,
+}
+
 impl OpenTable {
     fn e_tag(&self) -> Option<&str> {
         self.dataset.manifest_location().e_tag.as_deref()
@@ -486,6 +494,40 @@ impl PostgresNamespace {
     ) -> Result<OpenTable> {
         let row = self.table_row(id).await?;
         self.open_row(id, &row, version).await
+    }
+
+    /// Opens the table a SQL statement names by catalog path: the table registered at `path`,
+    /// else version N of the table registered at `path` without a trailing `@v<N>`. A plain
+    /// path opens the current version.
+    pub(crate) async fn open_path(&self, path: &[String]) -> Result<PathTable> {
+        let (id, pinned, row) = match self.table_row(path).await {
+            Ok(row) => (path.to_vec(), None, row),
+            Err(e) if is_table_not_found(&e) => {
+                let Some((id, version)) = split_pin(path) else {
+                    return Err(e);
+                };
+                let row = self.table_row(&id).await?;
+                (id, Some(version), row)
+            }
+            Err(e) => return Err(e),
+        };
+        let table = self.open_row(&id, &row, pinned).await?;
+        Ok(PathTable { id, pinned, table })
+    }
+
+    /// When `opened`, a table's current version, can no longer be read because cleanup removed
+    /// it, advances the table to its newest version and opens that; `None` when `opened` still
+    /// exists.
+    pub(crate) async fn advance_if_gone(
+        &self,
+        id: &[String],
+        opened: u64,
+    ) -> Result<Option<OpenTable>> {
+        let row = self.table_row(id).await?;
+        if !self.version_gone(&row, opened).await {
+            return Ok(None);
+        }
+        self.advance(id, &row).await.map(Some)
     }
 
     async fn open_row(
@@ -1694,10 +1736,28 @@ pub(crate) fn is_missing(e: &lance::Error) -> bool {
     ) || e.is_not_found()
 }
 
-fn is_version_missing(e: &Error) -> bool {
+pub(crate) fn is_version_missing(e: &Error) -> bool {
     matches!(e, Error::Namespace { source, .. } if source
         .downcast_ref::<NamespaceError>()
         .is_some_and(|e| matches!(e, NamespaceError::TableVersionNotFound { .. })))
+}
+
+fn is_table_not_found(e: &Error) -> bool {
+    matches!(e, Error::Namespace { source, .. } if source
+        .downcast_ref::<NamespaceError>()
+        .is_some_and(|e| matches!(e, NamespaceError::TableNotFound { .. })))
+}
+
+/// Splits `[.., "<name>@v<N>"]` into the table `[.., "<name>"]` and `N`.
+fn split_pin(path: &[String]) -> Option<(Vec<String>, u64)> {
+    let (leaf, namespace) = path.split_last()?;
+    let (name, version) = leaf.rsplit_once("@v")?;
+    if name.is_empty() || !version.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut id = namespace.to_vec();
+    id.push(name.to_string());
+    Some((id, version.parse().ok()?))
 }
 
 /// A dataset recreated at the same location reuses version numbers; an e-tag other than the

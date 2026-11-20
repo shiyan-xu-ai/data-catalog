@@ -1,27 +1,36 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
+use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_json::writer::JsonArray;
 use arrow_json::WriterBuilder;
 use arrow_schema::{Field, Schema};
-use async_trait::async_trait;
+use futures::{StreamExt, TryStreamExt};
 use lance::datafusion::LanceTableProvider;
 use lance::datatypes::BlobHandling;
 use lance::deps::arrow_array::RecordBatch;
-use lance::deps::datafusion::catalog::{
-    CatalogProvider, MemoryCatalogProvider, SchemaProvider, TableProvider,
-};
+use lance::deps::datafusion::catalog::TableProvider;
+use lance::deps::datafusion::common::TableReference;
 use lance::deps::datafusion::error::DataFusionError;
 use lance::deps::datafusion::execution::context::SQLOptions;
 use lance::deps::datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use lance::deps::datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use lance::deps::datafusion::logical_expr::LogicalPlan;
 use lance::deps::datafusion::prelude::{SessionConfig, SessionContext};
+use lance::deps::datafusion::sql::parser::{CopyToSource, Statement};
+use lance::deps::datafusion::sql::sqlparser::ast::{
+    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, ObjectName, ObjectNamePart,
+    Query, Select, SelectItem, SelectItemQualifiedWildcardKind, TableAlias, TableFactor, VisitMut,
+    VisitorMut,
+};
 use lance::Dataset;
 use lance_namespace::{Error, NamespaceError, Result};
 use serde_json::Value;
 
-use crate::namespace::{internal, invalid_input, is_missing, split_table_id, OpenTable};
+use crate::namespace::{
+    internal, invalid_input, is_missing, is_version_missing, PathTable, READ_CONCURRENCY,
+};
 use crate::PostgresNamespace;
 
 /// Bounds applied to every query.
@@ -43,10 +52,18 @@ pub struct SqlColumn {
     pub metadata: HashMap<String, String>,
 }
 
+/// A table version a query read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SqlTable {
+    /// Catalog path of the table.
+    pub id: Vec<String>,
+    pub version: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlResult {
-    /// Version the plain table name resolved to.
-    pub version: u64,
+    /// Every table version the query read, in order of first appearance in the statement.
+    pub tables: Vec<SqlTable>,
     pub columns: Vec<SqlColumn>,
     /// One JSON array per row, values encoded with Arrow's JSON writer.
     pub rows: Vec<Vec<Value>>,
@@ -54,23 +71,15 @@ pub struct SqlResult {
 }
 
 impl PostgresNamespace {
-    /// Runs one read-only query against the table. Its leaf name resolves to `version` (the
-    /// current version when unset); `"<leaf>@v<N>"` resolves to version N, opened on demand.
+    /// Runs one read-only query over any registered tables. A table is named by its full catalog
+    /// path, `"a"."b"."events"`, which reads its current version; `"a"."b"."events@v12"` reads
+    /// version 12.
     ///
     /// DDL, DML (including `COPY`), and other statements are rejected at planning; spilling is
     /// disabled so nothing touches the local disk; blob columns read as their descriptors, so
-    /// payload bytes are never fetched. The time limit covers opening every version.
-    pub async fn query_sql(
-        &self,
-        id: &[String],
-        sql: &str,
-        version: Option<u64>,
-        limits: &SqlLimits,
-    ) -> Result<SqlResult> {
-        if version == Some(0) {
-            return Err(invalid_input("version must be a positive integer".into()));
-        }
-        tokio::time::timeout(limits.timeout, self.run_sql(id, sql, version, limits))
+    /// payload bytes are never fetched. The time limit covers opening every table.
+    pub async fn query_sql(&self, sql: &str, limits: &SqlLimits) -> Result<SqlResult> {
+        tokio::time::timeout(limits.timeout, self.run_sql(sql, limits))
             .await
             .map_err(|_| {
                 invalid_input(format!(
@@ -80,24 +89,77 @@ impl PostgresNamespace {
             })?
     }
 
-    async fn run_sql(
-        &self,
-        id: &[String],
-        sql: &str,
-        version: Option<u64>,
-        limits: &SqlLimits,
-    ) -> Result<SqlResult> {
-        let (_, name) = split_table_id(id)?;
-        self.read_table(id, version, |table| run_on(table, name, sql, limits))
+    async fn run_sql(&self, sql: &str, limits: &SqlLimits) -> Result<SqlResult> {
+        let ctx = session(limits)?;
+        let mut statement = parse(&ctx, sql)?;
+        let references = rewrite(&mut statement)?;
+        let mut tables = self.open_references(&references).await?;
+        let first = execute(&ctx, &statement, &references, &tables, limits).await;
+        match &first {
+            Err(e) if is_version_missing(e) => {}
+            _ => return first,
+        }
+        // A current version whose files cleanup removed advances to the newest version, and the
+        // query runs once more; pinned versions never advance.
+        let mut advanced = false;
+        for (reference, table) in references.iter().zip(&mut tables) {
+            if table.pinned.is_some() {
+                continue;
+            }
+            let opened = table.table.dataset.version_id();
+            if let Some(newest) = self
+                .advance_if_gone(&table.id, opened)
+                .await
+                .map_err(|e| path_error(e, &reference.quoted()))?
+            {
+                table.table = newest;
+                advanced = true;
+            }
+        }
+        if !advanced {
+            return first;
+        }
+        execute(&ctx, &statement, &references, &tables, limits).await
+    }
+
+    /// Opens every referenced table concurrently; a failure names the path as written.
+    async fn open_references(&self, references: &[Reference]) -> Result<Vec<PathTable>> {
+        let opens: Vec<_> = references.iter().map(|r| self.open_reference(r)).collect();
+        futures::stream::iter(opens)
+            .buffered(READ_CONCURRENCY)
+            .try_collect()
             .await
+    }
+
+    async fn open_reference(&self, reference: &Reference) -> Result<PathTable> {
+        self.open_path(&reference.path)
+            .await
+            .map_err(|e| path_error(e, &reference.quoted()))
     }
 }
 
-async fn run_on(table: OpenTable, name: &str, sql: &str, limits: &SqlLimits) -> Result<SqlResult> {
-    let OpenTable {
-        location, dataset, ..
-    } = table;
-    let version = dataset.version_id();
+/// Gives a per-reference failure the path as written in the statement, replacing the storage
+/// location or joined id the open helpers report.
+fn path_error(e: Error, path: &str) -> Error {
+    let Error::Namespace { source, .. } = &e else {
+        return e;
+    };
+    let Some(error) = source.downcast_ref::<NamespaceError>() else {
+        return e;
+    };
+    let message = match error {
+        NamespaceError::TableNotFound { .. } => {
+            format!("table {path} not found: it is not registered, or its dataset no longer exists")
+        }
+        NamespaceError::TableVersionNotFound { .. } => {
+            format!("table {path}: the version does not exist")
+        }
+        other => format!("table {path}: {}", other.message()),
+    };
+    NamespaceError::from_code(error.code().as_u32(), message).into()
+}
+
+fn session(limits: &SqlLimits) -> Result<SessionContext> {
     let runtime = RuntimeEnvBuilder::new()
         .with_memory_limit(limits.memory_limit_bytes, 1.0)
         .with_disk_manager_builder(
@@ -105,41 +167,73 @@ async fn run_on(table: OpenTable, name: &str, sql: &str, limits: &SqlLimits) -> 
         )
         .build_arc()
         .map_err(sql_error)?;
-    let config = SessionConfig::new();
-    let defaults = &config.options().catalog;
-    let (catalog_name, schema_name) = (
-        defaults.default_catalog.clone(),
-        defaults.default_schema.clone(),
-    );
-    let ctx = SessionContext::new_with_config_rt(config, runtime);
-    let schema = Arc::new(VersionedTable::new(name, location, dataset));
-    let catalog = MemoryCatalogProvider::new();
-    catalog
-        .register_schema(&schema_name, schema.clone())
-        .map_err(sql_error)?;
-    ctx.register_catalog(catalog_name, Arc::new(catalog));
-    let options = SQLOptions::new()
-        .with_allow_ddl(false)
-        .with_allow_dml(false)
-        .with_allow_statements(false);
-    let frame = match ctx.sql_with_options(sql, options).await {
-        Ok(frame) => frame,
-        // A failed version open surfaces as a planning error; report its own error.
-        Err(e) => return Err(schema.take_open_error().unwrap_or_else(|| sql_error(e))),
-    };
-    let schema = frame.schema().inner().clone();
-    // One row past the limit tells whether the result was truncated.
-    let batches = frame
-        .limit(0, Some(limits.max_rows.saturating_add(1)))
-        .map_err(sql_error)?
-        .collect()
+    Ok(SessionContext::new_with_config_rt(
+        SessionConfig::new(),
+        runtime,
+    ))
+}
+
+fn parse(ctx: &SessionContext, sql: &str) -> Result<Statement> {
+    let state = ctx.state();
+    let dialect = state.config().options().sql_parser.dialect;
+    state.sql_to_statement(sql, &dialect).map_err(sql_error)
+}
+
+/// Registers the opened tables under their synthetic names, plans the rewritten statement,
+/// rejects DDL, DML, and statements on that plan, and runs it.
+async fn execute(
+    ctx: &SessionContext,
+    statement: &Statement,
+    references: &[Reference],
+    opened: &[PathTable],
+    limits: &SqlLimits,
+) -> Result<SqlResult> {
+    for (reference, table) in references.iter().zip(opened) {
+        let name = TableReference::bare(reference.synthetic.as_str());
+        ctx.deregister_table(name.clone()).map_err(sql_error)?;
+        ctx.register_table(name, table_provider(table.table.dataset.clone()))
+            .map_err(sql_error)?;
+    }
+    let mut tables: Vec<SqlTable> = Vec::new();
+    for table in opened {
+        let read = SqlTable {
+            id: table.id.clone(),
+            version: table.table.dataset.version_id(),
+        };
+        if !tables.contains(&read) {
+            tables.push(read);
+        }
+    }
+    let plan = ctx
+        .state()
+        .statement_to_plan(statement.clone())
         .await
         .map_err(sql_error)?;
+    SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false)
+        .verify_plan(&plan)
+        .map_err(sql_error)?;
+    // DataFusion requires EXPLAIN and EXPLAIN ANALYZE at the plan's root, so a limit cannot wrap
+    // them; their output is a handful of rows.
+    let at_root = matches!(plan, LogicalPlan::Explain(_) | LogicalPlan::Analyze(_));
+    let frame = ctx.execute_logical_plan(plan).await.map_err(sql_error)?;
+    let schema = frame.schema().inner().clone();
+    // One row past the limit tells whether the result was truncated.
+    let frame = if at_root {
+        frame
+    } else {
+        frame
+            .limit(0, Some(limits.max_rows.saturating_add(1)))
+            .map_err(sql_error)?
+    };
+    let batches = frame.collect().await.map_err(sql_error)?;
     let mut rows = encode_rows(&schema, &batches)?;
     let truncated = rows.len() > limits.max_rows;
     rows.truncate(limits.max_rows);
     Ok(SqlResult {
-        version,
+        tables,
         columns: schema
             .fields()
             .iter()
@@ -154,102 +248,293 @@ async fn run_on(table: OpenTable, name: &str, sql: &str, limits: &SqlLimits) -> 
     })
 }
 
-/// The only schema of a query's session: the table's leaf name at the requested version, plus
-/// `"<leaf>@v<N>"` names that open version N on first use. Every other name is not found.
-struct VersionedTable {
-    name: String,
-    location: String,
-    dataset: Arc<Dataset>,
-    versions: Mutex<HashMap<u64, Arc<dyn TableProvider>>>,
-    /// The error of the first version that failed to open, which DataFusion would otherwise
-    /// flatten into a planning message.
-    open_error: Mutex<Option<Error>>,
+/// A catalog path a statement names, registered in the query's session as `synthetic`.
+struct Reference {
+    /// Path segments as written, case preserved.
+    path: Vec<String>,
+    /// The last segment as written, which is the relation's default alias.
+    leaf: Ident,
+    synthetic: String,
+    /// Whether some relation reading this path has no user alias; only then can the path
+    /// qualify column references.
+    unaliased: bool,
 }
 
-impl VersionedTable {
-    fn new(name: &str, location: String, dataset: Arc<Dataset>) -> Self {
-        Self {
-            name: name.to_string(),
-            location,
-            dataset,
-            versions: Mutex::default(),
-            open_error: Mutex::default(),
-        }
-    }
-
-    fn take_open_error(&self) -> Option<Error> {
-        self.open_error.lock().unwrap().take()
-    }
-
-    /// N of `"<leaf>@v<N>"`, if `name` has that form.
-    fn pinned_version(&self, name: &str) -> Option<u64> {
-        name.strip_prefix(self.name.as_str())?
-            .strip_prefix("@v")?
-            .parse()
-            .ok()
+impl Reference {
+    /// The path with every segment double-quoted, as a statement writes it.
+    fn quoted(&self) -> String {
+        self.path
+            .iter()
+            .map(|segment| format!("\"{}\"", segment.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(".")
     }
 }
 
-impl std::fmt::Debug for VersionedTable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VersionedTable")
-            .field("name", &self.name)
-            .finish_non_exhaustive()
+/// Rewrites the statement so every table it reads is a one-part name registered in the query's
+/// session, and returns those tables. DataFusion names stop at `catalog.schema.table` while
+/// namespaces nest to any depth, so catalog paths cannot go through its catalog hierarchy.
+///
+/// - A relation with two or more name parts is a catalog path. It becomes a synthetic one-part
+///   name and takes its last segment as written as its alias, unless the user aliased it or
+///   another relation would get the same default alias; then it is qualified by the synthetic
+///   name.
+/// - Column references and qualified wildcards written with a path are rewritten to that
+///   relation's qualifier.
+/// - A one-part name passes only when a CTE of the statement declares it; table functions are
+///   left alone.
+fn rewrite(statement: &mut Statement) -> Result<Vec<Reference>> {
+    let mut rewriter = Rewriter::default();
+    if let ControlFlow::Break(e) = walk(statement, &mut rewriter, &mut |rewriter, name| {
+        rewriter.rewrite_name(name).map_continue(|_| ())
+    }) {
+        return Err(e);
+    }
+    let mut qualifier = Qualifier {
+        references: &rewriter.references,
+        default_aliases: &rewriter.default_aliases,
+    };
+    // The qualifier pass cannot fail.
+    let _ = walk(statement, &mut qualifier, &mut |_, _| {
+        ControlFlow::Continue(())
+    });
+    Ok(rewriter.references)
+}
+
+/// Visits what the planner would resolve table names in: the statement inside DataFusion's
+/// wrapper, `EXPLAIN` bodies, and `COPY` sources. `copy_relation` handles a `COPY <name> TO`
+/// source, which is a bare name rather than a query.
+fn walk<V: VisitorMut>(
+    statement: &mut Statement,
+    visitor: &mut V,
+    copy_relation: &mut impl FnMut(&mut V, &mut ObjectName) -> ControlFlow<V::Break>,
+) -> ControlFlow<V::Break> {
+    match statement {
+        Statement::Statement(statement) => statement.visit(visitor),
+        Statement::Explain(explain) => walk(&mut explain.statement, visitor, copy_relation),
+        Statement::CopyTo(copy) => match &mut copy.source {
+            CopyToSource::Query(query) => query.visit(visitor),
+            CopyToSource::Relation(name) => copy_relation(visitor, name),
+        },
+        Statement::CreateExternalTable(_) | Statement::Reset(_) => ControlFlow::Continue(()),
     }
 }
 
-#[async_trait]
-impl SchemaProvider for VersionedTable {
-    fn table_names(&self) -> Vec<String> {
-        vec![self.name.clone()]
+/// DataFusion's identifier normalization: unquoted identifiers are case-insensitive.
+fn normalized(ident: &Ident) -> String {
+    match ident.quote_style {
+        Some(_) => ident.value.clone(),
+        None => ident.value.to_lowercase(),
     }
+}
 
-    async fn table(
-        &self,
-        name: &str,
-    ) -> std::result::Result<Option<Arc<dyn TableProvider>>, DataFusionError> {
-        if name == self.name {
-            return Ok(Some(table_provider(self.dataset.clone())));
-        }
-        let Some(version) = self.pinned_version(name) else {
-            return Ok(None);
+#[derive(Default)]
+struct Rewriter {
+    /// Normalized names of the CTEs the statement declares.
+    ctes: HashSet<String>,
+    references: Vec<Reference>,
+    /// Unaliased relations per normalized default alias.
+    default_aliases: HashMap<String, usize>,
+}
+
+impl Rewriter {
+    /// Replaces a catalog path with its synthetic name and returns its reference; `None` for a
+    /// name this does not rewrite.
+    fn rewrite_name(&mut self, name: &mut ObjectName) -> ControlFlow<Error, Option<usize>> {
+        let Some(parts) = name
+            .0
+            .iter()
+            .map(ObjectNamePart::as_ident)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return ControlFlow::Continue(None);
         };
-        if let Some(provider) = self.versions.lock().unwrap().get(&version) {
-            return Ok(Some(provider.clone()));
-        }
-        let dataset = self.dataset.checkout_version(version).await.map_err(|e| {
-            let message = format!("cannot open version {version} of {}: {e}", self.location);
-            let missing = matches!(
-                e,
-                lance::Error::DatasetNotFound { .. }
-                    | lance::Error::NotFound { .. }
-                    | lance::Error::VersionNotFound { .. }
-            );
-            let error = if missing {
-                NamespaceError::TableVersionNotFound {
-                    message: message.clone(),
-                }
+        if let [only] = parts.as_slice() {
+            return if self.ctes.contains(&normalized(only)) {
+                ControlFlow::Continue(None)
             } else {
-                NamespaceError::Internal {
-                    message: message.clone(),
-                }
+                ControlFlow::Break(invalid_input(format!(
+                    "table {:?} is not a catalog path: name tables by their full path, \
+                     such as \"namespace\".\"table\"",
+                    only.value
+                )))
             };
-            self.open_error
-                .lock()
-                .unwrap()
-                .get_or_insert_with(|| error.into());
-            DataFusionError::Plan(message)
-        })?;
-        let provider = table_provider(Arc::new(dataset));
-        self.versions
-            .lock()
-            .unwrap()
-            .insert(version, provider.clone());
-        Ok(Some(provider))
+        }
+        let path: Vec<String> = parts.iter().map(|part| part.value.clone()).collect();
+        let index = match self.references.iter().position(|r| r.path == path) {
+            Some(index) => index,
+            None => {
+                self.references.push(Reference {
+                    leaf: parts[parts.len() - 1].clone(),
+                    synthetic: format!("{}#{}", path.join("."), self.references.len()),
+                    path,
+                    unaliased: false,
+                });
+                self.references.len() - 1
+            }
+        };
+        *name = ObjectName::from(vec![Ident::with_quote(
+            '"',
+            self.references[index].synthetic.clone(),
+        )]);
+        ControlFlow::Continue(Some(index))
+    }
+}
+
+impl VisitorMut for Rewriter {
+    type Break = Error;
+
+    fn pre_visit_query(&mut self, query: &mut Query) -> ControlFlow<Error> {
+        if let Some(with) = &query.with {
+            self.ctes.extend(
+                with.cte_tables
+                    .iter()
+                    .map(|cte| normalized(&cte.alias.name)),
+            );
+        }
+        ControlFlow::Continue(())
     }
 
-    fn table_exist(&self, name: &str) -> bool {
-        name == self.name || self.pinned_version(name).is_some()
+    fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Error> {
+        if let TableFactor::Table {
+            name,
+            alias,
+            args: None,
+            ..
+        } = factor
+        {
+            if let Some(index) = self.rewrite_name(name)? {
+                if alias.is_none() {
+                    let reference = &mut self.references[index];
+                    reference.unaliased = true;
+                    *self
+                        .default_aliases
+                        .entry(normalized(&reference.leaf))
+                        .or_default() += 1;
+                }
+            }
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// Gives rewritten relations their default alias and rewrites path-qualified references.
+struct Qualifier<'a> {
+    references: &'a [Reference],
+    default_aliases: &'a HashMap<String, usize>,
+}
+
+impl Qualifier<'_> {
+    /// Whether the reference's relation keeps its leaf as its alias: no other relation would
+    /// get the same one.
+    fn has_default_alias(&self, reference: &Reference) -> bool {
+        self.default_aliases
+            .get(&normalized(&reference.leaf))
+            .is_some_and(|count| *count == 1)
+    }
+
+    /// The qualifier of the reference's unaliased relation.
+    fn qualifier(&self, reference: &Reference) -> Ident {
+        if self.has_default_alias(reference) {
+            reference.leaf.clone()
+        } else {
+            Ident::with_quote('"', reference.synthetic.clone())
+        }
+    }
+
+    /// Replaces the longest leading run of `idents` that is a path read by an unaliased relation
+    /// with that relation's qualifier, keeping at least `keep` trailing idents.
+    fn qualify(&self, idents: &mut Vec<Ident>, keep: usize) {
+        for len in (2..=idents.len().saturating_sub(keep)).rev() {
+            let prefix = &idents[..len];
+            let found = self.references.iter().find(|r| {
+                r.unaliased
+                    && r.path.len() == len
+                    && r.path.iter().zip(prefix).all(|(s, i)| *s == i.value)
+            });
+            if let Some(reference) = found {
+                let qualifier = self.qualifier(reference);
+                idents.splice(..len, [qualifier]);
+                return;
+            }
+        }
+    }
+
+    fn qualify_wildcard(&self, name: &mut ObjectName) {
+        let Some(mut idents) = name
+            .0
+            .iter()
+            .map(|part| part.as_ident().cloned())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        self.qualify(&mut idents, 0);
+        *name = ObjectName::from(idents);
+    }
+}
+
+impl VisitorMut for Qualifier<'_> {
+    type Break = Error;
+
+    fn pre_visit_table_factor(&mut self, factor: &mut TableFactor) -> ControlFlow<Error> {
+        if let TableFactor::Table {
+            name,
+            alias: alias @ None,
+            args: None,
+            ..
+        } = factor
+        {
+            let reference = match name.0.as_slice() {
+                [ObjectNamePart::Identifier(only)] => {
+                    self.references.iter().find(|r| r.synthetic == only.value)
+                }
+                _ => None,
+            };
+            if let Some(reference) = reference.filter(|r| self.has_default_alias(r)) {
+                *alias = Some(TableAlias {
+                    explicit: false,
+                    name: reference.leaf.clone(),
+                    columns: Vec::new(),
+                    at: None,
+                });
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_select(&mut self, select: &mut Select) -> ControlFlow<Error> {
+        for item in &mut select.projection {
+            if let SelectItem::QualifiedWildcard(
+                SelectItemQualifiedWildcardKind::ObjectName(name),
+                _,
+            ) = item
+            {
+                self.qualify_wildcard(name);
+            }
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Error> {
+        match expr {
+            Expr::CompoundIdentifier(idents) => self.qualify(idents, 1),
+            Expr::QualifiedWildcard(name, _) => self.qualify_wildcard(name),
+            Expr::Function(function) => {
+                if let FunctionArguments::List(list) = &mut function.args {
+                    for arg in &mut list.args {
+                        let (FunctionArg::Named { arg, .. }
+                        | FunctionArg::ExprNamed { arg, .. }
+                        | FunctionArg::Unnamed(arg)) = arg;
+                        if let FunctionArgExpr::QualifiedWildcard(name) = arg {
+                            self.qualify_wildcard(name);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
     }
 }
 
