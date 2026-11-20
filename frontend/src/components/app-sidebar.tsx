@@ -1,19 +1,21 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "@tanstack/react-router";
+import { Link, useParams, useRouterState } from "@tanstack/react-router";
 import { FolderTree, PanelLeftClose, Search } from "lucide-react";
 import { ID_DELIMITER, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
-import { cn } from "@/lib/utils";
+import { insertTablePath } from "@/lib/sql-insert";
+import { cn, toggled } from "@/lib/utils";
 import { GlobalSearch } from "@/components/global-search";
+import { ModeToggle, ModeToggleRail, type Mode } from "@/components/mode-toggle";
 import { NamespaceTree } from "@/components/namespace-tree";
 import { PreferenceControls } from "@/components/preference-controls";
 
-/** Joined id of the current namespace or table page and the namespace chain to expand. */
 export function useCurrentLocation() {
   const { nsId, tableId } = useParams({ strict: false });
+  const isQuery = useRouterState({ select: (s) => s.matches.some((m) => m.routeId === "/query") });
   const activeId = tableId ?? nsId ?? null;
   const segments = activeId ? splitId(activeId) : [];
-  return { activeId, segments, isTable: tableId != null };
+  return { activeId, segments, isTable: tableId != null, isQuery };
 }
 
 export function AppSidebar({
@@ -26,12 +28,17 @@ export function AppSidebar({
   /** Desktop only: allow collapsing to an icon rail (persisted). */
   collapsible?: boolean;
 }) {
-  const { activeId, segments, isTable } = useCurrentLocation();
-  const [storedCollapsed, setCollapsed] = useStoredState("nav-collapsed", false);
+  const { activeId, segments, isTable, isQuery } = useCurrentLocation();
+  const mode: Mode = isQuery ? "sql" : "explore";
+  const [storedCollapsed, setStoredCollapsed] = useStoredState("nav-collapsed", false);
   const collapsed = collapsible && storedCollapsed;
+  const expand = () => setStoredCollapsed(false);
+  const collapse = () => setStoredCollapsed(true);
   // Set when the rail's search button (or ⌘K) expands the nav, so the search box takes focus.
   const [focusSearch, setFocusSearch] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  // The namespace a search result revealed in SQL mode; the tree highlights it and scrolls to it.
+  const [revealed, setRevealed] = useState<string | null>(null);
 
   // Reveal the current location: expand every enclosing namespace (and the namespace itself).
   useEffect(() => {
@@ -46,16 +53,23 @@ export function AppSidebar({
   }, [activeId]);
 
   function toggle(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
+    setExpanded((prev) => toggled(prev, id));
+  }
+
+  function revealNamespace(path: string[]) {
+    const ids = path.map((_, i) => path.slice(0, i + 1).join(ID_DELIMITER));
+    setExpanded((prev) => new Set([...prev, ...ids]));
+    setRevealed(ids[ids.length - 1]);
+  }
+
+  function pickTable(path: string[]) {
+    insertTablePath(path);
+    onNavigate?.();
   }
 
   function expandToSearch() {
     setFocusSearch(true);
-    setCollapsed(false);
+    expand();
   }
 
   // While collapsed the search box is not mounted, so the rail handles its shortcut.
@@ -78,7 +92,7 @@ export function AppSidebar({
     // controls stop the click so they only change their setting.
     return (
       <aside
-        onClick={() => setCollapsed(false)}
+        onClick={expand}
         title="Expand navigation"
         className={cn("flex h-full w-14 shrink-0 cursor-pointer flex-col items-center border-r bg-sidebar hover:bg-accent/40", className)}
       >
@@ -92,9 +106,17 @@ export function AppSidebar({
           <button type="button" className={railButton} onClick={expandToSearch} aria-label="Search" title="Search (⌘K)">
             <Search className="h-4 w-4" />
           </button>
-          <Link to="/namespaces" className={railButton} aria-label="Namespaces" title="Namespaces">
-            <FolderTree className="h-4 w-4" />
-          </Link>
+          {mode === "sql" ? (
+            // The tree is the table picker here, so the button opens the rail instead of leaving SQL mode.
+            <button type="button" className={railButton} aria-label="Show tables" title="Show tables">
+              <FolderTree className="h-4 w-4" />
+            </button>
+          ) : (
+            <Link to="/namespaces" className={railButton} aria-label="Namespaces" title="Namespaces">
+              <FolderTree className="h-4 w-4" />
+            </Link>
+          )}
+          <ModeToggleRail mode={mode} className={railButton} />
         </div>
         <div
           className="mt-auto flex cursor-default flex-col items-center gap-1 border-t py-3"
@@ -120,7 +142,7 @@ export function AppSidebar({
         {collapsible && (
           <button
             type="button"
-            onClick={() => setCollapsed(true)}
+            onClick={collapse}
             aria-label="Collapse navigation"
             title="Collapse navigation"
             className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -129,24 +151,36 @@ export function AppSidebar({
           </button>
         )}
       </div>
-      <div className="shrink-0 p-3">
+      <div className="flex shrink-0 flex-col gap-2 p-3">
+        <ModeToggle mode={mode} />
         <GlobalSearch
           onNavigate={onNavigate}
+          pick={mode === "sql" ? { onTable: pickTable, onNamespace: revealNamespace } : undefined}
           autoFocus={focusSearch}
           onFocusHandled={() => setFocusSearch(false)}
         />
       </div>
       <div className="flex items-center justify-between px-4 pt-1 pb-1.5">
-        <Link
-          to="/namespaces"
-          onClick={onNavigate}
-          className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase hover:text-foreground"
-        >
-          Namespaces
-        </Link>
+        {mode === "sql" ? (
+          <span className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Namespaces</span>
+        ) : (
+          <Link
+            to="/namespaces"
+            onClick={onNavigate}
+            className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase hover:text-foreground"
+          >
+            Namespaces
+          </Link>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        <NamespaceTree expanded={expanded} toggle={toggle} activeId={activeId} onNavigate={onNavigate} />
+        <NamespaceTree
+          expanded={expanded}
+          toggle={toggle}
+          activeId={mode === "sql" ? revealed : activeId}
+          onNavigate={onNavigate}
+          onPickTable={mode === "sql" ? pickTable : undefined}
+        />
       </div>
       <div className="shrink-0 border-t px-4 py-3">
         <PreferenceControls />

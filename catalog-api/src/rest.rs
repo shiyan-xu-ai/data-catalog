@@ -122,7 +122,7 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
         .route("/table/:id/timeline", get(table_timeline))
         .route("/table/:id/version/:version/files", get(version_files))
         .route("/table/:id/refresh", post(refresh_table))
-        .route("/table/:id/sql", post(run_sql))
+        .route("/sql", post(run_sql))
         .route("/media/presign", get(presign_media))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
@@ -664,18 +664,23 @@ async fn fragment_measures(
 struct SqlRequest {
     #[serde(default)]
     sql: String,
-    /// Version the plain table name resolves to; the current version when unset.
-    version: Option<u64>,
 }
 
 #[derive(Serialize)]
 struct SqlResponse {
-    version: u64,
+    /// Every table version the query read, in order of first appearance.
+    tables: Vec<SqlTableResponse>,
     columns: Vec<SqlColumnResponse>,
     rows: Vec<Vec<Value>>,
     row_count: usize,
     truncated: bool,
     elapsed_ms: u64,
+}
+
+#[derive(Serialize)]
+struct SqlTableResponse {
+    id: Vec<String>,
+    version: u64,
 }
 
 #[derive(Serialize)]
@@ -687,11 +692,7 @@ struct SqlColumnResponse {
     metadata: HashMap<String, String>,
 }
 
-async fn run_sql(
-    State(catalog): State<Catalog>,
-    Path(id): Path<String>,
-    body: Bytes,
-) -> ApiResult<Json<SqlResponse>> {
+async fn run_sql(State(catalog): State<Catalog>, body: Bytes) -> ApiResult<Json<SqlResponse>> {
     let request: SqlRequest = parse_body(&body)?;
     if request.sql.trim().is_empty() {
         return Err(ApiError::invalid_input("sql is required".into()));
@@ -707,15 +708,17 @@ async fn run_sql(
     let started = Instant::now();
     let result = catalog
         .namespace
-        .query_sql(
-            &parse_id(&id),
-            &request.sql,
-            request.version,
-            &catalog.sql.limits,
-        )
+        .query_sql(&request.sql, &catalog.sql.limits)
         .await?;
     Ok(Json(SqlResponse {
-        version: result.version,
+        tables: result
+            .tables
+            .into_iter()
+            .map(|t| SqlTableResponse {
+                id: t.id,
+                version: t.version,
+            })
+            .collect(),
         columns: result
             .columns
             .into_iter()

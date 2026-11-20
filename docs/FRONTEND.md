@@ -7,11 +7,17 @@ and registered through the [API](../README.md#api).
 
 ## Layout
 
-- **Sidebar.** Global search, the namespace tree, and theme (light, dark,
-  system) and timezone (UTC, local) controls. It collapses to an icon rail; a
-  click anywhere on the rail except those two controls expands it. The
-  collapsed state, theme, and timezone persist in `localStorage`, and every
-  timestamp renders in the chosen timezone.
+- **Sidebar.** An Explore | SQL mode toggle, global search, the namespace tree, and
+  theme (light, dark, system) and timezone (UTC, local) controls. It collapses to
+  an icon rail, where the mode toggle is one icon button showing the current mode;
+  a click anywhere on the rail except the theme, timezone, and mode controls expands
+  it. The collapsed state, theme, and timezone persist in `localStorage`, and every
+  timestamp renders in the chosen timezone. The collapsed state applies in both modes.
+- **Modes.** The route sets the mode: `/query` is SQL, every other route is Explore.
+  Choosing SQL opens `/query`; choosing Explore returns to the last page seen outside
+  it (`/namespaces` when there is none). Explore shows the namespace and table pages.
+  SQL shows the SQL editor in the main area, and the sidebar tree and search pick
+  tables instead of opening pages (see Query page).
 - **Namespace tree.** Loads children when a namespace opens; tables are leaves.
   A click anywhere on a namespace row toggles it (the chevron only shows the
   state); a click on its name also opens the namespace page. The current page's
@@ -31,12 +37,12 @@ a dataset.
 
 ## Table page
 
-The Lance logo, the table name, and seven tabs: Overview, Properties, Timeline,
-Versions, Schema, Indices, SQL. The active tab is in `?tab=`.
+The Lance logo, the table name, a **Query this table** action, and six tabs:
+Overview, Properties, Timeline, Versions, Schema, Indices. The active tab is in `?tab=`.
 
 **State.** A tab mounts on first visit and stays mounted, and the eight most
-recently visited tables stay mounted while hidden. Selected rows and panes, SQL
-queries and results, expansion, and filters survive switching tabs or tables.
+recently visited tables stay mounted while hidden. Selected rows and panes,
+expansion, and filters survive switching tabs or tables.
 Opening a table through a link without `?tab=` restores its last tab; a URL that
 names a tab opens that tab. Hidden pages ignore keyboard shortcuts and pause
 video. Scroll position is not kept.
@@ -65,9 +71,8 @@ video. Scroll position is not kept.
   description (the field's `description` metadata), and size on disk per
   top-level column. A raw JSON view is available.
 - **Indices.** Name, type, columns, size, and coverage.
-- **SQL.** See below.
 
-Clicking a timeline, version, field, or SQL result row opens a side pane (Esc
+Clicking a timeline, version, or field row opens a side pane (Esc
 closes it, arrow keys move). The pane shares the width evenly with its list on
 wide screens and overlays it on narrow ones. Timeline and version panes show
 the commit, changes against the next older loaded version, operation details,
@@ -75,15 +80,41 @@ totals, writer, transaction, and a Source files view of the decoded manifest
 and transaction (`GET /catalog/v1/table/:id/version/:version/files`). Version,
 field, and index tables pin their header and scroll sideways when wide.
 
-### SQL tab
+## Query page
 
-Runs one read-only query at a time (`POST /catalog/v1/table/:id/sql`). A version
-picker sets which version the table name reads; `"<table>@v<N>"` reads any
-other. The editor opens with `SELECT * FROM "<table>" LIMIT 20` and runs on Run
-or Ctrl/Cmd+Enter. Results show column types, nested values as JSON, binary as
-hex, the row count, version, elapsed time, and a truncation notice. Cancel stops
-waiting; the server's time limit ends the query. Columns resize by dragging, and
-Download CSV exports the returned rows.
+A top-level page (`/query`) that runs one read-only query at a time over any
+registered tables (`POST /catalog/v1/sql`), shown in SQL mode. The page stays
+mounted once visited, so tabs, text, results, and a running query survive
+switching back to Explore.
+
+**Naming tables.** A query names a table by its full catalog path with every
+segment double-quoted, for example `"a"."b"."events"`, and can join, union, or
+nest tables freely. A plain path reads the table's current version;
+`"a"."b"."events@v12"` reads version 12, and one query can mix versions. SQL
+aliases work as usual, and an unaliased table is also reachable by its last
+segment (`events.id`) unless two tables in the query share that name. A name
+with one part is not a table.
+
+**Workspace.** A tab strip, an editor, and results; the sidebar's tree picks tables.
+
+- **Tables** (sidebar, SQL mode). Clicking a table's name inserts its quoted path
+  at the active editor's cursor (appended when the editor was never focused) and
+  does not navigate. Namespace rows only expand and collapse. Choosing a search
+  result inserts a table's path or expands the tree to a namespace. The editor
+  completes table paths, and column names for tables named in the active tab.
+- **History** (toolbar button). The last 50 queries run in this browser, newest
+  first; running the same text again moves it to the top. Selecting one loads it
+  into the active tab without running it.
+- **Tabs.** Open, switch, and close; each keeps its own text, results, and
+  editor/results split. **Query this table** on a table page opens a new tab
+  pre-filled with `SELECT * FROM "<path>" LIMIT 20` (`/query?table=<id>`).
+- **Run.** Run or Ctrl/Cmd+Enter. Cancel stops waiting; the server's time limit
+  ends the query.
+
+Results show column types, nested values as JSON, binary as hex, the row count,
+elapsed time, the table version when exactly one table was read (otherwise the
+number of tables, with each `path@vN` in its tooltip), and a truncation notice.
+Columns resize by dragging, and Download CSV exports the returned rows.
 
 The row pane lists every column's value with a copy button and adds a
 **Playback** tab for each playable value:
@@ -115,8 +146,9 @@ are estimates. Download saves the file, or the blob's byte range.
   and TanStack Query; query hooks and keys are in `src/lib/catalog-queries.ts`.
 - `src/lib/api.ts` is the API client; `src/lib/schemas.ts` holds Zod schemas
   that mirror the spec and `/catalog/v1` responses.
-- `src/lib/sql.ts` decides playability; `src/lib/hevc.ts` and
-  `src/lib/hevc-player.ts` parse and play raw H.265.
+- `src/lib/sql.ts` decides playability and quotes table paths; `src/lib/query-tabs.ts`
+  and `src/lib/query-history.ts` hold the query tab and history state;
+  `src/lib/hevc.ts` and `src/lib/hevc-player.ts` parse and play raw H.265.
 - `src/lib/active.ts` tells components whether their page or tab is on screen.
 - Tailwind with local shadcn/ui components; charts use Recharts.
 

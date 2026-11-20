@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useImperativeHandle, useRef } from "react";
 import { basicSetup } from "codemirror";
-import { sql, StandardSQL } from "@codemirror/lang-sql";
+import { sql, StandardSQL, type SQLNamespace } from "@codemirror/lang-sql";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
@@ -41,7 +41,13 @@ const theme = EditorView.theme({
   },
 });
 
-const sqlLanguage = (schema: Record<string, readonly string[]>) => sql({ dialect: StandardSQL, schema, upperCaseKeywords: true });
+const sqlLanguage = (schema: SQLNamespace) => sql({ dialect: StandardSQL, schema, upperCaseKeywords: true });
+
+export interface SqlEditorHandle {
+  /** Replace the selection with `text` (append when the editor was never focused), put the cursor
+   *  after it, and focus the editor. */
+  insert: (text: string) => void;
+}
 
 /** CodeMirror 6 SQL editor. `schema` feeds table and column completion; Mod-Enter runs. */
 export function SqlEditor({
@@ -49,17 +55,21 @@ export function SqlEditor({
   onChange,
   onRun,
   schema,
+  handle,
   className,
 }: {
   value: string;
   onChange: (value: string) => void;
   onRun: () => void;
-  schema: Record<string, readonly string[]>;
+  schema: SQLNamespace;
+  handle?: React.Ref<SqlEditorHandle>;
   className?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const language = useRef(new Compartment());
+  // Whether the user ever focused the editor, which makes its selection a real cursor position.
+  const focused = useRef(false);
   // Latest callbacks, read by the editor's listeners without recreating the editor.
   const callbacks = useRef({ onChange, onRun });
   callbacks.current = { onChange, onRun };
@@ -87,6 +97,7 @@ export function SqlEditor({
           theme,
           EditorView.lineWrapping,
           EditorView.updateListener.of((u) => {
+            if (u.focusChanged && u.view.hasFocus) focused.current = true;
             if (u.docChanged) callbacks.current.onChange(u.state.doc.toString());
           }),
         ],
@@ -111,6 +122,27 @@ export function SqlEditor({
       editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } });
     }
   }, [value]);
+
+  useImperativeHandle(
+    handle,
+    () => ({
+      insert(text) {
+        const editor = view.current;
+        if (!editor) return;
+        // An editor that was never focused has its cursor at the start by default; append instead.
+        const end = editor.state.doc.length;
+        const { from, to } = focused.current ? editor.state.selection.main : { from: end, to: end };
+        editor.dispatch({
+          changes: { from, to, insert: text },
+          selection: { anchor: from + text.length },
+          scrollIntoView: true,
+          userEvent: "input",
+        });
+        editor.focus();
+      },
+    }),
+    [],
+  );
 
   return <div ref={host} className={cn("min-h-0 overflow-hidden", className)} />;
 }

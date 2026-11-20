@@ -1,5 +1,7 @@
+import type { SQLNamespace } from "@codemirror/lang-sql";
 import type { ByteRange } from "./hevc-player";
-import type { JsonArrowField, SqlResponse } from "./schemas";
+import { joinId } from "./ids";
+import type { SqlResponse } from "./schemas";
 
 type SqlColumn = SqlResponse["columns"][number];
 
@@ -9,9 +11,62 @@ export function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-/** The query the SQL panel opens with: a small sample of the table. */
-export function defaultQuery(tableName: string): string {
-  return `SELECT * FROM ${quoteIdent(tableName)} LIMIT 20`;
+export function quotePath(segments: readonly string[]): string {
+  return segments.map(quoteIdent).join(".");
+}
+
+export function sampleQuery(segments: readonly string[]): string {
+  return `SELECT * FROM ${quotePath(segments)} LIMIT 20`;
+}
+
+// A run of two or more quoted identifiers joined by dots: a candidate table path.
+const QUOTED_PATH = /"(?:[^"]|"")*"(?:\s*\.\s*"(?:[^"]|"")*")+/g;
+const QUOTED_PART = /"((?:[^"]|"")*)"/g;
+const VERSION_PIN = /@v\d+$/;
+const KEY_SEP = "\u0000";
+
+/** The known tables whose quoted full path appears in `text`, in order of first appearance. A
+ *  leaf pinned to a version (`"events@v12"`) names its table. */
+export function findTablePaths(text: string, tables: readonly (readonly string[])[]): string[][] {
+  const known = new Map(tables.map((t) => [t.join(KEY_SEP), t]));
+  const found = new Map<string, string[]>();
+  for (const [path] of text.matchAll(QUOTED_PATH)) {
+    const parts = [...path.matchAll(QUOTED_PART)].map((m) => m[1].replaceAll('""', '"'));
+    const leaf = parts[parts.length - 1];
+    for (const name of [leaf, leaf.replace(VERSION_PIN, "")]) {
+      const key = [...parts.slice(0, -1), name].join(KEY_SEP);
+      const table = known.get(key);
+      if (table) {
+        found.set(key, [...table]);
+        break;
+      }
+    }
+  }
+  return [...found.values()];
+}
+
+type SchemaNode = { [name: string]: SchemaNode | string[] };
+
+/** The editor's completion schema: tables nested under their namespaces, each listing its
+ *  columns once `columns` (keyed by the table's joined id) has them, and none before. A namespace
+ *  that shares its name with a table of the same parent shadows that table's completion. */
+export function completionSchema(
+  tables: readonly (readonly string[])[],
+  columns: ReadonlyMap<string, readonly string[]>,
+): SQLNamespace {
+  // Null-prototype objects, so a segment named `constructor` or `__proto__` is an ordinary key.
+  const make = (): SchemaNode => Object.create(null);
+  const root = make();
+  for (const table of tables) {
+    let node = root;
+    for (const segment of table.slice(0, -1)) {
+      const child = node[segment];
+      node = Array.isArray(child) || child === undefined ? (node[segment] = make()) : child;
+    }
+    const leaf = table[table.length - 1];
+    if (!(leaf in node)) node[leaf] = [...(columns.get(joinId(table)) ?? [])];
+  }
+  return root;
 }
 
 export type CellKind = "null" | "number" | "bool" | "text" | "nested" | "binary";
@@ -60,15 +115,8 @@ export function shortTypeName(type: string): string {
   return paren > 0 ? `${type.slice(0, paren)}(…)` : clip(type, 24);
 }
 
-/** How SQL names a specific version of the table, e.g. `"events@v12"`. */
-export function versionRef(tableName: string, version: number): string {
-  return quoteIdent(`${tableName}@v${version}`);
-}
-
 const VIDEO_URL = /^(https?|s3):\/\/\S+\.(mp4|m4v|mov|webm|h265|hevc)(?:[?#]\S*)?$/i;
 
-/** A Lance blob v2 column carries this extension name in its table-schema field metadata. */
-const BLOB_EXTENSION = "lance.blob.v2";
 /** Queries read a blob column as its stored descriptor (`kind`, `position`, `size`, `blob_id`,
  *  `blob_uri`), whose field metadata carries this flag, including through aliases. */
 const BLOB_DESCRIPTOR_KEY = "lance-encoding:blob";
@@ -78,40 +126,14 @@ const BLOB_DESCRIPTOR_KEY = "lance-encoding:blob";
  *  does not locate. */
 const BLOB_KIND_EXTERNAL = 3;
 
-/** Blob v2 logical children, in order (Blob v2 spec): `data`, `uri`, and optionally `position`
- *  and `size`. */
-const BLOB_LOGICAL_CHILDREN = [
-  ["data", "large_binary"],
-  ["uri", "utf8"],
-  ["position", "uint64"],
-  ["size", "uint64"],
-] as const;
-
 /** The descriptor struct a query reads a blob column as. */
 const BLOB_DESCRIPTOR_TYPE =
   /^Struct\("kind": (?:non-null )?UInt8, "position": (?:non-null )?UInt64, "size": (?:non-null )?UInt64, "blob_id": (?:non-null )?UInt32, "blob_uri": (?:non-null )?Utf8\)$/;
 
-function isBlobField(field: JsonArrowField): boolean {
-  const children = field.type.fields ?? [];
-  return (
-    field.metadata?.["ARROW:extension:name"] === BLOB_EXTENSION &&
-    field.type.type === "struct" &&
-    (children.length === 2 || children.length === 4) &&
-    children.every((c, i) => c.name === BLOB_LOGICAL_CHILDREN[i][0] && c.type.type === BLOB_LOGICAL_CHILDREN[i][1])
-  );
-}
-
-/** Names of the table's top-level blob v2 columns: fields tagged `lance.blob.v2` whose struct
- *  children are the blob v2 logical ones. */
-export function blobColumnNames(fields: readonly JsonArrowField[]): Set<string> {
-  return new Set(fields.filter(isBlobField).map((f) => f.name));
-}
-
-/** Whether a result column holds blob descriptors: its field metadata says so, or it is one of
- *  the table's blob columns by name; either way its type must be the descriptor struct. */
-export function isBlobColumn(column: SqlColumn, blobColumns: ReadonlySet<string>): boolean {
-  const marked = column.metadata?.[BLOB_DESCRIPTOR_KEY] === "true" || blobColumns.has(column.name);
-  return marked && BLOB_DESCRIPTOR_TYPE.test(column.type);
+/** Whether a result column holds blob descriptors: its field metadata says so (this survives
+ *  aliases), and its type is the descriptor struct. */
+export function isBlobColumn(column: SqlColumn): boolean {
+  return column.metadata?.[BLOB_DESCRIPTOR_KEY] === "true" && BLOB_DESCRIPTOR_TYPE.test(column.type);
 }
 
 /** A playable video referenced by a result value. */

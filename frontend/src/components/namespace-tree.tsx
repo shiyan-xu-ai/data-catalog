@@ -3,14 +3,17 @@ import { Link } from "@tanstack/react-router";
 import { ChevronRight, Folder, FolderOpen, Loader2, Table2 } from "lucide-react";
 import { useChildNamespaces, useNamespaceTables, type PagedNames } from "@/lib/catalog-queries";
 import { ID_DELIMITER } from "@/lib/ids";
+import { quotePath } from "@/lib/sql";
 import { cn } from "@/lib/utils";
 
 interface TreeState {
   expanded: ReadonlySet<string>;
   toggle: (id: string) => void;
-  /** Joined id of the current namespace or table page, if any. */
   activeId: string | null;
   onNavigate?: () => void;
+  /** A tree with this set picks tables: a table row calls it instead of linking to its page, and
+   *  namespace rows only expand and collapse. */
+  onPickTable?: (segments: string[]) => void;
 }
 
 const rowClass =
@@ -19,8 +22,8 @@ const activeClass = "bg-accent font-medium text-accent-foreground";
 // Leaves and status rows align their icon with sibling namespaces' folder icon (past the chevron).
 const leafIndent = (depth: number) => ({ paddingLeft: `${depth * 12 + 4 + 26}px` });
 
-function useScrollIntoView(active: boolean) {
-  const ref = useRef<HTMLAnchorElement>(null);
+function useScrollIntoView<T extends HTMLElement>(active: boolean) {
+  const ref = useRef<T>(null);
   useEffect(() => {
     if (active) ref.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
@@ -30,7 +33,24 @@ function useScrollIntoView(active: boolean) {
 function TableLeaf({ segments, depth, state }: { segments: string[]; depth: number; state: TreeState }) {
   const id = segments.join(ID_DELIMITER);
   const active = state.activeId === id;
-  const ref = useScrollIntoView(active);
+  const ref = useScrollIntoView<HTMLAnchorElement>(active);
+  const icon = <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+  const name = segments[segments.length - 1];
+  if (state.onPickTable) {
+    const pick = state.onPickTable;
+    return (
+      <button
+        type="button"
+        onClick={() => pick(segments)}
+        className={cn(rowClass, "text-left")}
+        style={leafIndent(depth)}
+        title={`Insert ${quotePath(segments)}`}
+      >
+        {icon}
+        <span className="truncate font-mono text-xs">{name}</span>
+      </button>
+    );
+  }
   return (
     <Link
       ref={ref}
@@ -39,10 +59,10 @@ function TableLeaf({ segments, depth, state }: { segments: string[]; depth: numb
       onClick={state.onNavigate}
       className={cn(rowClass, active && activeClass)}
       style={leafIndent(depth)}
-      title={segments[segments.length - 1]}
+      title={name}
     >
-      <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <span className="truncate font-mono text-xs">{segments[segments.length - 1]}</span>
+      {icon}
+      <span className="truncate font-mono text-xs">{name}</span>
     </Link>
   );
 }
@@ -73,7 +93,6 @@ function StatusRow({ depth, children, error }: { depth: number; children: React.
   );
 }
 
-/** Children of an expanded namespace: child namespaces first, then its tables as leaves. */
 function TreeChildren({ segments, depth, state }: { segments: string[]; depth: number; state: TreeState }) {
   const namespaces = useChildNamespaces(segments);
   const tables = useNamespaceTables(segments);
@@ -117,13 +136,21 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
   const id = segments.join(ID_DELIMITER);
   const open = state.expanded.has(id);
   const active = state.activeId === id;
-  const ref = useScrollIntoView(active);
+  const ref = useScrollIntoView<HTMLDivElement>(active);
   const FolderIcon = open ? FolderOpen : Folder;
+  const name = segments[segments.length - 1];
+  const label = (
+    <>
+      <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{name}</span>
+    </>
+  );
   return (
     <>
       {/* A click anywhere on the row toggles it; the chevron only shows the state, and the name
-          still opens the namespace page. */}
+          opens the namespace page (unless the tree picks tables, where it only toggles). */}
       <div
+        ref={ref}
         onClick={() => state.toggle(id)}
         className={cn(rowClass, "cursor-pointer", active && activeClass)}
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
@@ -131,25 +158,33 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
         <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground">
           <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
         </span>
-        <Link
-          ref={ref}
-          to="/namespaces/$nsId"
-          params={{ nsId: id }}
-          onClick={state.onNavigate}
-          aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-1.5"
-          title={segments[segments.length - 1]}
-        >
-          <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate">{segments[segments.length - 1]}</span>
-        </Link>
+        {state.onPickTable ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+            title={name}
+          >
+            {label}
+          </button>
+        ) : (
+          <Link
+            to="/namespaces/$nsId"
+            params={{ nsId: id }}
+            onClick={state.onNavigate}
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-center gap-1.5"
+            title={name}
+          >
+            {label}
+          </Link>
+        )}
       </div>
       {open && <TreeChildren segments={segments} depth={depth + 1} state={state} />}
     </>
   );
 }
 
-/** Lazily expanding namespace tree rooted at the catalog root. */
 export function NamespaceTree(props: TreeState) {
   return (
     <nav aria-label="Namespaces" className="flex flex-col gap-px">

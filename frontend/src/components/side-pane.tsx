@@ -26,7 +26,6 @@ export function PaneSection({ title, children }: { title: string; children: Reac
   );
 }
 
-/** The segmented view switch under a side pane's header. */
 export function PaneTabs<V extends string>({
   views,
   value,
@@ -57,7 +56,6 @@ export function PaneTabs<V extends string>({
   );
 }
 
-/** Props spread on a selectable row of a list with a side pane. */
 export interface PaneRowProps {
   ref: (el: HTMLElement | null) => void;
   tabIndex: number;
@@ -145,14 +143,24 @@ export function SidePaneLayout({
   );
 }
 
+const PANE_BY_VIEWPORT =
+  "fixed inset-y-0 right-0 z-50 w-full max-w-[720px] border-l shadow-xl xl:sticky xl:top-[calc(var(--tabs-h,0px)+var(--pane-top))] xl:z-10 xl:max-h-[calc(var(--pane-max)-var(--tabs-h,0px))] xl:max-w-none xl:min-w-0 xl:flex-1 xl:basis-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm";
+const PANE_INLINE =
+  "sticky top-[calc(var(--tabs-h,0px)+var(--pane-top))] z-10 max-h-[calc(var(--pane-max)-var(--tabs-h,0px))] min-w-0 flex-1 basis-0 self-start rounded-lg border shadow-sm";
+const PANE_OVERLAY = "fixed inset-y-0 right-0 z-50 w-full max-w-[720px] border-l shadow-xl";
+
 /** Detail pane beside a list: half the width and sticky on wide screens (`top` px below the
- *  scroll area's top), an overlay on narrow ones. `toolbar` sits under the header. A new
- *  `bodyKey` remounts the body, resetting its scroll and state, without remounting the pane. */
+ *  scroll area's top), an overlay on narrow ones. By default wide means the `xl` viewport
+ *  breakpoint; a page whose list width differs from the viewport's decides itself with `inline`
+ *  (true: beside the list, false: overlay). Sticky panes follow the nearest `[data-pane-scroll]`
+ *  scroll area, or the page's `main`. `toolbar` sits under the header. A new `bodyKey` remounts
+ *  the body, resetting its scroll and state, without remounting the pane. */
 export function SidePane({
   label,
   header,
   toolbar,
   onClose,
+  inline,
   top = 0,
   bodyKey,
   className,
@@ -162,6 +170,7 @@ export function SidePane({
   header: React.ReactNode;
   toolbar?: React.ReactNode;
   onClose: () => void;
+  inline?: boolean;
   top?: number;
   bodyKey: React.Key;
   className?: string;
@@ -169,18 +178,19 @@ export function SidePane({
 }) {
   const ref = useRef<HTMLElement>(null);
   const [maxHeight, setMaxHeight] = useState<number>();
-  // Fit the sticky pane to the page's scroll area, which changes with the window.
   useEffect(() => {
-    const main = ref.current?.closest("main");
-    if (!main) return;
-    const observer = new ResizeObserver(() => setMaxHeight(main.clientHeight - 32 - top));
-    observer.observe(main);
+    const scroller = ref.current?.closest("[data-pane-scroll], main");
+    if (!scroller) return;
+    const observer = new ResizeObserver(() => setMaxHeight(scroller.clientHeight - 32 - top));
+    observer.observe(scroller);
     return () => observer.disconnect();
   }, [top]);
 
   return (
     <>
-      <div aria-hidden className="fixed inset-0 z-40 bg-black/30 xl:hidden" onClick={onClose} />
+      {inline !== true && (
+        <div aria-hidden className={cn("fixed inset-0 z-40 bg-black/30", inline === undefined && "xl:hidden")} onClick={onClose} />
+      )}
       <aside
         ref={ref}
         aria-label={label}
@@ -191,7 +201,8 @@ export function SidePane({
           } as React.CSSProperties
         }
         className={cn(
-          "fixed inset-y-0 right-0 z-50 flex w-full max-w-[720px] flex-col overflow-hidden border-l bg-background shadow-xl xl:sticky xl:top-[calc(var(--tabs-h,0px)+var(--pane-top))] xl:z-10 xl:max-h-[calc(var(--pane-max)-var(--tabs-h,0px))] xl:max-w-none xl:min-w-0 xl:flex-1 xl:basis-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm",
+          "flex flex-col overflow-hidden bg-background",
+          inline === undefined ? PANE_BY_VIEWPORT : inline ? PANE_INLINE : PANE_OVERLAY,
           className,
         )}
       >

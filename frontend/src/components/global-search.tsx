@@ -9,13 +9,16 @@ import { cn } from "@/lib/utils";
 const MAX_RESULTS = 20;
 
 /** Name search over every table (from the list-all route) and every namespace (enumerated
- *  from the root on first focus). ⌘K / Ctrl+K or `/` focuses it. */
+ *  from the root on first focus). ⌘K / Ctrl+K or `/` focuses it. With `pick`, a result goes
+ *  to the callbacks instead of opening its page. */
 export function GlobalSearch({
   onNavigate,
+  pick,
   autoFocus = false,
   onFocusHandled,
 }: {
   onNavigate?: () => void;
+  pick?: { onTable: (segments: string[]) => void; onNamespace: (segments: string[]) => void };
   /** Focus the box once (e.g. after the collapsed rail's search button expanded the nav). */
   autoFocus?: boolean;
   onFocusHandled?: () => void;
@@ -60,12 +63,19 @@ export function GlobalSearch({
 
   function go(entry: SearchEntry) {
     const id = entry.segments.join(ID_DELIMITER);
-    if (entry.kind === "table") navigate({ to: "/tables/$tableId", params: { tableId: id } });
-    else navigate({ to: "/namespaces/$nsId", params: { nsId: id } });
+    if (pick) {
+      if (entry.kind === "table") pick.onTable(entry.segments);
+      else pick.onNamespace(entry.segments);
+    } else if (entry.kind === "table") {
+      navigate({ to: "/tables/$tableId", params: { tableId: id } });
+    } else {
+      navigate({ to: "/namespaces/$nsId", params: { nsId: id } });
+    }
     setQuery("");
     setOpen(false);
     inputRef.current?.blur();
-    onNavigate?.();
+    // Revealing a namespace in the tree keeps the mobile drawer open to show it.
+    if (!pick || entry.kind === "table") onNavigate?.();
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {

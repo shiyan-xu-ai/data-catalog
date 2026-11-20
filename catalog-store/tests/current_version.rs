@@ -59,12 +59,10 @@ fn limits() -> SqlLimits {
     }
 }
 
-async fn sql(ns: &PostgresNamespace, parts: &[&str], query: &str) -> (u64, serde_json::Value) {
-    let result = ns
-        .query_sql(&id(parts).unwrap(), query, None, &limits())
-        .await
-        .unwrap();
-    (result.version, result.rows[0][0].clone())
+async fn sql(ns: &PostgresNamespace, query: &str) -> (u64, serde_json::Value) {
+    let result = ns.query_sql(query, &limits()).await.unwrap();
+    assert_eq!(result.tables.len(), 1);
+    (result.tables[0].version, result.rows[0][0].clone())
 }
 
 async fn overwrite(uri: &str) {
@@ -143,7 +141,7 @@ async fn current_version_lifecycle() {
     assert_eq!(current(&ns, &TABLE).await, 2);
     assert_eq!(current(&other, &TABLE).await, 2);
     assert_eq!(
-        sql(&other, &TABLE, "SELECT count(*) FROM t").await,
+        sql(&other, r#"SELECT count(*) FROM "prod"."t""#).await,
         (2, 4.into())
     );
     let again = ns.refresh_table(&id(&TABLE).unwrap()).await.unwrap();
@@ -273,14 +271,14 @@ async fn current_version_advances_when_cleaned_up() {
     let uri = support::write_dataset(dir.path(), "t.lance").await;
     register_in_prod(&ns, &uri).await;
     assert_eq!(
-        sql(&ns, &TABLE, "SELECT sum(id) FROM t").await,
+        sql(&ns, r#"SELECT sum(id) FROM "prod"."t""#).await,
         (1, 6.into())
     );
 
     overwrite(&uri).await;
     simulate_cleanup(&uri, 1).await;
     assert_eq!(
-        sql(&ns, &TABLE, "SELECT sum(id) FROM t").await,
+        sql(&ns, r#"SELECT sum(id) FROM "prod"."t""#).await,
         (2, 10.into())
     );
 

@@ -1,6 +1,29 @@
-import { describe, expect, it } from "vitest";
-import { ApiError, apiErrorFrom, decodeBody, followPages } from "./api";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError, apiErrorFrom, decodeBody, followPages, runSql } from "./api";
 import { ErrorCode, describeNamespaceResponseSchema, listTablesResponseSchema } from "./schemas";
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("runSql", () => {
+  it("posts only the SQL to the global query route and returns the tables read", async () => {
+    const body = {
+      tables: [{ id: ["a", "b", "events"], version: 12 }],
+      columns: [{ name: "id", type: "Int64" }],
+      rows: [[1]],
+      row_count: 1,
+      truncated: false,
+      elapsed_ms: 3,
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await runSql('SELECT id FROM "a"."b"."events"');
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/catalog/v1/sql");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ sql: 'SELECT id FROM "a"."b"."events"' });
+    expect(result.tables).toEqual([{ id: ["a", "b", "events"], version: 12 }]);
+  });
+});
 
 describe("apiErrorFrom", () => {
   it("uses the spec error message and code", () => {

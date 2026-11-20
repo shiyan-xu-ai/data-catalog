@@ -10,6 +10,7 @@ import {
   listTableTagsResponseSchema,
   listTableVersionsResponseSchema,
   listTablesResponseSchema,
+  sqlResponseSchema,
 } from "./schemas";
 
 describe("table metadata responses", () => {
@@ -114,5 +115,17 @@ describe("errorResponseSchema", () => {
   it("parses spec error bodies", () => {
     expect(errorResponseSchema.parse({ error: "not empty", code: 3 })).toEqual({ error: "not empty", code: 3 });
     expect(errorResponseSchema.parse({ code: 18 }).code).toBe(18);
+  });
+});
+
+describe("sqlResponseSchema", () => {
+  const base = { columns: [{ name: "id", type: "Int64" }], rows: [[1]], row_count: 1, truncated: false, elapsed_ms: 2 };
+  it("lists the tables a query read, empty when it read none", () => {
+    const r = sqlResponseSchema.parse({ ...base, tables: [{ id: ["a", "b", "events"], version: 12 }] });
+    expect(r.tables).toEqual([{ id: ["a", "b", "events"], version: 12 }]);
+    expect(sqlResponseSchema.parse({ ...base, tables: [] }).tables).toEqual([]);
+  });
+  it("rejects a response without tables", () => {
+    expect(() => sqlResponseSchema.parse(base)).toThrow();
   });
 });

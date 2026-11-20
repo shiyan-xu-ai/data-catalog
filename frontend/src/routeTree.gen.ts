@@ -9,11 +9,17 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as QueryRouteImport } from './routes/query'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as NamespacesIndexRouteImport } from './routes/namespaces.index'
 import { Route as TablesTableIdRouteImport } from './routes/tables.$tableId'
 import { Route as NamespacesNsIdRouteImport } from './routes/namespaces.$nsId'
 
+const QueryRoute = QueryRouteImport.update({
+  id: '/query',
+  path: '/query',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -37,12 +43,14 @@ const NamespacesNsIdRoute = NamespacesNsIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/query': typeof QueryRoute
   '/namespaces/$nsId': typeof NamespacesNsIdRoute
   '/tables/$tableId': typeof TablesTableIdRoute
   '/namespaces/': typeof NamespacesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/query': typeof QueryRoute
   '/namespaces/$nsId': typeof NamespacesNsIdRoute
   '/tables/$tableId': typeof TablesTableIdRoute
   '/namespaces': typeof NamespacesIndexRoute
@@ -50,21 +58,29 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/query': typeof QueryRoute
   '/namespaces/$nsId': typeof NamespacesNsIdRoute
   '/tables/$tableId': typeof TablesTableIdRoute
   '/namespaces/': typeof NamespacesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/namespaces/$nsId' | '/tables/$tableId' | '/namespaces/'
+  fullPaths:
+    '/' | '/query' | '/namespaces/$nsId' | '/tables/$tableId' | '/namespaces/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/namespaces/$nsId' | '/tables/$tableId' | '/namespaces'
+  to: '/' | '/query' | '/namespaces/$nsId' | '/tables/$tableId' | '/namespaces'
   id:
-    '__root__' | '/' | '/namespaces/$nsId' | '/tables/$tableId' | '/namespaces/'
+    | '__root__'
+    | '/'
+    | '/query'
+    | '/namespaces/$nsId'
+    | '/tables/$tableId'
+    | '/namespaces/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  QueryRoute: typeof QueryRoute
   NamespacesNsIdRoute: typeof NamespacesNsIdRoute
   TablesTableIdRoute: typeof TablesTableIdRoute
   NamespacesIndexRoute: typeof NamespacesIndexRoute
@@ -72,6 +88,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/query': {
+      id: '/query'
+      path: '/query'
+      fullPath: '/query'
+      preLoaderRoute: typeof QueryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -105,6 +128,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  QueryRoute: QueryRoute,
   NamespacesNsIdRoute: NamespacesNsIdRoute,
   TablesTableIdRoute: TablesTableIdRoute,
   NamespacesIndexRoute: NamespacesIndexRoute,

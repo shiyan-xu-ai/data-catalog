@@ -6,7 +6,7 @@ import { formatBytes, formatPercent } from "@/lib/format";
 import { expandablePaths, flattenSchema, schemaMetadataByColumn, type SchemaRow } from "@/lib/schema-tree";
 import { sortedEntries } from "@/lib/table-metadata";
 import type { ColumnStorageResponse, DescribeTableResponse, JsonArrowSchema } from "@/lib/schemas";
-import { cn } from "@/lib/utils";
+import { cn, toggled } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -189,11 +189,7 @@ function SchemaView({ schema, columns }: { schema: JsonArrowSchema; columns: Use
   const { current, close, rowProps } = usePaneSelection(rows, rowPath);
 
   function toggle(path: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(path)) next.add(path);
-      return next;
-    });
+    setExpanded((prev) => toggled(prev, path));
   }
 
   return (
