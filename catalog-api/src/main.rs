@@ -60,23 +60,23 @@ async fn main() -> anyhow::Result<()> {
     let namespace = Arc::new(
         PostgresNamespace::new(pool, storage_options)
             .with_cache_budget(cfg.cache_budget_bytes)
+            .with_sql_cache_budget(cfg.catalog.sql.cache_bytes)
             .with_location_allowlists(cfg.table_locations, cfg.media_locations)
             .with_top_level_allowlist(cfg.verticals)
             .context("CATALOG_VERTICALS")?,
     );
 
+    let app = catalog_api_lib::app(namespace, cfg.catalog, Some(&cfg.webui_dir))
+        .context("start the SQL query runtime")?;
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr)
         .await
         .with_context(|| format!("bind api server to {}", cfg.bind_addr))?;
     tracing::info!(addr = %cfg.bind_addr, "catalog-api listening");
 
-    axum::serve(
-        listener,
-        catalog_api_lib::app(namespace, cfg.catalog, Some(&cfg.webui_dir)),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("api server error")?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("api server error")?;
 
     tracing::info!("shutdown complete");
     Ok(())

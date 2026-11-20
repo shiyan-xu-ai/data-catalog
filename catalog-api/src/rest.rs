@@ -14,13 +14,14 @@ use std::time::{Duration, Instant};
 use axum::body::{to_bytes, Bytes};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::header::CONTENT_TYPE;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use catalog_store::{
     Distribution, FragmentMeasures, PostgresNamespace, StorageBreakdown, StorageFootprint,
+    Truncation,
 };
 use lance_namespace::models::{
     CountTableRowsRequest, CreateNamespaceRequest, CreateNamespaceResponse, DeregisterTableRequest,
@@ -39,9 +40,9 @@ use lance_namespace::{Error, ErrorCode, LanceNamespace, NamespaceError};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::Semaphore;
 
 use crate::config::{CatalogConfig, SqlConfig, StoragePricing};
+use crate::sql_runner::{self, SqlRunner};
 
 type Backend = Arc<dyn LanceNamespace>;
 type ApiResult<T> = Result<T, ApiError>;
@@ -109,13 +110,16 @@ struct Catalog {
     storage_pricing: Arc<StoragePricing>,
     sql: Arc<SqlConfig>,
     media_url_ttl: Duration,
-    /// Per-instance cap on concurrent SQL queries.
-    sql_slots: Arc<Semaphore>,
+    sql_runner: Arc<SqlRunner>,
 }
 
 /// Router for the catalog's own routes, read-only apart from refresh; nest it at `/catalog/v1`.
-pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) -> Router {
-    Router::new()
+/// Fails when the runtime SQL queries run on cannot start.
+pub fn catalog_router(
+    namespace: Arc<PostgresNamespace>,
+    config: CatalogConfig,
+) -> std::io::Result<Router> {
+    Ok(Router::new()
         .route("/table/:id/column-storage", get(column_storage))
         .route("/table/:id/storage", get(table_storage))
         .route("/table/:id/fragment-measures", get(fragment_measures))
@@ -123,16 +127,17 @@ pub fn catalog_router(namespace: Arc<PostgresNamespace>, config: CatalogConfig) 
         .route("/table/:id/version/:version/files", get(version_files))
         .route("/table/:id/refresh", post(refresh_table))
         .route("/sql", post(run_sql))
+        .route("/sql/:query_id/cancel", post(cancel_sql))
         .route("/media/presign", get(presign_media))
         .fallback(unsupported)
         .layer(axum::middleware::map_response(rejection_to_error_response))
         .with_state(Catalog {
             namespace,
             storage_pricing: Arc::new(config.storage_pricing),
-            sql_slots: Arc::new(Semaphore::new(config.sql.max_concurrent)),
+            sql_runner: Arc::new(SqlRunner::new(&config.sql)?),
             sql: Arc::new(config.sql),
             media_url_ttl: config.media_url_ttl,
-        })
+        }))
 }
 
 #[derive(Deserialize)]
@@ -664,16 +669,22 @@ async fn fragment_measures(
 struct SqlRequest {
     #[serde(default)]
     sql: String,
+    /// Client-chosen id that cancels the query while it runs.
+    query_id: Option<String>,
 }
 
 #[derive(Serialize)]
-struct SqlResponse {
+struct SqlResponse<'a> {
     /// Every table version the query read, in order of first appearance.
     tables: Vec<SqlTableResponse>,
     columns: Vec<SqlColumnResponse>,
-    rows: Vec<Vec<Value>>,
+    rows: &'a [Vec<Value>],
     row_count: usize,
     truncated: bool,
+    /// `rows` or `bytes`: the cap that cut the result short.
+    truncated_by: Option<&'static str>,
+    /// Whether the result cache answered without running the query.
+    cached: bool,
     elapsed_ms: u64,
 }
 
@@ -692,47 +703,78 @@ struct SqlColumnResponse {
     metadata: HashMap<String, String>,
 }
 
-async fn run_sql(State(catalog): State<Catalog>, body: Bytes) -> ApiResult<Json<SqlResponse>> {
+async fn run_sql(
+    State(catalog): State<Catalog>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Response> {
     let request: SqlRequest = parse_body(&body)?;
     if request.sql.trim().is_empty() {
         return Err(ApiError::invalid_input("sql is required".into()));
     }
-    let _slot = catalog.sql_slots.try_acquire().map_err(|_| {
-        ApiError::from(Error::from(NamespaceError::Throttling {
-            message: format!(
-                "too many concurrent SQL queries (limit {}); retry shortly",
-                catalog.sql.max_concurrent
-            ),
-        }))
-    })?;
     let started = Instant::now();
-    let result = catalog
-        .namespace
-        .query_sql(&request.sql, &catalog.sql.limits)
-        .await?;
+    let namespace = catalog.namespace.clone();
+    let config = catalog.sql.clone();
+    let sql = request.sql;
+    let query =
+        catalog
+            .sql_runner
+            .start(&sql_runner::user(&headers), request.query_id, async move {
+                namespace.query_sql(&sql, &config.limits).await
+            })?;
+    let answer = query.finish().await??;
+    let result = &answer.result;
+    // Rows are serialized from the shared result; a cached one is never copied.
     Ok(Json(SqlResponse {
         tables: result
             .tables
-            .into_iter()
+            .iter()
             .map(|t| SqlTableResponse {
-                id: t.id,
+                id: t.id.clone(),
                 version: t.version,
             })
             .collect(),
         columns: result
             .columns
-            .into_iter()
+            .iter()
             .map(|c| SqlColumnResponse {
-                name: c.name,
-                data_type: c.data_type,
-                metadata: c.metadata,
+                name: c.name.clone(),
+                data_type: c.data_type.clone(),
+                metadata: c.metadata.clone(),
             })
             .collect(),
+        rows: &result.rows,
         row_count: result.rows.len(),
-        rows: result.rows,
-        truncated: result.truncated,
+        truncated: result.truncated_by.is_some(),
+        truncated_by: result.truncated_by.map(|cap| match cap {
+            Truncation::Rows => "rows",
+            Truncation::Bytes => "bytes",
+        }),
+        cached: answer.cached,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-    }))
+    })
+    .into_response())
+}
+
+/// Cancels the caller's own running query. A query on another instance, or another user's,
+/// answers TransactionNotFound (404).
+async fn cancel_sql(
+    State(catalog): State<Catalog>,
+    headers: HeaderMap,
+    Path(query_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if catalog
+        .sql_runner
+        .cancel(&sql_runner::user(&headers), &query_id)
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::from(Error::from(
+            NamespaceError::TransactionNotFound {
+                message: format!("no running query {query_id:?}"),
+            },
+        )))
+    }
 }
 
 async fn unsupported() -> ApiError {

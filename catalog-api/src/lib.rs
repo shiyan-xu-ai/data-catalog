@@ -5,6 +5,7 @@ pub mod config;
 pub mod rest;
 pub mod secrets;
 pub mod shutdown;
+pub mod sql_runner;
 pub mod webui;
 
 use std::sync::Arc;
@@ -17,24 +18,25 @@ use catalog_store::PostgresNamespace;
 use config::CatalogConfig;
 
 /// The full service: health probes, the `/v1` spec routes, the `/catalog/v1` catalog routes, and
-/// the SPA when `webui_dir` holds a build.
+/// the SPA when `webui_dir` holds a build. Fails when the runtime SQL queries run on cannot
+/// start.
 pub fn app(
     namespace: Arc<PostgresNamespace>,
     catalog: CatalogConfig,
     webui_dir: Option<&str>,
-) -> Router {
+) -> std::io::Result<Router> {
     let mut router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(readyz).with_state(namespace.clone()))
         .nest(
             "/catalog/v1",
-            rest::catalog_router(namespace.clone(), catalog),
+            rest::catalog_router(namespace.clone(), catalog)?,
         )
         .nest("/v1", rest::router(namespace));
     if let Some(ui) = webui_dir.and_then(webui::router) {
         router = router.merge(ui);
     }
-    router
+    Ok(router)
 }
 
 /// Readiness tracks database reachability; liveness (`/healthz`) is `ok` from boot.
