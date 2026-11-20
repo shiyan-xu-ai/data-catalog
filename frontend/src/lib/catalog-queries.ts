@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import {
   countTableRows,
   describeTable,
@@ -20,7 +20,7 @@ import {
   listTableVersions,
   listTables,
 } from "./api";
-import type { TableVersion } from "./schemas";
+import type { JsonArrowField, TableVersion } from "./schemas";
 import { joinId, splitId } from "./ids";
 import { createLimiter } from "./limit";
 import { enumerateNamespaces } from "./search";
@@ -150,6 +150,26 @@ export function useTableCheap(segments: readonly string[], enabled = true) {
 
 export function useTableDetail(segments: readonly string[]) {
   return useQuery({ queryKey: keys.tableDetail(joinId(segments)), queryFn: () => describeTable(segments) });
+}
+
+export interface TableColumns {
+  fields: JsonArrowField[] | undefined;
+  isLoading: boolean;
+  error: Error | null;
+}
+
+/** Schemas of the tables with the given joined ids, through the table page's detailed-describe
+ *  query (so the cache is shared) and the shared describe limiter. */
+export function useTableColumns(ids: readonly string[]): ReadonlyMap<string, TableColumns> {
+  const loaded = useQueries({
+    queries: ids.map((id) => ({
+      queryKey: keys.tableDetail(id),
+      queryFn: () => describeLimit(() => describeTable(splitId(id))),
+    })),
+    combine: (results) =>
+      results.map((r): TableColumns => ({ fields: r.data?.schema?.fields, isLoading: r.isLoading, error: r.error })),
+  });
+  return useMemo(() => new Map(ids.map((id, i) => [id, loaded[i]])), [ids, loaded]);
 }
 
 // Each version page reads one manifest per version, so pages stay small.

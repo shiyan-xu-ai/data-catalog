@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "@tanstack/react-router";
-import { FolderTree, PanelLeftClose, Search } from "lucide-react";
+import { Link, useParams, useRouterState } from "@tanstack/react-router";
+import { FolderTree, PanelLeftClose, Search, TerminalSquare } from "lucide-react";
 import { ID_DELIMITER, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
 import { cn } from "@/lib/utils";
@@ -11,24 +11,36 @@ import { PreferenceControls } from "@/components/preference-controls";
 /** Joined id of the current namespace or table page and the namespace chain to expand. */
 export function useCurrentLocation() {
   const { nsId, tableId } = useParams({ strict: false });
+  const isQuery = useRouterState({ select: (s) => s.matches.some((m) => m.routeId === "/query") });
   const activeId = tableId ?? nsId ?? null;
   const segments = activeId ? splitId(activeId) : [];
-  return { activeId, segments, isTable: tableId != null };
+  return { activeId, segments, isTable: tableId != null, isQuery };
 }
 
 export function AppSidebar({
   className,
   onNavigate,
   collapsible = false,
+  rail = false,
 }: {
   className?: string;
   onNavigate?: () => void;
   /** Desktop only: allow collapsing to an icon rail (persisted). */
   collapsible?: boolean;
+  /** Desktop only: show the icon rail on the current page until the user expands it. */
+  rail?: boolean;
 }) {
-  const { activeId, segments, isTable } = useCurrentLocation();
-  const [storedCollapsed, setCollapsed] = useStoredState("nav-collapsed", false);
-  const collapsed = collapsible && storedCollapsed;
+  const { activeId, segments, isTable, isQuery } = useCurrentLocation();
+  const [storedCollapsed, setStoredCollapsed] = useStoredState("nav-collapsed", false);
+  // On a page with `rail`, the nav shows as its rail until the user expands it there. That
+  // choice lives only until they leave the page and never touches the stored preference.
+  const [railOpened, setRailOpened] = useState(false);
+  useEffect(() => {
+    if (!rail) setRailOpened(false);
+  }, [rail]);
+  const collapsed = collapsible && (rail ? !railOpened : storedCollapsed);
+  const expand = () => (rail ? setRailOpened(true) : setStoredCollapsed(false));
+  const collapse = () => (rail ? setRailOpened(false) : setStoredCollapsed(true));
   // Set when the rail's search button (or ⌘K) expands the nav, so the search box takes focus.
   const [focusSearch, setFocusSearch] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -55,7 +67,7 @@ export function AppSidebar({
 
   function expandToSearch() {
     setFocusSearch(true);
-    setCollapsed(false);
+    expand();
   }
 
   // While collapsed the search box is not mounted, so the rail handles its shortcut.
@@ -78,7 +90,7 @@ export function AppSidebar({
     // controls stop the click so they only change their setting.
     return (
       <aside
-        onClick={() => setCollapsed(false)}
+        onClick={expand}
         title="Expand navigation"
         className={cn("flex h-full w-14 shrink-0 cursor-pointer flex-col items-center border-r bg-sidebar hover:bg-accent/40", className)}
       >
@@ -94,6 +106,18 @@ export function AppSidebar({
           </button>
           <Link to="/namespaces" className={railButton} aria-label="Namespaces" title="Namespaces">
             <FolderTree className="h-4 w-4" />
+          </Link>
+          {/* The click must not also expand the rail: elsewhere that would clear the stored
+              collapsed preference just to open a page that shows the rail regardless. */}
+          <Link
+            to="/query"
+            className={cn(railButton, isQuery && "bg-accent text-accent-foreground")}
+            aria-label="Query"
+            aria-current={isQuery ? "page" : undefined}
+            title="Query"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <TerminalSquare className="h-4 w-4" />
           </Link>
         </div>
         <div
@@ -120,7 +144,7 @@ export function AppSidebar({
         {collapsible && (
           <button
             type="button"
-            onClick={() => setCollapsed(true)}
+            onClick={collapse}
             aria-label="Collapse navigation"
             title="Collapse navigation"
             className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -135,6 +159,20 @@ export function AppSidebar({
           autoFocus={focusSearch}
           onFocusHandled={() => setFocusSearch(false)}
         />
+      </div>
+      <div className="shrink-0 px-2 pb-1">
+        <Link
+          to="/query"
+          onClick={onNavigate}
+          aria-current={isQuery ? "page" : undefined}
+          className={cn(
+            "flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-foreground/80 hover:bg-accent hover:text-accent-foreground",
+            isQuery && "bg-accent text-accent-foreground",
+          )}
+        >
+          <TerminalSquare className="h-4 w-4 text-muted-foreground" />
+          Query
+        </Link>
       </div>
       <div className="flex items-center justify-between px-4 pt-1 pb-1.5">
         <Link

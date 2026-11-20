@@ -292,20 +292,9 @@ export function refreshTable(table: readonly string[]): Promise<RefreshTableResp
   return request("POST", `/catalog/v1/table/${idPathSegment(table)}/refresh`, refreshTableResponseSchema);
 }
 
-/** Catalog route: run one read-only SQL query. The plain table name reads `version` (the current
- *  when omitted). Aborting `signal` only stops waiting; the server finishes or times out on its
- *  own. */
-export function runSql(
-  table: readonly string[],
-  sql: string,
-  version: number | null,
-  signal?: AbortSignal,
-): Promise<SqlResponse> {
-  return request(
-    "POST",
-    `/catalog/v1/table/${idPathSegment(table)}/sql`,
-    sqlResponseSchema,
-    version == null ? { sql } : { sql, version },
-    signal,
-  );
+/** Catalog route: run one read-only SQL query over any registered tables, each named by its full
+ *  quoted catalog path (`"a"."b"."events"`, or `"a"."b"."events@v12"` for a version). Aborting
+ *  `signal` only stops waiting; the server finishes or times out on its own. */
+export function runSql(sql: string, signal?: AbortSignal): Promise<SqlResponse> {
+  return request("POST", "/catalog/v1/sql", sqlResponseSchema, { sql }, signal);
 }

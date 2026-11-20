@@ -1,12 +1,17 @@
-import { useState } from "react";
-import { Outlet, Link, createRootRouteWithContext } from "@tanstack/react-router";
+import { Suspense, lazy, useState } from "react";
+import { Outlet, Link, createRootRouteWithContext, useSearch } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
 import { ChevronRight, Menu } from "lucide-react";
 import { joinId } from "@/lib/ids";
+import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppSidebar, useCurrentLocation } from "@/components/app-sidebar";
+
+// The editor (CodeMirror) is the heaviest part of the UI; load it when the Query page first opens.
+const QueryPage = lazy(() => import("@/components/query/query-page").then((m) => ({ default: m.QueryPage })));
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -18,7 +23,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 
 /** `Catalog / a / b / table` trail; every namespace prefix links to its page. */
 function Breadcrumb() {
-  const { segments, isTable } = useCurrentLocation();
+  const { segments, isTable, isQuery } = useCurrentLocation();
   return (
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
       <Link to="/namespaces" className="shrink-0 hover:text-foreground">
@@ -46,7 +51,7 @@ function Breadcrumb() {
       {segments.length === 0 && !isTable && (
         <>
           <ChevronRight className="h-3.5 w-3.5 shrink-0 opacity-60" />
-          <span className="font-medium text-foreground" aria-current="page">Namespaces</span>
+          <span className="font-medium text-foreground" aria-current="page">{isQuery ? "Query" : "Namespaces"}</span>
         </>
       )}
     </nav>
@@ -55,10 +60,16 @@ function Breadcrumb() {
 
 function RootComponent() {
   const [mobileNav, setMobileNav] = useState(false);
+  const { isQuery } = useCurrentLocation();
+  const { table } = useSearch({ strict: false });
+  // The Query page stays mounted, hidden, once visited, so its tabs, results, and running queries
+  // survive a visit to another page.
+  const [queryVisited, setQueryVisited] = useState(isQuery);
+  if (isQuery && !queryVisited) setQueryVisited(true);
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-screen overflow-hidden bg-background">
-        <AppSidebar className="hidden md:flex" collapsible />
+        <AppSidebar className="hidden md:flex" collapsible rail={isQuery} />
         {mobileNav && (
           <div className="fixed inset-0 z-50 flex md:hidden">
             <AppSidebar className="shadow-xl" onNavigate={() => setMobileNav(false)} />
@@ -83,10 +94,18 @@ function RootComponent() {
             </Button>
             <Breadcrumb />
           </header>
-          <main className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-[1600px] px-4 py-6 md:px-8">
+          {/* The Query page fills the main region and scrolls inside its own panes. */}
+          <main className={cn("min-h-0 flex-1", isQuery ? "overflow-hidden" : "overflow-y-auto")}>
+            <div className={cn("mx-auto w-full max-w-[1600px] px-4 py-6 md:px-8", isQuery && "hidden")}>
               <Outlet />
             </div>
+            {queryVisited && (
+              <div className={cn("h-full", !isQuery && "hidden")}>
+                <Suspense fallback={<Skeleton className="h-full w-full rounded-none" />}>
+                  <QueryPage active={isQuery} table={isQuery ? table : undefined} />
+                </Suspense>
+              </div>
+            )}
           </main>
         </div>
         <Toaster />

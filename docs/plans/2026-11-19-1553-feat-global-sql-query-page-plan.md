@@ -115,7 +115,7 @@ flowchart TB
 
 - A cap on tables per query: the time, memory, and concurrency limits already bound the cost, and a cap would narrow R3. Evidence to change the call: a single query that exhausts instance memory despite the pool limit.
 - Persisting open tabs across a page reload: history already keeps recent query text, and tab text was never persisted before.
-- A redirect for old `?tab=sql` links: the route's search validation already drops an unknown tab and opens Overview (`frontend/src/routes/tables.$tableId.tsx`).
+- A redirect for old `?tab=sql` links: the table route's search validation drops an unknown tab value and opens Overview (`frontend/src/routes/tables.$tableId.tsx`).
 - A cap on open query tabs: no demonstrated harm at the default 1,000-row result cap, and users close tabs. Evidence to change the call: reported sluggishness with many tabs holding large results.
 
 ### Dependencies / Assumptions
@@ -262,7 +262,7 @@ flowchart TB
   3. `QueryPane` is the old panel minus the version picker and per-table props: editor with Run, Cancel, a Clear button shown when text is non-empty, collapse, resize, and the footer rule of KTD4. The CSV file name is `query-results.csv`. The empty-results text carries over the read-only and row-cap statement, and explains that tables are referenced by full quoted path (`"namespace"."table"`) and that `"table@v12"` reads a version.
   4. `QueryPage` renders one `QueryPane` for now (U5 adds tabs). The root renders it once visited and hides it off `/query`, giving that route a full-height, non-scrolling main region without the centered padded container. On `/query` the breadcrumb reads `Catalog / Query` with Query as `aria-current="page"`. `/query` itself renders nothing.
   5. Add a Query entry to the expanded sidebar and to the rail, styled active with `aria-current="page"` on `/query`, and show the rail on `/query` per KTD8.
-  6. Remove the `sql` tab, its lazy import, icon, `blobColumns` memo, and the `versions` and `currentVersion` props it alone used from the table route, and add the "Query this table" action beside the table name, linking to `/query?table=<joined id>`.
+  6. Remove the `sql` tab, its lazy import, icon, `blobColumns` memo, and the `versions` and `currentVersion` props it alone used from the table route, and add the "Query this table" action beside the table name, linking to `/query?table=<joined id>`. Make the route's search validation set an unknown `tab` explicitly unset, so a stale `?tab=sql` opens Overview instead of leaking through from the parent search.
   7. Delete `sql-panel.tsx` once nothing imports it.
 - **Execution note:** Move the result components with `git mv` plus edits so review sees them as moved, not rewritten.
 - **Patterns to follow:** keep-alive and `ActiveContext` in `frontend/src/routes/tables.$tableId.tsx`; `useStoredState("nav-collapsed", …)` in `frontend/src/components/app-sidebar.tsx`.

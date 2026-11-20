@@ -1,5 +1,5 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   BarChart3,
   GitCommitVertical,
@@ -25,8 +25,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { displayName, splitId } from "@/lib/ids";
 import { ErrorCode } from "@/lib/schemas";
-import { blobColumnNames } from "@/lib/sql";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/empty-state";
 import { LanceIcon } from "@/components/lance-icon";
@@ -38,16 +37,15 @@ import { SchemaTab } from "@/components/table/schema-tab";
 import { TimelineTab } from "@/components/table/timeline-tab";
 import { VersionsTab } from "@/components/table/versions-tab";
 
-// The editor (CodeMirror) is the heaviest part of the page; load it when the SQL tab first opens.
-const SqlPanel = lazy(() => import("@/components/table/sql-panel").then((m) => ({ default: m.SqlPanel })));
-
-const TABS = ["overview", "properties", "timeline", "versions", "schema", "indices", "sql"] as const;
+const TABS = ["overview", "properties", "timeline", "versions", "schema", "indices"] as const;
 type Tab = (typeof TABS)[number];
-const TAB_LABEL: Partial<Record<Tab, string>> = { sql: "SQL" };
 
 export const Route = createFileRoute("/tables/$tableId")({
-  validateSearch: (search: Record<string, unknown>): { tab?: Tab } =>
-    TABS.includes(search.tab as Tab) && search.tab !== "overview" ? { tab: search.tab as Tab } : {},
+  // An unset `tab` is explicit so a stale value (a removed tab) does not leak through from the
+  // unvalidated parent search.
+  validateSearch: (search: Record<string, unknown>): { tab?: Tab } => ({
+    tab: TABS.includes(search.tab as Tab) && search.tab !== "overview" ? (search.tab as Tab) : undefined,
+  }),
   component: RouteComponent,
 });
 
@@ -57,7 +55,7 @@ const MAX_KEPT_TABLES = 8;
 function RouteComponent() {
   const { tableId } = Route.useParams();
   // Pages stay mounted, hidden, once visited, so each table keeps its tab state (selected rows,
-  // SQL query and results, expansion, paging) while another table is on screen. `order` holds
+  // expansion, paging) while another table is on screen. `order` holds
   // recency; `ids` keeps insertion order so React never moves a page's DOM, which would reset
   // its scroll positions.
   const [kept, setKept] = useState({ ids: [tableId], order: [tableId] });
@@ -113,8 +111,6 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
   const stats = useTableStats(segments, settled);
   const measures = useFragmentMeasures(segments);
   const rowCount = useTableRowCount(segments);
-  const columnNames = useMemo(() => detail.data?.schema?.fields.map((f) => f.name) ?? [], [detail.data]);
-  const blobColumns = useMemo(() => blobColumnNames(detail.data?.schema?.fields ?? []), [detail.data]);
 
   if (cheap.error instanceof ApiError && cheap.error.code === ErrorCode.TableNotFound) {
     return (
@@ -132,7 +128,6 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
     versions: History,
     schema: TableProperties,
     indices: ListTree,
-    sql: TerminalSquare,
   };
   const counts: Partial<Record<Tab, number | undefined>> = {
     schema: detail.data?.schema?.fields.length,
@@ -160,20 +155,6 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
     versions: <VersionsTab segments={segments} versions={versions} currentVersion={detail.data?.version} />,
     schema: <SchemaTab segments={segments} detail={detail} />,
     indices: <IndicesTab indices={indices} />,
-    sql: (
-      // `overflow-clip` rounds the corners without becoming the toolbar's sticky scroll box.
-      <div className="overflow-clip rounded-lg border bg-card shadow-xs">
-        <Suspense fallback={<Skeleton className="h-96 w-full rounded-none" />}>
-          <SqlPanel
-            segments={segments}
-            columns={columnNames}
-            blobColumns={blobColumns}
-            versions={versions}
-            currentVersion={detail.data?.version}
-          />
-        </Suspense>
-      </div>
-    ),
   };
 
   return (
@@ -181,6 +162,12 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
       <div className="flex min-w-0 flex-wrap items-center gap-3">
         <LanceIcon className="h-9 w-9 shrink-0 rounded-lg" />
         <h1 className="min-w-0 truncate font-mono text-xl font-semibold tracking-tight">{name}</h1>
+        <Button asChild variant="outline" size="sm" className="ml-auto">
+          <Link to="/query" search={{ table: tableId }}>
+            <TerminalSquare />
+            Query this table
+          </Link>
+        </Button>
       </div>
 
       {cheap.error && <ErrorState message={cheap.error.message} />}
@@ -191,7 +178,7 @@ function TablePage({ tableId, active }: { tableId: string; active: boolean }) {
             const Icon = tabIcon[t];
             return (
               <TabsTrigger key={t} value={t} className="capitalize">
-                <Icon /> {TAB_LABEL[t] ?? t}
+                <Icon /> {t}
                 {counts[t] != null && (
                   <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground tabular-nums">
                     {formatCount(counts[t])}

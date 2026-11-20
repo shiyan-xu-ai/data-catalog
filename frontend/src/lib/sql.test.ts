@@ -1,27 +1,43 @@
 import { describe, expect, it } from "vitest";
-import {
-  blobColumnNames,
-  defaultQuery,
-  formatCell,
-  isBlobColumn,
-  quoteIdent,
-  resultsToCsv,
-  shortTypeName,
-  versionRef,
-  videoSource,
-} from "./sql";
+import { completionSchema, findTablePaths, formatCell, isBlobColumn, quoteIdent, quotePath, resultsToCsv, sampleQuery, shortTypeName, videoSource } from "./sql";
 
-describe("SQL pre-fill", () => {
-  it("always double-quotes the table name and escapes embedded quotes", () => {
+describe("table paths in SQL", () => {
+  it("always double-quotes an identifier and escapes embedded quotes", () => {
     expect(quoteIdent("events")).toBe('"events"');
     expect(quoteIdent("2026-11-07_06-46-14")).toBe('"2026-11-07_06-46-14"');
     expect(quoteIdent('we"ird')).toBe('"we""ird"');
-    expect(defaultQuery("2026-11-07_06-46-14")).toBe('SELECT * FROM "2026-11-07_06-46-14" LIMIT 20');
-    expect(defaultQuery("MixedCase")).toBe('SELECT * FROM "MixedCase" LIMIT 20');
   });
-  it("names a specific version as one quoted identifier", () => {
-    expect(versionRef("2026-11-07_06-46-14", 12)).toBe('"2026-11-07_06-46-14@v12"');
-    expect(versionRef('we"ird', 3)).toBe('"we""ird@v3"');
+  it("quotes and escapes every segment of a path", () => {
+    expect(quotePath(["a", "b", "events"])).toBe('"a"."b"."events"');
+    expect(quotePath(['we"ird', "MixedCase"])).toBe('"we""ird"."MixedCase"');
+  });
+  it("samples a table by its full path", () => {
+    expect(sampleQuery(["a", "b", "events"])).toBe('SELECT * FROM "a"."b"."events" LIMIT 20');
+    expect(sampleQuery(["ns", "2026-11-07_06-46-14"])).toBe('SELECT * FROM "ns"."2026-11-07_06-46-14" LIMIT 20');
+  });
+});
+
+describe("findTablePaths", () => {
+  const tables = [
+    ["a", "b", "events"],
+    ["a", "b", "users"],
+    ["a", "c", "logs"],
+    ["we\"ird", "t"],
+  ];
+  it("returns each known table named in the text, in order of first appearance", () => {
+    const sql = 'SELECT * FROM "a"."b"."users" u JOIN "a"."b"."events" e ON e.id = u.id JOIN "a"."b"."users" x ON true';
+    expect(findTablePaths(sql, tables)).toEqual([
+      ["a", "b", "users"],
+      ["a", "b", "events"],
+    ]);
+  });
+  it("ignores quoted paths that are not known tables and one-part quoted names", () => {
+    expect(findTablePaths('SELECT "id", "a"."b"."missing" FROM "a"."b"."events"', tables)).toEqual([["a", "b", "events"]]);
+    expect(findTablePaths('SELECT "events"', tables)).toEqual([]);
+  });
+  it("reads a version pin on the leaf as that table, and unescapes quotes in segments", () => {
+    expect(findTablePaths('SELECT * FROM "a"."c"."logs@v12"', tables)).toEqual([["a", "c", "logs"]]);
+    expect(findTablePaths('SELECT * FROM "we""ird"."t"', tables)).toEqual([["we\"ird", "t"]]);
   });
 });
 
@@ -88,29 +104,15 @@ describe("videoSource", () => {
 });
 
 describe("blob columns", () => {
-  const child = (name: string, type: string) => ({ name, type: { type }, nullable: true });
-  const logical = (...children: ReturnType<typeof child>[]) => ({ type: "struct", fields: children });
-  const tag = { "ARROW:extension:name": "lance.blob.v2" };
-  const minimal = logical(child("data", "large_binary"), child("uri", "utf8"));
-  const complete = logical(child("data", "large_binary"), child("uri", "utf8"), child("position", "uint64"), child("size", "uint64"));
-  it("are the table fields tagged lance.blob.v2 with the blob v2 struct children", () => {
-    expect(
-      blobColumnNames([
-        { name: "media", type: complete, nullable: true, metadata: tag },
-        { name: "thumb", type: minimal, nullable: true, metadata: tag },
-        { name: "odd", type: logical(child("uri", "utf8"), child("data", "large_binary")), nullable: true, metadata: tag },
-        { name: "meta", type: complete, nullable: true, metadata: { "ARROW:extension:name": "arrow.json" } },
-        { name: "id", type: { type: "int64" }, nullable: false },
-      ]),
-    ).toEqual(new Set(["media", "thumb"]));
+  const descriptorType =
+    'Struct("kind": non-null UInt8, "position": non-null UInt64, "size": non-null UInt64, "blob_id": non-null UInt32, "blob_uri": non-null Utf8)';
+  it("in results are marked by descriptor metadata (aliases too) and typed as the descriptor", () => {
+    expect(isBlobColumn({ name: "clip", type: descriptorType, metadata: { "lance-encoding:blob": "true" } })).toBe(true);
+    expect(isBlobColumn({ name: "media", type: "Utf8", metadata: { "lance-encoding:blob": "true" } })).toBe(false);
   });
-  it("in results are marked by descriptor metadata (aliases too) or a table blob name, and typed as the descriptor", () => {
-    const descriptorType =
-      'Struct("kind": non-null UInt8, "position": non-null UInt64, "size": non-null UInt64, "blob_id": non-null UInt32, "blob_uri": non-null Utf8)';
-    expect(isBlobColumn({ name: "clip", type: descriptorType, metadata: { "lance-encoding:blob": "true" } }, new Set())).toBe(true);
-    expect(isBlobColumn({ name: "media", type: descriptorType }, new Set(["media"]))).toBe(true);
-    expect(isBlobColumn({ name: "media", type: "Utf8" }, new Set(["media"]))).toBe(false);
-    expect(isBlobColumn({ name: "uri", type: descriptorType, metadata: null }, new Set(["media"]))).toBe(false);
+  it("are not recognized by column name alone", () => {
+    expect(isBlobColumn({ name: "media", type: descriptorType })).toBe(false);
+    expect(isBlobColumn({ name: "media", type: descriptorType, metadata: null })).toBe(false);
   });
 });
 
@@ -149,5 +151,22 @@ describe("videoSource for blob descriptors", () => {
     expect(videoSource(external(), false)).toBeNull();
     expect(videoSource("s3://bucket/a.mp4", true)).toBeNull();
     expect(videoSource("s3://bucket/a.mp4")).toMatchObject({ url: "s3://bucket/a.mp4" });
+  });
+});
+
+describe("completionSchema", () => {
+  const tables = [
+    ["a", "b", "events"],
+    ["a", "b", "users"],
+    ["a", "logs"],
+  ];
+  it("nests tables under their namespaces and lists the columns that are known", () => {
+    const schema = completionSchema(tables, new Map([["a$b$events", ["id", "ts"]]]));
+    expect(schema).toEqual({ a: { b: { events: ["id", "ts"], users: [] }, logs: [] } });
+  });
+  it("treats segments that look like object internals as ordinary names", () => {
+    const schema = completionSchema([["constructor", "__proto__"]], new Map()) as Record<string, Record<string, string[]>>;
+    expect(Object.keys(schema)).toEqual(["constructor"]);
+    expect(Object.keys(schema.constructor)).toEqual(["__proto__"]);
   });
 });

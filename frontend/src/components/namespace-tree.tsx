@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronRight, Folder, FolderOpen, Loader2, Table2 } from "lucide-react";
 import { useChildNamespaces, useNamespaceTables, type PagedNames } from "@/lib/catalog-queries";
@@ -11,13 +11,16 @@ interface TreeState {
   /** Joined id of the current namespace or table page, if any. */
   activeId: string | null;
   onNavigate?: () => void;
+  /** Renders a table row in place of the link to its page. A tree with this set picks tables:
+   *  namespace rows only expand and collapse. */
+  renderTable?: (segments: string[], depth: number) => React.ReactNode;
 }
 
-const rowClass =
+export const rowClass =
   "group flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md pr-2 text-[13px] text-foreground/80 hover:bg-accent hover:text-accent-foreground";
 const activeClass = "bg-accent font-medium text-accent-foreground";
 // Leaves and status rows align their icon with sibling namespaces' folder icon (past the chevron).
-const leafIndent = (depth: number) => ({ paddingLeft: `${depth * 12 + 4 + 26}px` });
+export const leafIndent = (depth: number) => ({ paddingLeft: `${depth * 12 + 4 + 26}px` });
 
 function useScrollIntoView(active: boolean) {
   const ref = useRef<HTMLAnchorElement>(null);
@@ -62,7 +65,7 @@ function LoadMore({ query, depth }: { query: PagedNames; depth: number }) {
   );
 }
 
-function StatusRow({ depth, children, error }: { depth: number; children: React.ReactNode; error?: boolean }) {
+export function StatusRow({ depth, children, error }: { depth: number; children: React.ReactNode; error?: boolean }) {
   return (
     <div
       className={cn("flex h-7 items-center gap-1.5 text-xs", error ? "text-destructive" : "text-muted-foreground")}
@@ -105,9 +108,13 @@ function TreeChildren({ segments, depth, state }: { segments: string[]; depth: n
         <TreeNamespace key={`n:${name}`} segments={[...segments, name]} depth={depth} state={state} />
       ))}
       <LoadMore query={namespaces} depth={depth} />
-      {tables.names.map((name) => (
-        <TableLeaf key={`t:${name}`} segments={[...segments, name]} depth={depth} state={state} />
-      ))}
+      {tables.names.map((name) =>
+        state.renderTable ? (
+          <Fragment key={`t:${name}`}>{state.renderTable([...segments, name], depth)}</Fragment>
+        ) : (
+          <TableLeaf key={`t:${name}`} segments={[...segments, name]} depth={depth} state={state} />
+        ),
+      )}
       <LoadMore query={tables} depth={depth} />
     </>
   );
@@ -122,7 +129,7 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
   return (
     <>
       {/* A click anywhere on the row toggles it; the chevron only shows the state, and the name
-          still opens the namespace page. */}
+          opens the namespace page (unless the tree picks tables, where it only toggles). */}
       <div
         onClick={() => state.toggle(id)}
         className={cn(rowClass, "cursor-pointer", active && activeClass)}
@@ -131,18 +138,30 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
         <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground">
           <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
         </span>
-        <Link
-          ref={ref}
-          to="/namespaces/$nsId"
-          params={{ nsId: id }}
-          onClick={state.onNavigate}
-          aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-1.5"
-          title={segments[segments.length - 1]}
-        >
-          <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="truncate">{segments[segments.length - 1]}</span>
-        </Link>
+        {state.renderTable ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+            title={segments[segments.length - 1]}
+          >
+            <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate">{segments[segments.length - 1]}</span>
+          </button>
+        ) : (
+          <Link
+            ref={ref}
+            to="/namespaces/$nsId"
+            params={{ nsId: id }}
+            onClick={state.onNavigate}
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-center gap-1.5"
+            title={segments[segments.length - 1]}
+          >
+            <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate">{segments[segments.length - 1]}</span>
+          </Link>
+        )}
       </div>
       {open && <TreeChildren segments={segments} depth={depth + 1} state={state} />}
     </>
