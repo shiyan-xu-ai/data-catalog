@@ -3,12 +3,11 @@ import { Link, useParams, useRouterState } from "@tanstack/react-router";
 import { FolderTree, PanelLeftClose, Search, TerminalSquare } from "lucide-react";
 import { ID_DELIMITER, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
-import { cn } from "@/lib/utils";
+import { cn, toggled } from "@/lib/utils";
 import { GlobalSearch } from "@/components/global-search";
 import { NamespaceTree } from "@/components/namespace-tree";
 import { PreferenceControls } from "@/components/preference-controls";
 
-/** Joined id of the current namespace or table page and the namespace chain to expand. */
 export function useCurrentLocation() {
   const { nsId, tableId } = useParams({ strict: false });
   const isQuery = useRouterState({ select: (s) => s.matches.some((m) => m.routeId === "/query") });
@@ -58,11 +57,7 @@ export function AppSidebar({
   }, [activeId]);
 
   function toggle(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
+    setExpanded((prev) => toggled(prev, id));
   }
 
   function expandToSearch() {

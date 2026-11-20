@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 interface TreeState {
   expanded: ReadonlySet<string>;
   toggle: (id: string) => void;
-  /** Joined id of the current namespace or table page, if any. */
   activeId: string | null;
   onNavigate?: () => void;
   /** Renders a table row in place of the link to its page. A tree with this set picks tables:
@@ -76,7 +75,6 @@ export function StatusRow({ depth, children, error }: { depth: number; children:
   );
 }
 
-/** Children of an expanded namespace: child namespaces first, then its tables as leaves. */
 function TreeChildren({ segments, depth, state }: { segments: string[]; depth: number; state: TreeState }) {
   const namespaces = useChildNamespaces(segments);
   const tables = useNamespaceTables(segments);
@@ -126,6 +124,13 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
   const active = state.activeId === id;
   const ref = useScrollIntoView(active);
   const FolderIcon = open ? FolderOpen : Folder;
+  const name = segments[segments.length - 1];
+  const label = (
+    <>
+      <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate">{name}</span>
+    </>
+  );
   return (
     <>
       {/* A click anywhere on the row toggles it; the chevron only shows the state, and the name
@@ -143,10 +148,9 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
             type="button"
             aria-expanded={open}
             className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-            title={segments[segments.length - 1]}
+            title={name}
           >
-            <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <span className="truncate">{segments[segments.length - 1]}</span>
+            {label}
           </button>
         ) : (
           <Link
@@ -156,10 +160,9 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
             onClick={state.onNavigate}
             aria-expanded={open}
             className="flex min-w-0 flex-1 items-center gap-1.5"
-            title={segments[segments.length - 1]}
+            title={name}
           >
-            <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <span className="truncate">{segments[segments.length - 1]}</span>
+            {label}
           </Link>
         )}
       </div>
@@ -168,7 +171,6 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
   );
 }
 
-/** Lazily expanding namespace tree rooted at the catalog root. */
 export function NamespaceTree(props: TreeState) {
   return (
     <nav aria-label="Namespaces" className="flex flex-col gap-px">

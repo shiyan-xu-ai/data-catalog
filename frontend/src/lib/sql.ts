@@ -11,12 +11,10 @@ export function quoteIdent(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-/** A table's full catalog path as SQL names it: every segment double-quoted, joined by dots. */
 export function quotePath(segments: readonly string[]): string {
   return segments.map(quoteIdent).join(".");
 }
 
-/** The query a new tab for `segments` opens with: a small sample of the table. */
 export function sampleQuery(segments: readonly string[]): string {
   return `SELECT * FROM ${quotePath(segments)} LIMIT 20`;
 }

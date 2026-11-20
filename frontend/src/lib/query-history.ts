@@ -1,6 +1,5 @@
 export interface HistoryEntry {
   sql: string;
-  /** Run time, epoch milliseconds. */
   at: number;
 }
 
@@ -16,7 +15,6 @@ export function addHistory(entries: readonly HistoryEntry[], sql: string, at: nu
 const isEntry = (e: unknown): e is HistoryEntry =>
   typeof e === "object" && e !== null && typeof (e as HistoryEntry).sql === "string" && typeof (e as HistoryEntry).at === "number";
 
-/** The saved history; missing, unreadable, or malformed data loads as empty. */
 export function loadHistory(): HistoryEntry[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(KEY) ?? "[]");

@@ -1,7 +1,6 @@
 import { useDateTimeFormatter } from "@/lib/preferences";
 import type { HistoryEntry } from "@/lib/query-history";
 
-/** The first non-empty line of a query, for a one-line row. */
 const firstLine = (sql: string) => sql.split("\n").find((line) => line.trim())?.trim() ?? "";
 
 /** Past runs, newest first. Selecting one hands its text to `onSelect`; it does not run it. */

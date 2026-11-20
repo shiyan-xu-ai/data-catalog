@@ -7,7 +7,6 @@ export interface QueryTab {
 export interface TabsState {
   tabs: QueryTab[];
   activeId: number;
-  /** The number the next opened tab takes. */
   nextId: number;
 }
 
@@ -19,7 +18,6 @@ export type TabsAction =
 
 export const tabTitle = (tab: Pick<QueryTab, "id">) => `Query ${tab.id}`;
 
-/** One tab holding `text`. */
 export function initialTabs(text = ""): TabsState {
   return { tabs: [{ id: 1, text }], activeId: 1, nextId: 2 };
 }
@@ -36,7 +34,7 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
       const index = state.tabs.findIndex((t) => t.id === action.id);
       if (index < 0) return state;
       const tabs = state.tabs.filter((t) => t.id !== action.id);
-      if (tabs.length === 0) return { tabs: [{ id: state.nextId, text: "" }], activeId: state.nextId, nextId: state.nextId + 1 };
+      if (tabs.length === 0) return tabsReducer({ ...state, tabs: [] }, { type: "open" });
       const activeId = state.activeId === action.id ? tabs[Math.min(index, tabs.length - 1)].id : state.activeId;
       return { ...state, tabs, activeId };
     }

@@ -3,6 +3,7 @@ import type { SQLNamespace } from "@codemirror/lang-sql";
 import { Download, Eraser, Loader2, PanelTopClose, PanelTopOpen, Play, Square } from "lucide-react";
 import { runSql } from "@/lib/api";
 import { formatCount } from "@/lib/format";
+import { dragPointer } from "@/lib/drag-pointer";
 import { displayName } from "@/lib/ids";
 import type { SqlResponse } from "@/lib/schemas";
 import { resultsToCsv } from "@/lib/sql";
@@ -36,8 +37,6 @@ function useElementWidth(ref: React.RefObject<HTMLElement | null>): number {
   return width;
 }
 
-/** The `<n> tables` footer item; `v<N>` when exactly one table was read. The tooltip lists each
- *  table read with its version. */
 function TablesRead({ tables }: { tables: SqlResponse["tables"] }) {
   if (tables.length === 0) return null;
   const list = tables.map((t) => `${displayName(t.id)}@v${t.version}`).join("\n");
@@ -56,12 +55,10 @@ export function QueryPane({
   onStatus,
   editorHandle,
 }: {
-  /** The tab this pane belongs to, passed back with its status. */
   id: number;
   text: string;
   onTextChange: (text: string) => void;
   schema: SQLNamespace;
-  /** Called with the query text just before each run's request starts. */
   onRun: (sql: string) => void;
   onStatus: (id: number, status: RunStatus) => void;
   editorHandle?: React.Ref<SqlEditorHandle>;
@@ -86,12 +83,11 @@ export function QueryPane({
     onStatus(id, status);
   }, [id, status, onStatus]);
 
-  // Tick a live elapsed counter while a query is in flight.
   useEffect(() => {
     if (startedAt == null) return;
     setNow(performance.now());
-    const id = setInterval(() => setNow(performance.now()), 100);
-    return () => clearInterval(id);
+    const timer = setInterval(() => setNow(performance.now()), 100);
+    return () => clearInterval(timer);
   }, [startedAt]);
 
   useEffect(() => () => controller.current?.abort(), []);
@@ -129,26 +125,18 @@ export function QueryPane({
   }
 
   function startPaneResize(event: React.PointerEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const handle = event.currentTarget;
     const bounds = panes.current?.getBoundingClientRect();
-    if (!bounds) return;
-    handle.setPointerCapture(event.pointerId);
-    const onMove = (e: PointerEvent) => {
+    if (!bounds) {
+      event.preventDefault();
+      return;
+    }
+    dragPointer(event, (e) => {
       // Stacked, the editor's height is in viewport units; side by side, its width is a share of the panes'.
       const percent = sideBySide
         ? ((e.clientX - bounds.left) / bounds.width) * 100
         : ((e.clientY - bounds.top) / window.innerHeight) * 100;
       setEditorSize(Math.max(15, Math.min(80, percent)));
-    };
-    const onEnd = () => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onEnd);
-      handle.removeEventListener("pointercancel", onEnd);
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onEnd);
-    handle.addEventListener("pointercancel", onEnd);
+    });
   }
 
   function downloadCsv() {

@@ -15,8 +15,7 @@ import { LeftPane } from "./left-pane";
 import { QueryPane, type RunStatus } from "./query-pane";
 import { QueryTabStrip } from "./query-tab-strip";
 
-// Typing in the editor loads the columns of the tables it names once it pauses this long.
-const COLUMN_LOAD_DELAY_MS = 400;
+const COLUMN_LOAD_DEBOUNCE_MS = 400;
 const DESKTOP_QUERY = "(min-width: 768px)";
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -74,12 +73,10 @@ export function QueryPage({ active, table }: { active: boolean; table: string | 
   useEffect(() => saveHistory(history), [history]);
 
   const tableIds = useAllTableIds(true);
-  // Tables whose columns are wanted: expanded or inserted from the browser (`wanted`), and those
-  // the active tab's text names.
   const [wanted, setWanted] = useState<readonly string[]>([]);
   const want = useCallback((id: string) => setWanted((w) => (w.includes(id) ? w : [...w, id])), []);
   const activeText = tabs.find((t) => t.id === activeId)?.text ?? "";
-  const settledText = useDebounced(activeText, COLUMN_LOAD_DELAY_MS);
+  const settledText = useDebounced(activeText, COLUMN_LOAD_DEBOUNCE_MS);
   const named = useMemo(() => findTablePaths(settledText, tableIds.data ?? []).map(joinId), [settledText, tableIds.data]);
   const columnIds = useMemo(() => [...new Set([...wanted, ...named])], [wanted, named]);
   const columns = useTableColumns(columnIds);

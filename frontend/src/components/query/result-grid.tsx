@@ -1,10 +1,11 @@
-import { useMemo, useRef, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, presignMedia } from "@/lib/api";
 import { formatBytes, formatCount } from "@/lib/format";
 import type { ByteRange } from "@/lib/hevc-player";
 import { MAX_CLIP_BYTES, clipFileName, fetchClip } from "@/lib/media";
+import { dragPointer } from "@/lib/drag-pointer";
 import { ErrorCode, type SqlResponse } from "@/lib/schemas";
 import { formatCell, isBlobColumn, shortTypeName, videoSource, type CellKind, type VideoSource } from "@/lib/sql";
 import { cn } from "@/lib/utils";
@@ -47,7 +48,6 @@ function copyText(value: unknown): string {
 
 type RowView = "values" | "playback";
 
-/** Saves the clip's byte range to a file. */
 function SaveClip({ url, source }: { url: string; source: VideoSource & { range: ByteRange } }) {
   const [state, setState] = useState<"idle" | "saving" | "failed">("idle");
   const tooBig = source.range.length != null && source.range.length > MAX_CLIP_BYTES;
@@ -222,7 +222,7 @@ function RowPane({
  *  (`data-pane-scroll`) while the rows scroll. Wide results scroll sideways in the body; the
  *  header, a separate table with the same column widths, follows that scroll. Selecting a row
  *  opens its values beside the grid when `inlinePane`, and over the page otherwise. */
-export function ResultGrid({ result, inlinePane }: { result: SqlResponse; inlinePane: boolean }) {
+export const ResultGrid = memo(function ResultGrid({ result, inlinePane }: { result: SqlResponse; inlinePane: boolean }) {
   const [widths, setWidths] = useState<number[]>([]);
   const head = useRef<HTMLDivElement>(null);
   const indices = useMemo(() => result.rows.map((_, i) => i), [result]);
@@ -239,20 +239,9 @@ export function ResultGrid({ result, inlinePane }: { result: SqlResponse; inline
   }
 
   function startColumnResize(event: React.PointerEvent<HTMLDivElement>, index: number) {
-    event.preventDefault();
-    const handle = event.currentTarget;
     const startX = event.clientX;
     const startWidth = widthAt(index);
-    handle.setPointerCapture(event.pointerId);
-    const onMove = (e: PointerEvent) => resizeColumn(index, startWidth + e.clientX - startX);
-    const onEnd = () => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onEnd);
-      handle.removeEventListener("pointercancel", onEnd);
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onEnd);
-    handle.addEventListener("pointercancel", onEnd);
+    dragPointer(event, (e) => resizeColumn(index, startWidth + e.clientX - startX));
   }
 
   if (result.columns.length === 0) {
@@ -354,4 +343,4 @@ export function ResultGrid({ result, inlinePane }: { result: SqlResponse; inline
       </div>
     </SidePaneLayout>
   );
-}
+});

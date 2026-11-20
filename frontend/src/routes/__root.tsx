@@ -21,7 +21,6 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   component: RootComponent,
 });
 
-/** `Catalog / a / b / table` trail; every namespace prefix links to its page. */
 function Breadcrumb() {
   const { segments, isTable, isQuery } = useCurrentLocation();
   return (

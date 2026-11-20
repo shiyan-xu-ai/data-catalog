@@ -156,7 +156,6 @@ pub(crate) struct OpenTable {
 /// A table opened from a catalog path in SQL.
 pub(crate) struct PathTable {
     pub(crate) id: Vec<String>,
-    /// The version the path pinned with `@v<N>`; unset for a plain path.
     pub(crate) pinned: Option<u64>,
     pub(crate) table: OpenTable,
 }

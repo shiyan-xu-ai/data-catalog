@@ -26,7 +26,6 @@ export function PaneSection({ title, children }: { title: string; children: Reac
   );
 }
 
-/** The segmented view switch under a side pane's header. */
 export function PaneTabs<V extends string>({
   views,
   value,
@@ -57,7 +56,6 @@ export function PaneTabs<V extends string>({
   );
 }
 
-/** Props spread on a selectable row of a list with a side pane. */
 export interface PaneRowProps {
   ref: (el: HTMLElement | null) => void;
   tabIndex: number;
@@ -145,7 +143,6 @@ export function SidePaneLayout({
   );
 }
 
-// Beside the list from `xl` up, over the page below it.
 const PANE_BY_VIEWPORT =
   "fixed inset-y-0 right-0 z-50 w-full max-w-[720px] border-l shadow-xl xl:sticky xl:top-[calc(var(--tabs-h,0px)+var(--pane-top))] xl:z-10 xl:max-h-[calc(var(--pane-max)-var(--tabs-h,0px))] xl:max-w-none xl:min-w-0 xl:flex-1 xl:basis-0 xl:self-start xl:rounded-lg xl:border xl:shadow-sm";
 const PANE_INLINE =
@@ -181,7 +178,6 @@ export function SidePane({
 }) {
   const ref = useRef<HTMLElement>(null);
   const [maxHeight, setMaxHeight] = useState<number>();
-  // Fit the sticky pane to its scroll area, which changes with the window.
   useEffect(() => {
     const scroller = ref.current?.closest("[data-pane-scroll], main");
     if (!scroller) return;

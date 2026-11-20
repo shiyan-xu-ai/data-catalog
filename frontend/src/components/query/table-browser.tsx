@@ -5,7 +5,7 @@ import { formatArrowTypeShort } from "@/lib/arrow";
 import { ID_DELIMITER, displayName } from "@/lib/ids";
 import { searchCatalog, type SearchEntry } from "@/lib/search";
 import { quoteIdent, quotePath } from "@/lib/sql";
-import { cn } from "@/lib/utils";
+import { cn, toggled } from "@/lib/utils";
 import { NamespaceTree, StatusRow, leafIndent, rowClass } from "@/components/namespace-tree";
 
 const MAX_MATCHES = 50;
@@ -54,7 +54,6 @@ function ColumnRows({ columns, depth, onInsert }: { columns: TableColumns | unde
   ));
 }
 
-/** A table row: the chevron lists its columns, the label inserts its quoted full path. */
 function TableRow({ segments, depth, picker, showPath }: { segments: string[]; depth: number; picker: Picker; showPath?: boolean }) {
   const id = segments.join(ID_DELIMITER);
   const name = segments[segments.length - 1];
@@ -97,7 +96,6 @@ export function TableBrowser({
 }: {
   columns: ReadonlyMap<string, TableColumns>;
   onWantColumns: (id: string) => void;
-  /** Insert `text` into the editor; `tableId` names the table whose path it is. */
   onInsert: (text: string, tableId?: string) => void;
 }) {
   const tables = useAllTableIds(true);
@@ -111,18 +109,12 @@ export function TableBrowser({
   const matches = useMemo(() => searchCatalog(entries, query, MAX_MATCHES), [entries, query]);
   const searching = query.trim().length > 0;
 
-  function toggle<T>(set: ReadonlySet<T>, value: T): Set<T> {
-    const next = new Set(set);
-    if (!next.delete(value)) next.add(value);
-    return next;
-  }
-
   const picker: Picker = {
     columns,
     open,
     toggle: (id) => {
       if (!open.has(id)) onWantColumns(id);
-      setOpen(toggle(open, id));
+      setOpen(toggled(open, id));
     },
     onInsert,
   };
@@ -163,7 +155,7 @@ export function TableBrowser({
         ) : (
           <NamespaceTree
             expanded={namespaces}
-            toggle={(id) => setNamespaces(toggle(namespaces, id))}
+            toggle={(id) => setNamespaces(toggled(namespaces, id))}
             activeId={null}
             renderTable={(segments, depth) => <TableRow segments={segments} depth={depth} picker={picker} />}
           />
