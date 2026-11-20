@@ -426,8 +426,15 @@ async fn rest_catalog_routes() {
             "row_count": 1,
             "truncated": false,
             "truncated_by": null,
+            "cached": false,
             "elapsed_ms": null,
         })
+    );
+    let (status, repeated) = post(&app, "/catalog/v1/sql", sql(typed_query)).await;
+    assert_eq!(status, StatusCode::OK, "{repeated}");
+    assert_eq!(
+        (repeated["cached"].as_bool(), &repeated["rows"]),
+        (Some(true), &json!([[1, "a", 2, null]]))
     );
     let (status, all) = post(
         &app,

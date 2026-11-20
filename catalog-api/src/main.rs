@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
     let namespace = Arc::new(
         PostgresNamespace::new(pool, storage_options)
             .with_cache_budget(cfg.cache_budget_bytes)
+            .with_sql_cache_budget(cfg.catalog.sql.cache_bytes)
             .with_location_allowlists(cfg.table_locations, cfg.media_locations)
             .with_top_level_allowlist(cfg.verticals)
             .context("CATALOG_VERTICALS")?,

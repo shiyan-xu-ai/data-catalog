@@ -11,12 +11,13 @@ use lance::datafusion::LanceTableProvider;
 use lance::datatypes::BlobHandling;
 use lance::deps::arrow_array::RecordBatch;
 use lance::deps::datafusion::catalog::TableProvider;
+use lance::deps::datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use lance::deps::datafusion::common::TableReference;
 use lance::deps::datafusion::error::DataFusionError;
 use lance::deps::datafusion::execution::context::SQLOptions;
 use lance::deps::datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use lance::deps::datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use lance::deps::datafusion::logical_expr::LogicalPlan;
+use lance::deps::datafusion::logical_expr::{Expr as PlanExpr, LogicalPlan, Volatility};
 use lance::deps::datafusion::prelude::{SessionConfig, SessionContext};
 use lance::deps::datafusion::sql::parser::{CopyToSource, Statement};
 use lance::deps::datafusion::sql::sqlparser::ast::{
@@ -26,12 +27,17 @@ use lance::deps::datafusion::sql::sqlparser::ast::{
 };
 use lance::Dataset;
 use lance_namespace::{Error, NamespaceError, Result};
+use moka::future::Cache;
+use moka::policy::EvictionPolicy;
 use serde_json::{Map, Value};
 
 use crate::namespace::{
     internal, invalid_input, is_missing, is_version_missing, PathTable, READ_CONCURRENCY,
 };
 use crate::PostgresNamespace;
+
+/// Default byte budget of the query result cache.
+pub const DEFAULT_SQL_CACHE_BYTES: usize = 64 << 20;
 
 /// Rows encoded at a time, so a cap stops encoding before a wide batch is encoded whole.
 const ENCODE_CHUNK_ROWS: usize = 64;
@@ -84,6 +90,152 @@ pub struct SqlResult {
     pub truncated_by: Option<Truncation>,
 }
 
+/// A query's result, shared with the result cache.
+#[derive(Debug, Clone)]
+pub struct SqlAnswer {
+    pub result: Arc<SqlResult>,
+    /// Whether the result cache answered without running the query.
+    pub cached: bool,
+}
+
+/// Results of completed queries, keyed by their text, limits, and the table versions they read,
+/// evicted least recently used first under a budget on their estimated resident memory.
+pub(crate) struct ResultCache(Cache<ResultKey, CachedResult>);
+
+#[derive(Hash, PartialEq, Eq)]
+pub(crate) struct ResultKey {
+    sql: String,
+    max_rows: usize,
+    max_result_bytes: usize,
+    /// Sorted. Location and e-tag tell a re-registered or recreated table from the one whose
+    /// version number it repeats.
+    tables: Vec<(Vec<String>, String, u64, Option<String>)>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CachedResult {
+    result: Arc<SqlResult>,
+    weight: u32,
+}
+
+impl ResultCache {
+    pub(crate) fn new(budget_bytes: usize) -> Self {
+        Self(
+            Cache::builder()
+                .max_capacity(budget_bytes as u64)
+                .weigher(|_, entry: &CachedResult| entry.weight)
+                .eviction_policy(EvictionPolicy::lru())
+                .build(),
+        )
+    }
+
+    async fn insert(&self, key: ResultKey, result: Arc<SqlResult>) {
+        let bytes = key.resident_bytes().saturating_add(resident_bytes(&result));
+        let weight = u32::try_from(bytes).unwrap_or(u32::MAX);
+        self.0.insert(key, CachedResult { result, weight }).await;
+        // Evicts now rather than on a later access, so the budget holds between queries.
+        self.0.run_pending_tasks().await;
+    }
+}
+
+/// Estimated heap a cached result holds. Parsed JSON values take several times their encoded
+/// size (a number cell is a whole `Value`), so the budget must count them as stored.
+fn resident_bytes(result: &SqlResult) -> usize {
+    let tables: usize = result
+        .tables
+        .iter()
+        .map(|t| size_of::<SqlTable>() + strings_bytes(&t.id))
+        .sum();
+    let columns: usize = result
+        .columns
+        .iter()
+        .map(|c| {
+            size_of::<SqlColumn>()
+                + c.name.capacity()
+                + c.data_type.capacity()
+                + c.metadata
+                    .iter()
+                    .map(|(k, v)| 2 * size_of::<String>() + k.capacity() + v.capacity())
+                    .sum::<usize>()
+        })
+        .sum();
+    let rows: usize = result
+        .rows
+        .iter()
+        .map(|row| size_of::<Vec<Value>>() + values_bytes(row.capacity(), row))
+        .sum();
+    size_of::<SqlResult>() + tables + columns + rows
+}
+
+/// Heap of a vector of values: its `capacity` slots plus what each value owns.
+fn values_bytes(capacity: usize, values: &[Value]) -> usize {
+    capacity * size_of::<Value>() + values.iter().map(value_heap_bytes).sum::<usize>()
+}
+
+fn value_heap_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+        Value::String(s) => s.capacity(),
+        Value::Array(items) => values_bytes(items.capacity(), items),
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| {
+                size_of::<String>() + size_of::<Value>() + k.capacity() + value_heap_bytes(v)
+            })
+            .sum(),
+    }
+}
+
+fn strings_bytes(strings: &[String]) -> usize {
+    strings
+        .iter()
+        .map(|s| size_of::<String>() + s.capacity())
+        .sum()
+}
+
+impl ResultKey {
+    fn resident_bytes(&self) -> usize {
+        let tables: usize = self
+            .tables
+            .iter()
+            .map(|(id, location, _, e_tag)| {
+                size_of::<(Vec<String>, String, u64, Option<String>)>()
+                    + strings_bytes(id)
+                    + location.capacity()
+                    + e_tag.as_ref().map_or(0, String::capacity)
+            })
+            .sum();
+        size_of::<Self>() + self.sql.capacity() + tables
+    }
+
+    /// `None` for a statement that reads no table: nothing pins its result.
+    fn new(sql: &str, limits: &SqlLimits, opened: &[PathTable]) -> Option<Self> {
+        if opened.is_empty() {
+            return None;
+        }
+        let mut tables: Vec<_> = opened
+            .iter()
+            .map(|t| {
+                let dataset = &t.table.dataset;
+                (
+                    t.id.clone(),
+                    t.table.location.clone(),
+                    dataset.version_id(),
+                    dataset.manifest_location().e_tag.clone(),
+                )
+            })
+            .collect();
+        tables.sort_unstable();
+        tables.dedup();
+        Some(Self {
+            sql: sql.trim().to_string(),
+            max_rows: limits.max_rows,
+            max_result_bytes: limits.max_result_bytes,
+            tables,
+        })
+    }
+}
+
 impl PostgresNamespace {
     /// Runs one read-only query over any registered tables. A table is named by its full catalog
     /// path, `"a"."b"."events"`, which reads its current version; `"a"."b"."events@v12"` reads
@@ -92,7 +244,12 @@ impl PostgresNamespace {
     /// DDL, DML (including `COPY`), and other statements are rejected at planning; spilling is
     /// disabled so nothing touches the local disk; blob columns read as their descriptors, so
     /// payload bytes are never fetched. The time limit covers opening every table.
-    pub async fn query_sql(&self, sql: &str, limits: &SqlLimits) -> Result<SqlResult> {
+    ///
+    /// The same text over the same table versions is answered from the result cache. A result
+    /// is cached only when the query completed and depends on nothing but those versions: not
+    /// `EXPLAIN`, not a statement that reads no table, and not one calling a volatile or stable
+    /// function such as `random()` or `now()`.
+    pub async fn query_sql(&self, sql: &str, limits: &SqlLimits) -> Result<SqlAnswer> {
         tokio::time::timeout(limits.timeout, self.run_sql(sql, limits))
             .await
             .map_err(|_| {
@@ -103,20 +260,47 @@ impl PostgresNamespace {
             })?
     }
 
-    async fn run_sql(&self, sql: &str, limits: &SqlLimits) -> Result<SqlResult> {
+    async fn run_sql(&self, sql: &str, limits: &SqlLimits) -> Result<SqlAnswer> {
         let ctx = session(limits)?;
         let mut statement = parse(&ctx, sql)?;
         let references = rewrite(&mut statement)?;
         let mut tables = self.open_references(&references).await?;
-        let first = execute(&ctx, &statement, &references, &tables, limits).await;
-        match &first {
-            Err(e) if is_version_missing(e) => {}
-            _ => return first,
+        if let Some(key) = ResultKey::new(sql, limits, &tables) {
+            if let Some(hit) = self.sql_cache.0.get(&key).await {
+                return Ok(SqlAnswer {
+                    result: hit.result,
+                    cached: true,
+                });
+            }
         }
-        // A current version whose files cleanup removed advances to the newest version, and the
-        // query runs once more; pinned versions never advance.
+        let mut executed = execute(&ctx, &statement, &references, &tables, limits).await;
+        if matches!(&executed, Err(e) if is_version_missing(e))
+            && self.advance_gone(&references, &mut tables).await?
+        {
+            executed = execute(&ctx, &statement, &references, &tables, limits).await;
+        }
+        let executed = executed?;
+        let result = Arc::new(executed.result);
+        if executed.cacheable {
+            if let Some(key) = ResultKey::new(sql, limits, &tables) {
+                self.sql_cache.insert(key, result.clone()).await;
+            }
+        }
+        Ok(SqlAnswer {
+            result,
+            cached: false,
+        })
+    }
+
+    /// Advances every current version whose files cleanup removed to the newest version, so the
+    /// query can run once more; pinned versions never advance. Whether any table advanced.
+    async fn advance_gone(
+        &self,
+        references: &[Reference],
+        tables: &mut [PathTable],
+    ) -> Result<bool> {
         let mut advanced = false;
-        for (reference, table) in references.iter().zip(&mut tables) {
+        for (reference, table) in references.iter().zip(tables) {
             if table.pinned.is_some() {
                 continue;
             }
@@ -130,10 +314,7 @@ impl PostgresNamespace {
                 advanced = true;
             }
         }
-        if !advanced {
-            return first;
-        }
-        execute(&ctx, &statement, &references, &tables, limits).await
+        Ok(advanced)
     }
 
     async fn open_references(&self, references: &[Reference]) -> Result<Vec<PathTable>> {
@@ -192,13 +373,19 @@ fn parse(ctx: &SessionContext, sql: &str) -> Result<Statement> {
     state.sql_to_statement(sql, &dialect).map_err(sql_error)
 }
 
+/// A query's result and whether the cache may keep it.
+struct Executed {
+    result: SqlResult,
+    cacheable: bool,
+}
+
 async fn execute(
     ctx: &SessionContext,
     statement: &Statement,
     references: &[Reference],
     opened: &[PathTable],
     limits: &SqlLimits,
-) -> Result<SqlResult> {
+) -> Result<Executed> {
     for (reference, table) in references.iter().zip(opened) {
         let name = TableReference::bare(reference.synthetic.as_str());
         ctx.deregister_table(name.clone()).map_err(sql_error)?;
@@ -229,6 +416,7 @@ async fn execute(
     // DataFusion requires EXPLAIN and EXPLAIN ANALYZE at the plan's root, so a limit cannot wrap
     // them; their output is a handful of rows.
     let at_root = matches!(plan, LogicalPlan::Explain(_) | LogicalPlan::Analyze(_));
+    let cacheable = !at_root && !calls_varying_function(&plan);
     let frame = ctx.execute_logical_plan(plan).await.map_err(sql_error)?;
     let schema = frame.schema().inner().clone();
     // One row past the limit tells whether the result was truncated.
@@ -246,20 +434,48 @@ async fn execute(
             break;
         }
     }
-    Ok(SqlResult {
-        tables,
-        columns: schema
-            .fields()
-            .iter()
-            .map(|f| SqlColumn {
-                name: f.name().clone(),
-                data_type: f.data_type().to_string(),
-                metadata: f.metadata().clone(),
-            })
-            .collect(),
-        rows: encoder.rows,
-        truncated_by: encoder.truncated_by,
+    Ok(Executed {
+        result: SqlResult {
+            tables,
+            columns: schema
+                .fields()
+                .iter()
+                .map(|f| SqlColumn {
+                    name: f.name().clone(),
+                    data_type: f.data_type().to_string(),
+                    metadata: f.metadata().clone(),
+                })
+                .collect(),
+            rows: encoder.rows,
+            truncated_by: encoder.truncated_by,
+        },
+        cacheable,
     })
+}
+
+/// Whether the plan calls a volatile or stable function, such as `random()` or `now()`, whose
+/// value depends on more than the tables read.
+fn calls_varying_function(plan: &LogicalPlan) -> bool {
+    let mut varies = false;
+    let _ = plan.apply_with_subqueries(|node| {
+        node.apply_expressions(|expr| {
+            expr.apply(|e| {
+                let volatility = match e {
+                    PlanExpr::ScalarFunction(f) => f.func.signature().volatility,
+                    PlanExpr::AggregateFunction(f) => f.func.signature().volatility,
+                    PlanExpr::WindowFunction(f) => f.fun.signature().volatility,
+                    _ => Volatility::Immutable,
+                };
+                varies |= volatility != Volatility::Immutable;
+                Ok(if varies {
+                    TreeNodeRecursion::Stop
+                } else {
+                    TreeNodeRecursion::Continue
+                })
+            })
+        })
+    });
+    varies
 }
 
 /// A catalog path a statement names, registered in the query's session as `synthetic`.
