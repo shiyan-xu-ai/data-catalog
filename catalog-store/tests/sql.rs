@@ -184,6 +184,27 @@ async fn resolves_leaf_aliases_and_path_qualified_references() {
 }
 
 #[tokio::test]
+async fn leaf_alias_survives_reading_one_table_twice() {
+    let Some(f) = Fixture::new("sql_repeat").await else {
+        return;
+    };
+    f.table(&EVENTS, &[1, 2, 3], &["a", "b", "c"]).await;
+
+    for sql in [
+        r#"SELECT events.id FROM "a"."b"."events" WHERE id IN (SELECT id FROM "a"."b"."events" WHERE id > 1) ORDER BY 1"#,
+        r#"SELECT events.id FROM "a"."b"."events" WHERE id > 2
+           UNION ALL SELECT events.id FROM "a"."b"."events" WHERE id < 2 ORDER BY 1"#,
+    ] {
+        assert!(!f.ok(sql).await.rows.is_empty(), "{sql}");
+    }
+    // Two unaliased relations of one table still clash on their own alias.
+    let (error_code, _) = f
+        .failure(r#"SELECT count(*) FROM "a"."b"."events", "a"."b"."events""#)
+        .await;
+    assert_eq!(error_code, INVALID_INPUT);
+}
+
+#[tokio::test]
 async fn same_leaf_in_two_namespaces_joins() {
     let Some(f) = Fixture::new("sql_same_leaf").await else {
         return;

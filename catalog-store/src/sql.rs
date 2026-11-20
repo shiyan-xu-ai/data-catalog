@@ -122,7 +122,6 @@ impl PostgresNamespace {
         execute(&ctx, &statement, &references, &tables, limits).await
     }
 
-    /// Opens every referenced table concurrently; a failure names the path as written.
     async fn open_references(&self, references: &[Reference]) -> Result<Vec<PathTable>> {
         let opens: Vec<_> = references.iter().map(|r| self.open_reference(r)).collect();
         futures::stream::iter(opens)
@@ -179,8 +178,6 @@ fn parse(ctx: &SessionContext, sql: &str) -> Result<Statement> {
     state.sql_to_statement(sql, &dialect).map_err(sql_error)
 }
 
-/// Registers the opened tables under their synthetic names, plans the rewritten statement,
-/// rejects DDL, DML, and statements on that plan, and runs it.
 async fn execute(
     ctx: &SessionContext,
     statement: &Statement,
@@ -250,9 +247,7 @@ async fn execute(
 
 /// A catalog path a statement names, registered in the query's session as `synthetic`.
 struct Reference {
-    /// Path segments as written, case preserved.
     path: Vec<String>,
-    /// The last segment as written, which is the relation's default alias.
     leaf: Ident,
     synthetic: String,
     /// Whether some relation reading this path has no user alias; only then can the path
@@ -261,7 +256,6 @@ struct Reference {
 }
 
 impl Reference {
-    /// The path with every segment double-quoted, as a statement writes it.
     fn quoted(&self) -> String {
         self.path
             .iter()
@@ -274,15 +268,6 @@ impl Reference {
 /// Rewrites the statement so every table it reads is a one-part name registered in the query's
 /// session, and returns those tables. DataFusion names stop at `catalog.schema.table` while
 /// namespaces nest to any depth, so catalog paths cannot go through its catalog hierarchy.
-///
-/// - A relation with two or more name parts is a catalog path. It becomes a synthetic one-part
-///   name and takes its last segment as written as its alias, unless the user aliased it or
-///   another relation would get the same default alias; then it is qualified by the synthetic
-///   name.
-/// - Column references and qualified wildcards written with a path are rewritten to that
-///   relation's qualifier.
-/// - A one-part name passes only when a CTE of the statement declares it; table functions are
-///   left alone.
 fn rewrite(statement: &mut Statement) -> Result<Vec<Reference>> {
     let mut rewriter = Rewriter::default();
     if let ControlFlow::Break(e) = walk(statement, &mut rewriter, &mut |rewriter, name| {
@@ -294,7 +279,6 @@ fn rewrite(statement: &mut Statement) -> Result<Vec<Reference>> {
         references: &rewriter.references,
         default_aliases: &rewriter.default_aliases,
     };
-    // The qualifier pass cannot fail.
     let _ = walk(statement, &mut qualifier, &mut |_, _| {
         ControlFlow::Continue(())
     });
@@ -330,11 +314,9 @@ fn normalized(ident: &Ident) -> String {
 
 #[derive(Default)]
 struct Rewriter {
-    /// Normalized names of the CTEs the statement declares.
     ctes: HashSet<String>,
     references: Vec<Reference>,
-    /// Unaliased relations per normalized default alias.
-    default_aliases: HashMap<String, usize>,
+    default_aliases: HashMap<String, HashSet<usize>>,
 }
 
 impl Rewriter {
@@ -407,10 +389,10 @@ impl VisitorMut for Rewriter {
                 if alias.is_none() {
                     let reference = &mut self.references[index];
                     reference.unaliased = true;
-                    *self
-                        .default_aliases
+                    self.default_aliases
                         .entry(normalized(&reference.leaf))
-                        .or_default() += 1;
+                        .or_default()
+                        .insert(index);
                 }
             }
         }
@@ -421,7 +403,7 @@ impl VisitorMut for Rewriter {
 /// Gives rewritten relations their default alias and rewrites path-qualified references.
 struct Qualifier<'a> {
     references: &'a [Reference],
-    default_aliases: &'a HashMap<String, usize>,
+    default_aliases: &'a HashMap<String, HashSet<usize>>,
 }
 
 impl Qualifier<'_> {
@@ -430,10 +412,9 @@ impl Qualifier<'_> {
     fn has_default_alias(&self, reference: &Reference) -> bool {
         self.default_aliases
             .get(&normalized(&reference.leaf))
-            .is_some_and(|count| *count == 1)
+            .is_some_and(|references| references.len() == 1)
     }
 
-    /// The qualifier of the reference's unaliased relation.
     fn qualifier(&self, reference: &Reference) -> Ident {
         if self.has_default_alias(reference) {
             reference.leaf.clone()
