@@ -61,7 +61,7 @@ fn limits() -> SqlLimits {
 }
 
 async fn sql(ns: &PostgresNamespace, query: &str) -> (u64, serde_json::Value) {
-    let result = ns.query_sql(query, &limits()).await.unwrap();
+    let result = ns.query_sql(query, &limits()).await.unwrap().result;
     assert_eq!(result.tables.len(), 1);
     (result.tables[0].version, result.rows[0][0].clone())
 }
@@ -278,8 +278,10 @@ async fn current_version_advances_when_cleaned_up() {
 
     overwrite(&uri).await;
     simulate_cleanup(&uri, 1).await;
+    // The cache still answers the first text from v1's result; a new text reads v1's removed
+    // files and advances.
     assert_eq!(
-        sql(&ns, r#"SELECT sum(id) FROM "prod"."t""#).await,
+        sql(&ns, r#"SELECT sum(id) AS total FROM "prod"."t""#).await,
         (2, 10.into())
     );
 

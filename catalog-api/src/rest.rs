@@ -674,15 +674,17 @@ struct SqlRequest {
 }
 
 #[derive(Serialize)]
-struct SqlResponse {
+struct SqlResponse<'a> {
     /// Every table version the query read, in order of first appearance.
     tables: Vec<SqlTableResponse>,
     columns: Vec<SqlColumnResponse>,
-    rows: Vec<Vec<Value>>,
+    rows: &'a [Vec<Value>],
     row_count: usize,
     truncated: bool,
     /// `rows` or `bytes`: the cap that cut the result short.
     truncated_by: Option<&'static str>,
+    /// Whether the result cache answered without running the query.
+    cached: bool,
     elapsed_ms: u64,
 }
 
@@ -720,7 +722,9 @@ async fn run_sql(
             .start(&sql_runner::user(&headers), request.query_id, async move {
                 namespace.query_sql(&sql, &config.limits).await
             })?;
-    let result = query.finish().await??;
+    let answer = query.finish().await??;
+    let result = &answer.result;
+    // Rows are serialized from the shared result; a cached one is never copied.
     Ok(Json(SqlResponse {
         tables: result
             .tables
@@ -739,13 +743,14 @@ async fn run_sql(
                 metadata: c.metadata.clone(),
             })
             .collect(),
+        rows: &result.rows,
         row_count: result.rows.len(),
-        rows: result.rows,
         truncated: result.truncated_by.is_some(),
         truncated_by: result.truncated_by.map(|cap| match cap {
             Truncation::Rows => "rows",
             Truncation::Bytes => "bytes",
         }),
+        cached: answer.cached,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
     .into_response())

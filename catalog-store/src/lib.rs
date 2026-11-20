@@ -18,7 +18,9 @@ pub use namespace::{
     ColumnBytes, ColumnStorage, Distribution, FragmentMeasures, PostgresNamespace, Refresh,
     DEFAULT_CACHE_BUDGET_BYTES,
 };
-pub use sql::{SqlColumn, SqlLimits, SqlResult, SqlTable, Truncation};
+pub use sql::{
+    SqlAnswer, SqlColumn, SqlLimits, SqlResult, SqlTable, Truncation, DEFAULT_SQL_CACHE_BYTES,
+};
 pub use storage::{StorageBreakdown, StorageCategory, StorageFootprint, STORAGE_CATEGORIES};
 pub use timeline::Timeline;
 

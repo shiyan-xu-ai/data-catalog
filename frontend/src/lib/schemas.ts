@@ -46,7 +46,8 @@ export type DescribeNamespaceResponse = z.infer<typeof describeNamespaceResponse
 /** Catalog route `POST /catalog/v1/sql` (not a spec model). Row values follow Arrow's JSON
  *  writer, so they stay `unknown` until formatted per column type. `tables` lists every table
  *  the query read, with the version it read, in order of first appearance. `truncated_by` names
- *  the cap that cut the result (row count or encoded bytes). */
+ *  the cap that cut the result (row count or encoded bytes); `cached` marks a result served from
+ *  the server's result cache. */
 export const sqlResponseSchema = z.object({
   columns: z.array(
     z.object({
@@ -61,6 +62,7 @@ export const sqlResponseSchema = z.object({
   truncated: z.boolean(),
   elapsed_ms: z.number(),
   truncated_by: z.enum(["rows", "bytes"]).nullable(),
+  cached: z.boolean(),
   tables: z.array(z.object({ id: z.array(z.string()), version: z.number() })),
 });
 export type SqlResponse = z.infer<typeof sqlResponseSchema>;
