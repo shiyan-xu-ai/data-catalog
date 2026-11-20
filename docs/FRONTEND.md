@@ -7,12 +7,17 @@ and registered through the [API](../README.md#api).
 
 ## Layout
 
-- **Sidebar.** Global search, the namespace tree, a Query entry, and theme (light, dark,
-  system) and timezone (UTC, local) controls. It collapses to an icon rail; a
-  click anywhere on the rail except those two controls expands it. The
-  collapsed state, theme, and timezone persist in `localStorage`, and every
-  timestamp renders in the chosen timezone. The Query page shows the rail
-  without changing the stored state.
+- **Sidebar.** An Explore | SQL mode toggle, global search, the namespace tree, and
+  theme (light, dark, system) and timezone (UTC, local) controls. It collapses to
+  an icon rail, where the mode toggle is one icon button showing the current mode;
+  a click anywhere on the rail except the theme, timezone, and mode controls expands
+  it. The collapsed state, theme, and timezone persist in `localStorage`, and every
+  timestamp renders in the chosen timezone. The collapsed state applies in both modes.
+- **Modes.** The route sets the mode: `/query` is SQL, every other route is Explore.
+  Choosing SQL opens `/query`; choosing Explore returns to the last page seen outside
+  it (`/namespaces` when there is none). Explore shows the namespace and table pages.
+  SQL shows the SQL editor in the main area, and the sidebar tree and search pick
+  tables instead of opening pages (see Query page).
 - **Namespace tree.** Loads children when a namespace opens; tables are leaves.
   A click anywhere on a namespace row toggles it (the chevron only shows the
   state); a click on its name also opens the namespace page. The current page's
@@ -78,10 +83,9 @@ field, and index tables pin their header and scroll sideways when wide.
 ## Query page
 
 A top-level page (`/query`) that runs one read-only query at a time over any
-registered tables (`POST /catalog/v1/sql`). While it is open the sidebar shows
-as its icon rail; clicking the rail expands it until you leave the page. The
-page stays mounted once visited, so tabs, text, results, and a running query
-survive navigating away.
+registered tables (`POST /catalog/v1/sql`), shown in SQL mode. The page stays
+mounted once visited, so tabs, text, results, and a running query survive
+switching back to Explore.
 
 **Naming tables.** A query names a table by its full catalog path with every
 segment double-quoted, for example `"a"."b"."events"`, and can join, union, or
@@ -91,13 +95,14 @@ aliases work as usual, and an unaliased table is also reachable by its last
 segment (`events.id`) unless two tables in the query share that name. A name
 with one part is not a table.
 
-**Workspace.** A left pane, a tab strip, an editor, and results.
+**Workspace.** A tab strip, an editor, and results; the sidebar's tree picks tables.
 
-- **Tables** (left pane). The namespace tree with a name box. A table's name
-  inserts its quoted path at the cursor, and its chevron lists its columns with
-  types; a column inserts its quoted name. The editor completes table paths,
-  and column names once a table is expanded, inserted, or named in the query.
-- **History** (left pane). The last 50 queries run in this browser, newest
+- **Tables** (sidebar, SQL mode). Clicking a table's name inserts its quoted path
+  at the active editor's cursor (appended when the editor was never focused) and
+  does not navigate. Namespace rows only expand and collapse. Choosing a search
+  result inserts a table's path or expands the tree to a namespace. The editor
+  completes table paths, and column names for tables named in the active tab.
+- **History** (toolbar button). The last 50 queries run in this browser, newest
   first; running the same text again moves it to the top. Selecting one loads it
   into the active tab without running it.
 - **Tabs.** Open, switch, and close; each keeps its own text, results, and

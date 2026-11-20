@@ -1,7 +1,8 @@
-import { Suspense, lazy, useState } from "react";
-import { Outlet, Link, createRootRouteWithContext, useSearch } from "@tanstack/react-router";
+import { Suspense, lazy, useEffect, useState } from "react";
+import { Outlet, Link, createRootRouteWithContext, useRouterState, useSearch } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
 import { ChevronRight, Menu } from "lucide-react";
+import { rememberExploreLocation } from "@/lib/explore-location";
 import { joinId } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 import { Toaster } from "@/components/ui/sonner";
@@ -61,6 +62,10 @@ function RootComponent() {
   const [mobileNav, setMobileNav] = useState(false);
   const { isQuery } = useCurrentLocation();
   const { table } = useSearch({ strict: false });
+  const href = useRouterState({ select: (s) => s.location.href });
+  useEffect(() => {
+    if (href.split(/[?#]/)[0] !== "/query") rememberExploreLocation(href);
+  }, [href]);
   // The Query page stays mounted, hidden, once visited, so its tabs, results, and running queries
   // survive a visit to another page.
   const [queryVisited, setQueryVisited] = useState(isQuery);
@@ -68,7 +73,7 @@ function RootComponent() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex h-screen overflow-hidden bg-background">
-        <AppSidebar className="hidden md:flex" collapsible rail={isQuery} />
+        <AppSidebar className="hidden md:flex" collapsible />
         {mobileNav && (
           <div className="fixed inset-0 z-50 flex md:hidden">
             <AppSidebar className="shadow-xl" onNavigate={() => setMobileNav(false)} />

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useRouterState } from "@tanstack/react-router";
-import { FolderTree, PanelLeftClose, Search, TerminalSquare } from "lucide-react";
+import { FolderTree, PanelLeftClose, Search } from "lucide-react";
 import { ID_DELIMITER, splitId } from "@/lib/ids";
 import { useStoredState } from "@/lib/preferences";
+import { insertTablePath } from "@/lib/sql-insert";
 import { cn, toggled } from "@/lib/utils";
 import { GlobalSearch } from "@/components/global-search";
+import { ModeToggle, ModeToggleRail, type Mode } from "@/components/mode-toggle";
 import { NamespaceTree } from "@/components/namespace-tree";
 import { PreferenceControls } from "@/components/preference-controls";
 
@@ -20,29 +22,23 @@ export function AppSidebar({
   className,
   onNavigate,
   collapsible = false,
-  rail = false,
 }: {
   className?: string;
   onNavigate?: () => void;
   /** Desktop only: allow collapsing to an icon rail (persisted). */
   collapsible?: boolean;
-  /** Desktop only: show the icon rail on the current page until the user expands it. */
-  rail?: boolean;
 }) {
   const { activeId, segments, isTable, isQuery } = useCurrentLocation();
+  const mode: Mode = isQuery ? "sql" : "explore";
   const [storedCollapsed, setStoredCollapsed] = useStoredState("nav-collapsed", false);
-  // On a page with `rail`, the nav shows as its rail until the user expands it there. That
-  // choice lives only until they leave the page and never touches the stored preference.
-  const [railOpened, setRailOpened] = useState(false);
-  useEffect(() => {
-    if (!rail) setRailOpened(false);
-  }, [rail]);
-  const collapsed = collapsible && (rail ? !railOpened : storedCollapsed);
-  const expand = () => (rail ? setRailOpened(true) : setStoredCollapsed(false));
-  const collapse = () => (rail ? setRailOpened(false) : setStoredCollapsed(true));
+  const collapsed = collapsible && storedCollapsed;
+  const expand = () => setStoredCollapsed(false);
+  const collapse = () => setStoredCollapsed(true);
   // Set when the rail's search button (or ⌘K) expands the nav, so the search box takes focus.
   const [focusSearch, setFocusSearch] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  // The namespace a search result revealed in SQL mode; the tree highlights it and scrolls to it.
+  const [revealed, setRevealed] = useState<string | null>(null);
 
   // Reveal the current location: expand every enclosing namespace (and the namespace itself).
   useEffect(() => {
@@ -58,6 +54,17 @@ export function AppSidebar({
 
   function toggle(id: string) {
     setExpanded((prev) => toggled(prev, id));
+  }
+
+  function revealNamespace(path: string[]) {
+    const ids = path.map((_, i) => path.slice(0, i + 1).join(ID_DELIMITER));
+    setExpanded((prev) => new Set([...prev, ...ids]));
+    setRevealed(ids[ids.length - 1]);
+  }
+
+  function pickTable(path: string[]) {
+    insertTablePath(path);
+    onNavigate?.();
   }
 
   function expandToSearch() {
@@ -99,21 +106,17 @@ export function AppSidebar({
           <button type="button" className={railButton} onClick={expandToSearch} aria-label="Search" title="Search (⌘K)">
             <Search className="h-4 w-4" />
           </button>
-          <Link to="/namespaces" className={railButton} aria-label="Namespaces" title="Namespaces">
-            <FolderTree className="h-4 w-4" />
-          </Link>
-          {/* The click must not also expand the rail: elsewhere that would clear the stored
-              collapsed preference just to open a page that shows the rail regardless. */}
-          <Link
-            to="/query"
-            className={cn(railButton, isQuery && "bg-accent text-accent-foreground")}
-            aria-label="Query"
-            aria-current={isQuery ? "page" : undefined}
-            title="Query"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <TerminalSquare className="h-4 w-4" />
-          </Link>
+          {mode === "sql" ? (
+            // The tree is the table picker here, so the button opens the rail instead of leaving SQL mode.
+            <button type="button" className={railButton} aria-label="Show tables" title="Show tables">
+              <FolderTree className="h-4 w-4" />
+            </button>
+          ) : (
+            <Link to="/namespaces" className={railButton} aria-label="Namespaces" title="Namespaces">
+              <FolderTree className="h-4 w-4" />
+            </Link>
+          )}
+          <ModeToggleRail mode={mode} className={railButton} />
         </div>
         <div
           className="mt-auto flex cursor-default flex-col items-center gap-1 border-t py-3"
@@ -148,38 +151,36 @@ export function AppSidebar({
           </button>
         )}
       </div>
-      <div className="shrink-0 p-3">
+      <div className="flex shrink-0 flex-col gap-2 p-3">
+        <ModeToggle mode={mode} />
         <GlobalSearch
           onNavigate={onNavigate}
+          pick={mode === "sql" ? { onTable: pickTable, onNamespace: revealNamespace } : undefined}
           autoFocus={focusSearch}
           onFocusHandled={() => setFocusSearch(false)}
         />
       </div>
-      <div className="shrink-0 px-2 pb-1">
-        <Link
-          to="/query"
-          onClick={onNavigate}
-          aria-current={isQuery ? "page" : undefined}
-          className={cn(
-            "flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-foreground/80 hover:bg-accent hover:text-accent-foreground",
-            isQuery && "bg-accent text-accent-foreground",
-          )}
-        >
-          <TerminalSquare className="h-4 w-4 text-muted-foreground" />
-          Query
-        </Link>
-      </div>
       <div className="flex items-center justify-between px-4 pt-1 pb-1.5">
-        <Link
-          to="/namespaces"
-          onClick={onNavigate}
-          className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase hover:text-foreground"
-        >
-          Namespaces
-        </Link>
+        {mode === "sql" ? (
+          <span className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">Namespaces</span>
+        ) : (
+          <Link
+            to="/namespaces"
+            onClick={onNavigate}
+            className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase hover:text-foreground"
+          >
+            Namespaces
+          </Link>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        <NamespaceTree expanded={expanded} toggle={toggle} activeId={activeId} onNavigate={onNavigate} />
+        <NamespaceTree
+          expanded={expanded}
+          toggle={toggle}
+          activeId={mode === "sql" ? revealed : activeId}
+          onNavigate={onNavigate}
+          onPickTable={mode === "sql" ? pickTable : undefined}
+        />
       </div>
       <div className="shrink-0 border-t px-4 py-3">
         <PreferenceControls />

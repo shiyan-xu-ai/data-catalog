@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronRight, Folder, FolderOpen, Loader2, Table2 } from "lucide-react";
 import { useChildNamespaces, useNamespaceTables, type PagedNames } from "@/lib/catalog-queries";
 import { ID_DELIMITER } from "@/lib/ids";
+import { quotePath } from "@/lib/sql";
 import { cn } from "@/lib/utils";
 
 interface TreeState {
@@ -10,19 +11,19 @@ interface TreeState {
   toggle: (id: string) => void;
   activeId: string | null;
   onNavigate?: () => void;
-  /** Renders a table row in place of the link to its page. A tree with this set picks tables:
+  /** A tree with this set picks tables: a table row calls it instead of linking to its page, and
    *  namespace rows only expand and collapse. */
-  renderTable?: (segments: string[], depth: number) => React.ReactNode;
+  onPickTable?: (segments: string[]) => void;
 }
 
-export const rowClass =
+const rowClass =
   "group flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md pr-2 text-[13px] text-foreground/80 hover:bg-accent hover:text-accent-foreground";
 const activeClass = "bg-accent font-medium text-accent-foreground";
 // Leaves and status rows align their icon with sibling namespaces' folder icon (past the chevron).
-export const leafIndent = (depth: number) => ({ paddingLeft: `${depth * 12 + 4 + 26}px` });
+const leafIndent = (depth: number) => ({ paddingLeft: `${depth * 12 + 4 + 26}px` });
 
-function useScrollIntoView(active: boolean) {
-  const ref = useRef<HTMLAnchorElement>(null);
+function useScrollIntoView<T extends HTMLElement>(active: boolean) {
+  const ref = useRef<T>(null);
   useEffect(() => {
     if (active) ref.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
@@ -32,7 +33,24 @@ function useScrollIntoView(active: boolean) {
 function TableLeaf({ segments, depth, state }: { segments: string[]; depth: number; state: TreeState }) {
   const id = segments.join(ID_DELIMITER);
   const active = state.activeId === id;
-  const ref = useScrollIntoView(active);
+  const ref = useScrollIntoView<HTMLAnchorElement>(active);
+  const icon = <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+  const name = segments[segments.length - 1];
+  if (state.onPickTable) {
+    const pick = state.onPickTable;
+    return (
+      <button
+        type="button"
+        onClick={() => pick(segments)}
+        className={cn(rowClass, "text-left")}
+        style={leafIndent(depth)}
+        title={`Insert ${quotePath(segments)}`}
+      >
+        {icon}
+        <span className="truncate font-mono text-xs">{name}</span>
+      </button>
+    );
+  }
   return (
     <Link
       ref={ref}
@@ -41,10 +59,10 @@ function TableLeaf({ segments, depth, state }: { segments: string[]; depth: numb
       onClick={state.onNavigate}
       className={cn(rowClass, active && activeClass)}
       style={leafIndent(depth)}
-      title={segments[segments.length - 1]}
+      title={name}
     >
-      <Table2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <span className="truncate font-mono text-xs">{segments[segments.length - 1]}</span>
+      {icon}
+      <span className="truncate font-mono text-xs">{name}</span>
     </Link>
   );
 }
@@ -64,7 +82,7 @@ function LoadMore({ query, depth }: { query: PagedNames; depth: number }) {
   );
 }
 
-export function StatusRow({ depth, children, error }: { depth: number; children: React.ReactNode; error?: boolean }) {
+function StatusRow({ depth, children, error }: { depth: number; children: React.ReactNode; error?: boolean }) {
   return (
     <div
       className={cn("flex h-7 items-center gap-1.5 text-xs", error ? "text-destructive" : "text-muted-foreground")}
@@ -106,13 +124,9 @@ function TreeChildren({ segments, depth, state }: { segments: string[]; depth: n
         <TreeNamespace key={`n:${name}`} segments={[...segments, name]} depth={depth} state={state} />
       ))}
       <LoadMore query={namespaces} depth={depth} />
-      {tables.names.map((name) =>
-        state.renderTable ? (
-          <Fragment key={`t:${name}`}>{state.renderTable([...segments, name], depth)}</Fragment>
-        ) : (
-          <TableLeaf key={`t:${name}`} segments={[...segments, name]} depth={depth} state={state} />
-        ),
-      )}
+      {tables.names.map((name) => (
+        <TableLeaf key={`t:${name}`} segments={[...segments, name]} depth={depth} state={state} />
+      ))}
       <LoadMore query={tables} depth={depth} />
     </>
   );
@@ -122,7 +136,7 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
   const id = segments.join(ID_DELIMITER);
   const open = state.expanded.has(id);
   const active = state.activeId === id;
-  const ref = useScrollIntoView(active);
+  const ref = useScrollIntoView<HTMLDivElement>(active);
   const FolderIcon = open ? FolderOpen : Folder;
   const name = segments[segments.length - 1];
   const label = (
@@ -136,6 +150,7 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
       {/* A click anywhere on the row toggles it; the chevron only shows the state, and the name
           opens the namespace page (unless the tree picks tables, where it only toggles). */}
       <div
+        ref={ref}
         onClick={() => state.toggle(id)}
         className={cn(rowClass, "cursor-pointer", active && activeClass)}
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
@@ -143,7 +158,7 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
         <span aria-hidden className="flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground">
           <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
         </span>
-        {state.renderTable ? (
+        {state.onPickTable ? (
           <button
             type="button"
             aria-expanded={open}
@@ -154,7 +169,6 @@ function TreeNamespace({ segments, depth, state }: { segments: string[]; depth: 
           </button>
         ) : (
           <Link
-            ref={ref}
             to="/namespaces/$nsId"
             params={{ nsId: id }}
             onClick={state.onNavigate}

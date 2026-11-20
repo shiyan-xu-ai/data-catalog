@@ -1,23 +1,26 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SQLNamespace } from "@codemirror/lang-sql";
-import { Download, Eraser, Loader2, PanelTopClose, PanelTopOpen, Play, Square } from "lucide-react";
+import { Download, Eraser, History, Loader2, PanelTopClose, PanelTopOpen, Play, Square } from "lucide-react";
 import { runSql } from "@/lib/api";
 import { formatCount } from "@/lib/format";
 import { dragPointer } from "@/lib/drag-pointer";
 import { displayName } from "@/lib/ids";
+import type { HistoryEntry } from "@/lib/query-history";
 import type { SqlResponse } from "@/lib/schemas";
 import { resultsToCsv } from "@/lib/sql";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SqlEditor, type SqlEditorHandle } from "@/components/sql-editor";
+import { HistoryList } from "./history-list";
 import { ResultGrid, errorTitle, formatElapsed } from "./result-grid";
 
 export type RunStatus = "idle" | "running" | "failed";
 
 // Workspace width from which the editor sits beside the results, and results width from which
 // a selected row's pane sits beside the grid. Widths, not the viewport, because the table
-// browser and the navigation take room from the workspace.
+// navigation takes room from the workspace.
 const SIDE_BY_SIDE_MIN = 768;
 const INLINE_ROW_PANE_MIN = 900;
 
@@ -50,6 +53,7 @@ export function QueryPane({
   text,
   onTextChange,
   schema,
+  history,
   onRun,
   id,
   onStatus,
@@ -59,6 +63,7 @@ export function QueryPane({
   text: string;
   onTextChange: (text: string) => void;
   schema: SQLNamespace;
+  history: readonly HistoryEntry[];
   onRun: (sql: string) => void;
   onStatus: (id: number, status: RunStatus) => void;
   editorHandle?: React.Ref<SqlEditorHandle>;
@@ -70,6 +75,7 @@ export function QueryPane({
   const [now, setNow] = useState(0);
   const [editorCollapsed, setEditorCollapsed] = useState(false);
   const [editorSize, setEditorSize] = useState(40);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const panes = useRef<HTMLDivElement>(null);
   const results = useRef<HTMLDivElement>(null);
@@ -179,6 +185,22 @@ export function QueryPane({
               <Eraser /> Clear
             </Button>
           )}
+          <Popover open={historyOpen} onOpenChange={setHistoryOpen}>
+            <PopoverTrigger asChild>
+              <Button size="sm" variant="ghost" className="h-7">
+                <History /> History
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="flex max-h-[min(24rem,var(--radix-popover-content-available-height))] w-[min(22rem,calc(100vw-2rem))] flex-col">
+              <HistoryList
+                entries={history}
+                onSelect={(sql) => {
+                  onTextChange(sql);
+                  setHistoryOpen(false);
+                }}
+              />
+            </PopoverContent>
+          </Popover>
           <span className="text-[11px] text-muted-foreground">
             {running ? (
               <span className="flex items-center gap-1.5 tabular-nums">
