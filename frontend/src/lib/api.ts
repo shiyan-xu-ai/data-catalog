@@ -293,8 +293,21 @@ export function refreshTable(table: readonly string[]): Promise<RefreshTableResp
 }
 
 /** Catalog route: run one read-only SQL query over any registered tables, each named by its full
- *  quoted catalog path (`"a"."b"."events"`, or `"a"."b"."events@v12"` for a version). Aborting
- *  `signal` only stops waiting; the server finishes or times out on its own. */
-export function runSql(sql: string, signal?: AbortSignal): Promise<SqlResponse> {
-  return request("POST", "/catalog/v1/sql", sqlResponseSchema, { sql }, signal);
+ *  quoted catalog path (`"a"."b"."events"`, or `"a"."b"."events@v12"` for a version). `queryId`
+ *  names the run so `cancelSql` can stop it on the server; aborting `signal` only stops waiting. */
+export function runSql(sql: string, queryId: string, signal?: AbortSignal): Promise<SqlResponse> {
+  return request("POST", "/catalog/v1/sql", sqlResponseSchema, { sql, query_id: queryId }, signal);
+}
+
+/** Catalog route: stop the caller's own running query. Resolves `false` when the server knows no
+ *  such query (it already finished, or another instance runs it), so the cancel is unconfirmed.
+ *  `keepalive` lets the request outlive the page when sent while it unloads. */
+export async function cancelSql(queryId: string): Promise<boolean> {
+  const res = await fetch(`${BASE}/catalog/v1/sql/${encodeURIComponent(queryId)}/cancel`, {
+    method: "POST",
+    keepalive: true,
+  });
+  if (res.status === 404) return false;
+  if (!res.ok) throw apiErrorFrom(res.status, res.statusText, await res.text());
+  return true;
 }

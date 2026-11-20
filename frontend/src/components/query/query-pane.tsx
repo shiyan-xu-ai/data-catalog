@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SQLNamespace } from "@codemirror/lang-sql";
 import { Download, Eraser, History, Loader2, PanelTopClose, PanelTopOpen, Play, Square } from "lucide-react";
-import { runSql } from "@/lib/api";
+import { cancelSql, runSql } from "@/lib/api";
 import { formatCount } from "@/lib/format";
 import { dragPointer } from "@/lib/drag-pointer";
 import { displayName } from "@/lib/ids";
@@ -46,9 +46,21 @@ function TablesRead({ tables }: { tables: SqlResponse["tables"] }) {
   return <span title={list}>{tables.length === 1 ? `v${tables[0].version}` : `${tables.length} tables`}</span>;
 }
 
+function truncationLabel(by: SqlResponse["truncated_by"]): string {
+  if (by === "rows") return "Truncated by rows (row limit)";
+  if (by === "bytes") return "Truncated by bytes (size limit)";
+  return "Truncated";
+}
+
+/** Best effort: the caller has already stopped waiting, and a 404 (unconfirmed) or failure shows
+ *  nothing; the server's time limit still ends a query this misses. */
+function stopOnServer(queryId: string) {
+  cancelSql(queryId).catch(() => {});
+}
+
 /** One query tab's workspace: editor, results, and their toolbar. The query runs on the server;
- *  Cancel stops waiting for it (the server's own time limit ends it). Unmounting stops waiting
- *  too. */
+ *  Cancel, unmounting (closing the tab), and leaving the page stop waiting and ask the server to
+ *  stop it. */
 export function QueryPane({
   text,
   onTextChange,
@@ -80,6 +92,7 @@ export function QueryPane({
   const panes = useRef<HTMLDivElement>(null);
   const results = useRef<HTMLDivElement>(null);
   const controller = useRef<AbortController | null>(null);
+  const queryId = useRef<string | null>(null);
   const running = startedAt != null;
   const sideBySide = useElementWidth(root) >= SIDE_BY_SIDE_MIN;
   const inlineRowPane = useElementWidth(results) >= INLINE_ROW_PANE_MIN;
@@ -96,17 +109,29 @@ export function QueryPane({
     return () => clearInterval(timer);
   }, [startedAt]);
 
-  useEffect(() => () => controller.current?.abort(), []);
+  useEffect(() => {
+    const onPageHide = () => {
+      if (queryId.current) stopOnServer(queryId.current);
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      controller.current?.abort();
+      if (queryId.current) stopOnServer(queryId.current);
+    };
+  }, []);
 
   async function run() {
     if (running || !text.trim()) return;
     const c = new AbortController();
+    const qid = crypto.randomUUID();
     controller.current = c;
+    queryId.current = qid;
     onRun(text);
     setStartedAt(performance.now());
     setError(null);
     try {
-      const r = await runSql(text, c.signal);
+      const r = await runSql(text, qid, c.signal);
       if (controller.current === c) {
         setResult(r);
         setRuns((n) => n + 1);
@@ -119,6 +144,7 @@ export function QueryPane({
     } finally {
       if (controller.current === c) {
         controller.current = null;
+        queryId.current = null;
         setStartedAt(null);
       }
     }
@@ -127,6 +153,8 @@ export function QueryPane({
   function cancel() {
     controller.current?.abort();
     controller.current = null;
+    if (queryId.current) stopOnServer(queryId.current);
+    queryId.current = null;
     setStartedAt(null);
   }
 
@@ -261,9 +289,14 @@ export function QueryPane({
               </span>
               <TablesRead tables={result.tables} />
               <span>{formatElapsed(result.elapsed_ms)}</span>
+              {result.cached && (
+                <span className="rounded bg-muted px-1.5 py-0.5" title="Served from the server's result cache; the tables read have not changed">
+                  cached
+                </span>
+              )}
               {result.truncated && (
                 <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
-                  Truncated: showing the first {formatCount(result.rows.length)} rows
+                  {truncationLabel(result.truncated_by)}: showing the first {formatCount(result.rows.length)} rows
                 </span>
               )}
               <Button size="sm" variant="ghost" className="ml-auto h-7" onClick={downloadCsv} disabled={running}>
