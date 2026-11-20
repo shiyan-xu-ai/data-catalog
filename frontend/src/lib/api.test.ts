@@ -13,7 +13,6 @@ describe("runSql", () => {
       row_count: 1,
       truncated: true,
       truncated_by: "rows",
-      cached: true,
       elapsed_ms: 3,
     };
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }));
@@ -24,7 +23,6 @@ describe("runSql", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({ sql: 'SELECT id FROM "a"."b"."events"', query_id: "q-1" });
     expect(result.tables).toEqual([{ id: ["a", "b", "events"], version: 12 }]);
-    expect(result.cached).toBe(true);
     expect(result.truncated_by).toBe("rows");
   });
   it("keeps the server's rejection message", async () => {

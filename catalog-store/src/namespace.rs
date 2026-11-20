@@ -33,7 +33,6 @@ use sqlx::PgPool;
 use crate::cache::{
     DeletedRows, FieldBytes, FragmentRows, LocationCache, OpenedDataset, VersionValue,
 };
-use crate::sql::{ResultCache, DEFAULT_SQL_CACHE_BYTES};
 
 /// Path delimiter of REST ids. Names may not contain it, so joined ids stay unambiguous.
 const DELIMITER: &str = "$";
@@ -266,8 +265,6 @@ pub struct PostgresNamespace {
     table_locations: Vec<String>,
     /// URI prefixes presigned media objects must fall under; empty allows any.
     pub(crate) media_locations: Vec<String>,
-    /// Results of SQL queries; see [`PostgresNamespace::query_sql`].
-    pub(crate) sql_cache: ResultCache,
 }
 
 impl std::fmt::Debug for PostgresNamespace {
@@ -286,20 +283,12 @@ impl PostgresNamespace {
             top_level_allowlist: Vec::new(),
             table_locations: Vec::new(),
             media_locations: Vec::new(),
-            sql_cache: ResultCache::new(DEFAULT_SQL_CACHE_BYTES),
         }
     }
 
     /// Bounds the Lance session's caches by `bytes` in total, replacing the default budget.
     pub fn with_cache_budget(mut self, bytes: usize) -> Self {
         self.session = session(bytes);
-        self
-    }
-
-    /// Bounds the SQL result cache by `bytes` of encoded rows and query text, replacing the
-    /// default budget.
-    pub fn with_sql_cache_budget(mut self, bytes: usize) -> Self {
-        self.sql_cache = ResultCache::new(bytes);
         self
     }
 

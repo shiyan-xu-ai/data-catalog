@@ -122,11 +122,9 @@ with one part is not a table.
 
 Results show column types, nested values as JSON, binary as hex, the row count,
 elapsed time, the table version when exactly one table was read (otherwise the
-number of tables, with each `path@vN` in its tooltip), a **cached** marker when
-the server returned a cached result (the tables read are unchanged, so it is
-never stale), and a truncation notice that says whether the row limit or the
-size limit cut the result. Columns resize by dragging, and Download CSV exports
-the returned rows.
+number of tables, with each `path@vN` in its tooltip), and a truncation notice
+that says whether the row limit or the size limit cut the result. Columns resize
+by dragging, and Download CSV exports the returned rows.
 
 The row pane lists every column's value with a copy button and adds a
 **Playback** tab for each playable value:

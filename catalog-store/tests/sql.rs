@@ -3,10 +3,9 @@
 mod support;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Duration;
 
-use catalog_store::{PostgresNamespace, SqlAnswer, SqlLimits, SqlResult, SqlTable, Truncation};
+use catalog_store::{PostgresNamespace, SqlLimits, SqlResult, SqlTable, Truncation};
 use lance::dataset::{WriteMode, WriteParams};
 use lance_namespace::{Error, ErrorCode, LanceNamespace};
 use serde_json::{json, Value};
@@ -66,24 +65,14 @@ impl Fixture {
         self.ns.refresh_table(&id).await.unwrap();
     }
 
-    async fn query(&self, sql: &str) -> Result<SqlAnswer, Error> {
+    async fn query(&self, sql: &str) -> Result<SqlResult, Error> {
         self.ns.query_sql(sql, &limits()).await
     }
 
-    /// Whether the result cache answered the query.
-    async fn cached(&self, sql: &str) -> bool {
+    async fn ok(&self, sql: &str) -> SqlResult {
         self.query(sql)
             .await
             .unwrap_or_else(|e| panic!("{sql}: {e}"))
-            .cached
-    }
-
-    async fn ok(&self, sql: &str) -> SqlResult {
-        let answer = self
-            .query(sql)
-            .await
-            .unwrap_or_else(|e| panic!("{sql}: {e}"));
-        Arc::unwrap_or_clone(answer.result)
     }
 
     async fn rows(&self, sql: &str) -> Vec<Vec<Value>> {
@@ -414,7 +403,7 @@ async fn results_stop_at_the_row_or_byte_cap() {
     };
     let run = |limits: SqlLimits| {
         let ns = &f.ns;
-        async move { ns.query_sql(wide, &limits).await.unwrap().result }
+        async move { ns.query_sql(wide, &limits).await.unwrap() }
     };
 
     let by_bytes = run(capped(100, 1000)).await;
@@ -432,89 +421,4 @@ async fn results_stop_at_the_row_or_byte_cap() {
     let whole = run(capped(50, 50 * 104)).await;
     assert_eq!(whole.rows.len(), 50);
     assert_eq!(whole.truncated_by, None);
-}
-
-#[tokio::test]
-async fn repeated_queries_over_unchanged_versions_are_cached() {
-    let Some(f) = Fixture::new("sql_cache").await else {
-        return;
-    };
-    let uri = f.table(&EVENTS, &[1, 2, 3], &["a", "b", "c"]).await;
-    let sql = r#"SELECT count(*) FROM "a"."b"."events""#;
-    assert!(!f.cached(sql).await);
-    let hit = f.query(&format!("  {sql}\n")).await.unwrap();
-    assert!(hit.cached);
-    assert_eq!(hit.result.rows, [[3]]);
-    assert_eq!(hit.result.tables, [read(&EVENTS, 1)]);
-    // Another text over the same version runs.
-    assert!(
-        !f.cached(r#"SELECT count(*) AS n FROM "a"."b"."events""#)
-            .await
-    );
-
-    f.overwrite(&EVENTS, &uri, &[1, 2], &["a", "b"]).await;
-    let moved = f.query(sql).await.unwrap();
-    assert!(!moved.cached);
-    assert_eq!(moved.result.rows, [[2]]);
-    assert_eq!(moved.result.tables, [read(&EVENTS, 2)]);
-    assert!(f.cached(sql).await);
-    // A pinned version stays cached beside the current one.
-    let pinned = r#"SELECT count(*) FROM "a"."b"."events@v1""#;
-    assert!(!f.cached(pinned).await);
-    assert!(f.cached(pinned).await);
-}
-
-#[tokio::test]
-async fn results_depending_on_more_than_table_versions_are_never_cached() {
-    let Some(f) = Fixture::new("sql_uncached").await else {
-        return;
-    };
-    f.table(&EVENTS, &[1, 2, 3], &["a", "b", "c"]).await;
-    for sql in [
-        "SELECT now()",
-        "SELECT 1",
-        r#"SELECT id FROM "a"."b"."events" WHERE now() > TIMESTAMP '2000-01-01'"#,
-        r#"SELECT id, random() FROM "a"."b"."events""#,
-        r#"SELECT id FROM "a"."b"."events" WHERE id IN (SELECT id FROM "a"."b"."events" WHERE now() IS NOT NULL)"#,
-        r#"EXPLAIN SELECT id FROM "a"."b"."events""#,
-    ] {
-        for _ in 0..2 {
-            assert!(!f.cached(sql).await, "{sql}");
-        }
-    }
-}
-
-#[tokio::test]
-async fn failed_queries_are_not_cached() {
-    let Some(f) = Fixture::new("sql_failed_uncached").await else {
-        return;
-    };
-    f.table(&EVENTS, &[1, 2, 3], &["a", "b", "c"]).await;
-    let sql = r#"SELECT count(*) FROM "a"."b"."events""#;
-    let expired = SqlLimits {
-        timeout: Duration::ZERO,
-        ..limits()
-    };
-    let err = f.ns.query_sql(sql, &expired).await.unwrap_err();
-    assert!(err.to_string().contains("time limit"), "{err}");
-    assert!(!f.cached(sql).await);
-    assert!(f.cached(sql).await);
-}
-
-#[tokio::test]
-async fn the_result_cache_evicts_beyond_its_budget() {
-    let Some(mut f) = Fixture::new("sql_cache_evict").await else {
-        return;
-    };
-    // Each result holds about 3.7 KB (the 3,000-byte string plus row, column, and key
-    // overhead), so one fits and two do not.
-    f.ns = f.ns.with_sql_cache_budget(5000);
-    f.table(&EVENTS, &[1, 2, 3], &["a", "b", "c"]).await;
-    let first = r#"SELECT repeat('a', 3000) FROM "a"."b"."events" LIMIT 1"#;
-    let second = r#"SELECT repeat('b', 3000) FROM "a"."b"."events" LIMIT 1"#;
-    assert!(!f.cached(first).await);
-    assert!(f.cached(first).await);
-    assert!(!f.cached(second).await);
-    assert!(f.cached(second).await);
-    assert!(!f.cached(first).await);
 }

@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use catalog_store::{SqlLimits, DEFAULT_CACHE_BUDGET_BYTES, DEFAULT_SQL_CACHE_BYTES};
+use catalog_store::{SqlLimits, DEFAULT_CACHE_BUDGET_BYTES};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -78,9 +78,6 @@ pub struct SqlConfig {
     /// Worker threads of the runtime queries run on, apart from request handling
     /// (`CATALOG_SQL_THREADS`, 2).
     pub threads: usize,
-    /// Estimated resident memory the per-instance result cache may hold
-    /// (`CATALOG_SQL_CACHE_MB`, 64).
-    pub cache_bytes: usize,
 }
 
 const DEFAULT_SQL_MEMORY_BUDGET_BYTES: usize = 1024 << 20;
@@ -98,7 +95,6 @@ impl Default for SqlConfig {
             max_concurrent,
             max_per_user: 2,
             threads: 2,
-            cache_bytes: DEFAULT_SQL_CACHE_BYTES,
         }
     }
 }
@@ -127,7 +123,6 @@ impl SqlConfig {
             max_concurrent,
             max_per_user: positive_env("CATALOG_SQL_MAX_PER_USER", default.max_per_user)?,
             threads: positive_env("CATALOG_SQL_THREADS", default.threads)?,
-            cache_bytes: megabytes_env("CATALOG_SQL_CACHE_MB", default.cache_bytes)?,
         })
     }
 }

@@ -289,11 +289,6 @@ export function QueryPane({
               </span>
               <TablesRead tables={result.tables} />
               <span>{formatElapsed(result.elapsed_ms)}</span>
-              {result.cached && (
-                <span className="rounded bg-muted px-1.5 py-0.5" title="Served from the server's result cache; the tables read have not changed">
-                  cached
-                </span>
-              )}
               {result.truncated && (
                 <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
                   {truncationLabel(result.truncated_by)}: showing the first {formatCount(result.rows.length)} rows
